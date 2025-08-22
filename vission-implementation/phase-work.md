@@ -1,232 +1,129 @@
+#### **Error Handling Pattern**
+Every MCP response MUST follow this exact pattern:
+```go
+// Success Response
+response := &types.JSONRPCResponse{
+	JSONRPC: "2.0",
+	ID:      req.ID,
+	Result:  result,
+}
 
-
-
-          
-Based on your comprehensive goal document, I'll create a multi-phase roadmap to systematically build the AI Sandbox from its current state to the full vision. Each phase will have clear deliverables, technical deep-dives, and measurable outcomes.
-
-## 🎯 AI Sandbox Development Phases
-
-### **Phase 1: Foundation & CLI Architecture** (Week 1-2)
-**Goal**: Transform the basic JSON-RPC2 service into a proper CLI tool with profile system
-
-**What we'll build:**
-- **CLI framework** with `aisbx` command structure
-- **Profile system** (YAML-based configuration)
-- **Enhanced logging** and telemetry
-- **Rootfs management** with caching
-
-**Technical Deep-dive:**
-```yaml
-# Phase 1 Architecture
-├── cmd/aisbx/
-│   ├── main.go          # CLI entry point
-│   ├── commands/
-│   │   ├── init.go      # Initialize rootfs
-│   │   ├── run.go       # Execute sandboxed commands
-│   │   ├── create.go    # Create containers
-│   │   └── destroy.go   # Cleanup containers
-├── internal/config/
-│   ├── profile.go       # YAML profile parsing
-│   └── defaults.go      # Sane defaults
-├── internal/telemetry/
-│   └── metrics.go       # Prometheus metrics
+// Error Response  
+response := &types.JSONRPCResponse{
+	JSONRPC: "2.0",
+	ID:      req.ID,
+	Error: &types.JSONRPCError{
+		Code:    -32603, // Internal error
+		Message: "Tool execution failed",
+		Data:    map[string]interface{}{"details": err.Error()},
+	},
+}
 ```
 
-**Deliverables:**
-- [ ] `aisbx init --rootfs <path>` command
-- [ ] `aisbx run --profile <name>` command
-- [ ] Basic YAML profile support
-- [ ] Structured logging with levels
-- [ ] Rootfs caching mechanism
+#### **Security Validation**
+Every tool call MUST include these security checks:
+```go
+func validateToolCall(toolName string, args map[string]interface{}) error {
+	// 1. Validate tool exists
+	if _, exists := registry.tools[toolName]; !exists {
+		return fmt.Errorf("unknown tool: %s", toolName)
+	}
 
-### **Phase 2: Security Hardening** (Week 3-4)
-**Goal**: Implement comprehensive security controls matching the threat model
+	// 2. Validate required arguments
+	if err := validateRequiredArgs(toolName, args); err != nil {
+		return err
+	}
 
-**What we'll build:**
-- **Seccomp profiles** per language/toolchain
-- **Cgroups v2** integration for resource limits
-- **User namespaces** and capabilities management
-- **Network policy enforcement**
+	// 3. Sanitize file paths
+	if workdir, ok := args["workdir"]; ok {
+		if !isValidWorkdir(workdir.(string)) {
+			return fmt.Errorf("invalid workdir path")
+		}
+	}
 
-**Technical Deep-dive:**
-```yaml
-# Phase 2 Security Stack
-├── internal/security/
-│   ├── seccomp/
-│   │   ├── profiles/
-│   │   │   ├── python.json    # Python syscall allowlist
-│   │   │   ├── node.json      # Node.js syscall allowlist
-│   │   │   └── golang.json    # Go syscall allowlist
-│   │   └── loader.go          # Profile loading
-│   ├── cgroups/
-│   │   ├── manager.go         # Cgroup lifecycle
-│   │   └── limits.go          # Resource enforcement
-│   ├── capabilities/
-│   │   └── dropper.go         # Capability dropping
-│   └── network/
-│       └── policy.go          # Network isolation
+	// 4. Check profile permissions
+	if profile, ok := args["profile"]; ok {
+		if !isValidProfile(profile.(string)) {
+			return fmt.Errorf("invalid profile")
+		}
+	}
+
+	return nil
+}
 ```
 
-**Deliverables:**
-- [ ] Default-deny network policy
-- [ ] Language-specific seccomp profiles
-- [ ] Memory/CPU/PID limits via cgroups
-- [ ] Capability dropping (CAP_SYS_ADMIN, etc.)
-- [ ] Security audit logging
+### **Build System Integration**
 
-### **Phase 3: MCP Protocol & Agent Integration** (Week 5-6)
-**Goal**: Replace basic JSON-RPC2 with full Model Context Protocol implementation
+**File**: Update `build.sh`
+```bash
+#!/bin/bash
 
-**What we'll build:**
-- **MCP message types** and validation
-- **Intent system** (run, test, build, format, lint, bench)
-- **Artifact management** with metadata
-- **Gate/checkpoint system**
+# Build main CLI (unchanged)
+echo "Building aisbx CLI..."
+go build -o bin/aisbx ./cmd/aisbx
 
-**Technical Deep-dive:**
-```yaml
-# Phase 3 MCP Architecture
-├── internal/mcp/
-│   ├── types/
-│   │   ├── intents.go         # Intent definitions
-│   │   ├── artifacts.go       # Artifact schemas
-│   │   └── gates.go          # Checkpoint system
-│   ├── protocol/
-│   │   ├── handler.go        # Message handling
-│   │   └── validator.go      # Schema validation
-│   └── artifacts/
-│       ├── storage.go        # Artifact storage
-│       └── metadata.go       # Metadata tracking
+# Build MCP server (new)
+echo "Building aisbx-mcp server..."
+go build -o bin/aisbx-mcp ./cmd/aisbx-mcp
+
+echo "Build complete:"
+echo "  - bin/aisbx (CLI)"
+echo "  - bin/aisbx-mcp (MCP Server)"
 ```
 
-**Deliverables:**
-- [ ] MCP message format specification
-- [ ] Intent-based command execution
-- [ ] Artifact promotion pipeline
-- [ ] Gate validation system
-- [ ] Agent-friendly error handling
+### **Usage Examples**
 
-### **Phase 4: Cross-Platform & Lima Integration** (Week 7-8)
-**Goal**: Perfect cross-platform support with Lima micro-VMs
-
-**What we'll build:**
-- **Lima configuration** templates
-- **Windows/macOS compatibility layer**
-- **Performance optimization** for non-Linux hosts
-- **VM lifecycle management**
-
-**Technical Deep-dive:**
-```yaml
-# Phase 4 Lima Integration
-├── internal/lima/
-│   ├── templates/
-│   │   ├── alpine.yaml       # Lima VM template
-│   │   └── ubuntu.yaml       # Alternative template
-│   ├── manager.go            # VM lifecycle
-│   └── sync.go              # File synchronization
-├── internal/platform/
-│   ├── detector.go          # Platform detection
-│   └── adapter.go           # Platform-specific logic
+**Direct CLI (unchanged):**
+```bash
+aisbx run --profile python-dev python test.py
 ```
 
-**Deliverables:**
-- [ ] Lima VM auto-provisioning
-- [ ] Cross-platform file sharing
-- [ ] Performance parity testing
-- [ ] Platform-specific optimizations
+**MCP Integration:**
+```bash
+# Start MCP server for Claude Desktop
+./bin/aisbx-mcp --config ~/.aisbx --transport stdio
 
-### **Phase 5: Observability & Testing Matrix** (Week 9-10)
-**Goal**: Comprehensive testing and observability infrastructure
-
-**What we'll build:**
-- **Testing matrix** for languages and security scenarios
-- **Prometheus metrics** collection
-- **Performance benchmarking** suite
-- **Security validation** tests
-
-**Technical Deep-dive:**
-```yaml
-# Phase 5 Testing & Observability
-├── internal/testing/
-│   ├── matrix/
-│   │   ├── languages.go     # Language-specific tests
-│   │   ├── security.go      # Security scenario tests
-│   │   └── performance.go   # Benchmark suite
-│   └── validation/
-│       └── harness.go       # Test orchestration
-├── internal/observability/
-│   ├── metrics/
-│   │   └── collector.go    # Prometheus integration
-│   └── tracing/
-│       └── spans.go        # Distributed tracing
+# Or as HTTP server
+./bin/aisbx-mcp --transport http --port 8080
 ```
 
-**Deliverables:**
-- [ ] Complete testing matrix implementation
-- [ ] Performance benchmark suite
-- [ ] Security validation tests
-- [ ] Prometheus metrics endpoint
-- [ ] Grafana dashboard templates
-
-### **Phase 6: Advanced Features & Ecosystem** (Week 11-12)
-**Goal**: Advanced features and ecosystem integration
-
-**What we'll build:**
-- **Snapshot/restore** functionality
-- **OCI compatibility** layer
-- **Profile marketplace** (community profiles)
-- **Documentation and examples**
-
-**Technical Deep-dive:**
-```yaml
-# Phase 6 Advanced Features
-├── internal/snapshots/
-│   ├── manager.go          # Snapshot lifecycle
-│   └── restore.go         # State restoration
-├── internal/oci/
-│   ├── converter.go       # OCI → rootfs conversion
-│   └── packager.go        # Rootfs → pseudo-image
-├── examples/
-│   ├── profiles/          # Community profiles
-│   └── tutorials/         # Getting started guides
+**Claude Desktop Configuration:**
+```json
+{
+  "mcpServers": {
+    "ai-sandbox": {
+      "command": "/path/to/bin/aisbx-mcp",
+      "args": ["--config", "/path/to/.aisbx"]
+    }
+  }
+}
 ```
 
-**Deliverables:**
-- [ ] Snapshot/restore commands
-- [ ] OCI image conversion tools
-- [ ] Community profile repository
-- [ ] Complete documentation
-- [ ] Tutorial examples
+## 🏁 **Implementation Checklist**
 
-## 🚀 Phase Execution Strategy
+### **Phase 3: MCP Server Implementation**
+- [ ] **Binary Setup**: Create `cmd/aisbx-mcp/main.go` with transport selection
+- [ ] **Core Server**: Implement `internal/mcp/server/server.go` with JSON-RPC 2.0 
+- [ ] **Protocol Types**: Define all MCP message types in `internal/mcp/types/`
+- [ ] **Tools Registry**: Implement tool discovery and execution wrapper
+- [ ] **Security Layer**: Add validation for all tool calls and arguments
+- [ ] **Error Handling**: Implement MCP-compliant error responses
+- [ ] **Transport Layer**: Support both STDIO and HTTP transports
+- [ ] **Integration Testing**: Test with Claude Desktop and other MCP clients
+- [ ] **Documentation**: Create usage examples and configuration guides
+- [ ] **Performance Testing**: Benchmark tool execution overhead
 
-### **Immediate Next Steps (This Week)**
-Let's start with **Phase 1** - creating the CLI foundation. I'll implement:
+### **Critical Success Criteria**
+1. **Zero CLI Impact**: Existing `aisbx` commands work unchanged
+2. **MCP Compliance**: Full JSON-RPC 2.0 and MCP protocol compliance  
+3. **Security**: All existing security policies apply to MCP tools
+4. **Performance**: Tool execution overhead < 200ms
+5. **Reliability**: 99.9% uptime for MCP server processes
 
-1. **CLI structure** with Cobra framework
-2. **Basic profile system** with YAML support
-3. **Enhanced logging** with structured output
-4. **Rootfs caching** mechanism
+---
 
-Would you like me to begin implementing **Phase 1** right now? I can start with the CLI architecture and create the basic `aisbx` command structure that matches your vision in the goal document.
+## **Removed Phases**
 
-Which aspect of Phase 1 would you like me to prioritize first:
-- CLI command structure (`aisbx init`, `aisbx run`, etc.)
-- Profile system (YAML configuration)
-- Rootfs management and caching
-- Telemetry and logging foundation
+**Note**: Phase 4-6 have been moved to goal-doc.md for strategic planning. This document focuses exclusively on surgical implementation of Phase 3.
 
-Let me know and I'll dive deep into the implementation!
-
-### **Long-Term Strategy**
-Once Phase 1 is complete, I'll move on to **Phase 2** - implementing the core sandboxing features. Here's a high-level plan:
-
-1. **Language-specific seccomp profiles**
-2. **Cgroup resource enforcement**
-3. **Capability dropping**
-4. **Network isolation**
-
-For each of these features, I'll create a separate module within the `internal` directory. For example:
-- `internal/seccomp/`
-- `internal/cgroups/`
-- `internal/capabilities/`
+**Status: Ready for surgical implementation with exact specifications provided above.**

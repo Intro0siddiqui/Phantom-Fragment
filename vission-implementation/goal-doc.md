@@ -1,5 +1,23 @@
 # AI Sandbox — Deep-Dive Analysis (LLM-first, human-friendly)
 
+## 🚩 **PROJECT STATUS & VISION** 
+
+**Current State: Foundation Complete** • **Next Vision: LLM-Native Runtime** • **Last Updated: Aug 2024**
+
+### **Achievements Unlocked 🏆**
+- **Phase 1: CLI Foundation** - Complete Cobra-based interface with configuration management
+- **Phase 2: Security Infrastructure** - Comprehensive sandboxing framework with monitoring
+- **Current Architecture**: Production-ready CLI tool with extensible plugin architecture
+
+### **Strategic Vision: Phase 3 🔮**
+Evolution toward **LLM-native development environment**:
+- Seamless AI agent integration through industry standards
+- Optional enhancement layer preserving core CLI simplicity
+- Bridge between human developers and AI-assisted workflows
+- Modular architecture enabling selective feature adoption
+
+---
+
 ## Executive Summary
 
 You built a **contextual runtime** for code execution that’s **LLM-native** and **lighter than Docker**. It mixes **bubblewrap**, **chroot**, and **Lima** under a **Go** control plane, wrapped by a **Model Context Protocol (MCP)**. Net effect: an **agent dojo**—LLMs can generate, run, and iterate code safely without polluting your real **maktab \[workspace]**. Humans piggyback with the same smooth UX.
@@ -18,12 +36,13 @@ You built a **contextual runtime** for code execution that’s **LLM-native** an
 
 ---
 
-## Architecture Overview
+## Architecture Overview 🏧 **Current Implementation Status**
 
-**Control plane (Go):**
+**Control plane (Go): ✅ IMPLEMENTED**
 
-* Orchestrates sandbox lifecycle, selects driver (bwrap/chroot/Lima), enforces MCP.
-* Static binary delivery = low **wazn \[overhead]** and simple rollout.
+* Cobra-based CLI orchestrates sandbox lifecycle, profile management, and driver selection.
+* Complete configuration system with YAML profiles and structured logging.
+* Production-ready static binary delivery = low **wazn \[overhead]** and simple rollout.
 
 **Isolation backends (drivers):**
 
@@ -103,13 +122,13 @@ aisbx logs --follow <run-id>
 aisbx promote --artifact build/mybin --to ../repo/bin/
 ```
 
-**Agent flow (MCP intents):**
+**Agent flow (MCP Tools):**
 
-1. `plan.create` → micro-steps todo list.
-2. `run.exec` → execute step; capture result; enforce policy.
-3. `artifact.save` → store build/test outputs with metadata.
-4. `gate.check` → tests/linters must pass before promotion.
-5. `repo.commit` (optional) → land changes outside the sandbox.
+1. `tools/list` → discover available tools (run, test, build, etc.).
+2. `tools/call` → execute tool with parameters; capture structured results.
+3. `resources/read` → access contextual data (files, logs, artifacts).
+4. `prompts/get` → retrieve workflow templates for common tasks.
+5. **Human-in-the-loop** → user approves sensitive operations.
 
 **Human UX:** Same commands, just fewer flags thanks to sane defaults.
 
@@ -195,20 +214,45 @@ env:
 entrypoint: ["/usr/bin/python3", "/workspace/src/main.py"]
 ```
 
-**MCP task (JSON):**
+**MCP tool call (JSON-RPC 2.0):**
 
 ```json
 {
-  "intent": "run",
-  "profile": "py-dev-strict",
-  "tests": ["pytest -q"],
-  "gates": ["tests==pass", "no-network-violations"]
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "run",
+    "arguments": {
+      "profile": "python-dev",
+      "command": ["python", "test.py"],
+      "workdir": "/workspace"
+    }
+  }
 }
 ```
 
 ---
 
-## Testing Matrix (Don’t ship vibes, ship evidence)
+## 🎯 Strategic Roadmap: LLM-Native Evolution
+
+**Vision**: Transform AI Sandbox into the standard runtime for LLM-assisted development while preserving its core simplicity and security.
+
+### **Architectural Philosophy**
+- **Modular Enhancement**: Core CLI remains unchanged, AI features as optional layer
+- **Industry Standards**: Leverage established protocols for maximum compatibility  
+- **User Choice**: Developers choose their level of AI integration
+- **Security First**: All enhancements maintain existing security guarantees
+
+### **Integration Approach**
+- Separate enhancement binary for AI functionality
+- Standard protocol compliance for broad ecosystem support
+- Seamless bridge between CLI and AI agent workflows
+- Preservation of performance characteristics for direct usage
+
+---
+
+## Testing Matrix (Don't ship vibes, ship evidence)
 
 * **Langs:** Python, Node, Go, Rust, Java (minimal JRE), C/C++.
 * **Ops:** CPU/mem caps; disk quotas; PID limits; fork bombs blocked.
