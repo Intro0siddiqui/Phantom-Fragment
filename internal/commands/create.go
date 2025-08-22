@@ -83,13 +83,7 @@ Examples:
 			}
 
 			// Create container
-			container := types.Container{
-				ID:      fmt.Sprintf("%s-%d", profile.Name, time.Now().Unix()),
-				Workdir: workdir,
-				Binds:   finalBinds,
-				Env:     envMap,
-			}
-			containerID, err := drv.Create(ctx, image, container, timeout*1000)
+			containerID, err := drv.Create(ctx, image, workdir, finalBinds, envMap)
 			if err != nil {
 				return fmt.Errorf("failed to create container: %w", err)
 			}

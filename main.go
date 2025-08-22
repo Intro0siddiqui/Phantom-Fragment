@@ -9,6 +9,7 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
+	"github.com/you/ai-sandbox/internal/metrics"
 	"github.com/you/ai-sandbox/pkg/driver"
 	"github.com/you/ai-sandbox/pkg/types"
 )
@@ -17,6 +18,8 @@ var rootfs []byte
 
 var containers = make(map[string]types.Container)
 var sandboxDriver driver.SandboxDriver
+var metricsCollector *metrics.Collector
+var metricsServer *metrics.Server
 
 const (
 	// ErrorCodeContainerNotFound is a custom error code for when a container is not found.
@@ -85,6 +88,14 @@ func (s *stdioReadWriteCloser) Close() error {
 
 func main() {
 	fmt.Fprintf(os.Stderr, "Starting ai-sandbox...\n")
+	
+	// Initialize metrics
+	metricsCollector = metrics.NewCollector()
+	metricsServer = metrics.NewServer(":9090")
+	if err := metricsServer.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start metrics server: %v\n", err)
+	}
+
 	// Ensure rootfs is extracted on first run
 	if err := ensureRootfs(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error extracting rootfs: %v\n", err)
@@ -108,6 +119,9 @@ func main() {
 	stream := jsonrpc2.NewBufferedStream(rwc, jsonrpc2.VSCodeObjectCodec{})
 	conn := jsonrpc2.NewConn(context.Background(), stream, jsonrpc2.HandlerWithError(h.Handle))
 	<-conn.DisconnectNotify()
+	
+	// Stop metrics server on exit
+	metricsServer.Stop()
 }
 
 func (h *handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {

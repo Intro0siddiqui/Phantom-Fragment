@@ -59,12 +59,18 @@ type LoggingConfig struct {
 	File   string `yaml:"file"`
 }
 
+// SeccompConfig contains seccomp-related configuration
+type SeccompConfig struct {
+	Enabled   bool   `yaml:"enabled"`
+	Dir       string `yaml:"dir"`
+}
+
 // SecurityConfig contains security settings
 type SecurityConfig struct {
-	UserNamespaces bool `yaml:"user_namespaces"`
-	Seccomp       bool `yaml:"seccomp"`
-	AppArmor      bool `yaml:"apparmor"`
-	SELinux       bool `yaml:"selinux"`
+	UserNamespaces bool          `yaml:"user_namespaces"`
+	Seccomp       SeccompConfig `yaml:"seccomp"`
+	AppArmor      bool          `yaml:"apparmor"`
+	SELinux       bool          `yaml:"selinux"`
 }
 
 // DefaultConfig returns a new default configuration
@@ -140,11 +146,14 @@ func DefaultConfig() *Config {
 			File:   "",
 		},
 		Security: SecurityConfig{
-			UserNamespaces: true,
-			Seccomp:       true,
-			AppArmor:      false,
-			SELinux:       false,
-		},
+	UserNamespaces: true,
+	Seccomp: SeccompConfig{
+		Enabled: true,
+		Dir:     "", // Will be set dynamically during initialization
+	},
+	AppArmor: false,
+	SELinux:  false,
+},
 	}
 }
 
@@ -200,6 +209,12 @@ func Initialize(configDir string) error {
 	profilesDir := filepath.Join(configDir, "profiles")
 	if err := os.MkdirAll(profilesDir, 0755); err != nil {
 		return fmt.Errorf("failed to create profiles directory: %w", err)
+	}
+
+	// Create seccomp profiles directory
+	seccompDir := filepath.Join(configDir, "seccomp", "profiles")
+	if err := os.MkdirAll(seccompDir, 0755); err != nil {
+		return fmt.Errorf("failed to create seccomp profiles directory: %w", err)
 	}
 
 	// Create default config file if it doesn't exist

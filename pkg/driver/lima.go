@@ -37,7 +37,7 @@ func (d *LimaDriver) Create(ctx context.Context, image, workdir string, binds []
 		return "", fmt.Errorf("could not check Lima instances: %w", err)
 	}
 
-	if !strings.Contains(out.String(), limaInstanceName) {
+	if !strings.Contains(out.String(), `"name":"`+limaInstanceName+`"`) {
 		// Start a new Lima instance
 		cmd = exec.CommandContext(ctx, "limactl", "start", "--name="+limaInstanceName, "docker.io/library/alpine:latest")
 		if err := cmd.Run(); err != nil {
