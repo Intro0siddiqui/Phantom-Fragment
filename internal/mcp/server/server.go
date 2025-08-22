@@ -62,7 +62,7 @@ func (s *Server) handleToolsList(id interface{}) ([]byte, error) {
 			Name:        name,
 			Description: "Tool description", // TODO: Add proper descriptions
 			InputSchema: map[string]interface{}{
-				"type": "object",
+				"type":       "object",
 				"properties": map[string]interface{}{
 					// Schema will be tool-specific
 				},

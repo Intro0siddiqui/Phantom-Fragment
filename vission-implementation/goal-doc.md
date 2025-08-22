@@ -1,24 +1,218 @@
-# AI Sandbox — Deep-Dive Analysis (LLM-first, human-friendly)
+# AI Sandbox — Strategic Roadmap & Vision (LLM-first, human-friendly)
 
 ## 🚩 **PROJECT STATUS & VISION** 
 
-**Current State: Foundation Complete** • **Next Vision: LLM-Native Runtime** • **Last Updated: Aug 2024**
+**Current State: Phase 3 (80% Complete)** • **Next Vision: LLM-Native Runtime** • **Last Updated: Aug 2024**
 
 ### **Achievements Unlocked 🏆**
-- **Phase 1: CLI Foundation** - Complete Cobra-based interface with configuration management
-- **Phase 2: Security Infrastructure** - Comprehensive sandboxing framework with monitoring
-- **Current Architecture**: Production-ready CLI tool with extensible plugin architecture
+- **Phase 1: CLI Foundation** - ✅ Complete Cobra-based interface with configuration management
+- **Phase 2: Security Infrastructure** - ✅ Complete sandboxing framework with monitoring
+- **Phase 3: MCP Protocol Layer** - 🚀 80% Complete (Foundation ready, integration pending)
 
-### **Strategic Vision: Phase 3 🔮**
+### **Strategic Vision: Beyond Phase 3 🔮**
 Evolution toward **LLM-native development environment**:
-- Seamless AI agent integration through industry standards
-- Optional enhancement layer preserving core CLI simplicity
-- Bridge between human developers and AI-assisted workflows
-- Modular architecture enabling selective feature adoption
+- ✅ **Foundation**: Production-ready CLI + MCP protocol layer
+- 🚀 **Next**: Advanced security hardening and developer experience
+- 🔮 **Vision**: Enterprise-grade LLM runtime with scale & operations
+- 🌍 **Future**: Full ecosystem integration with OCI compatibility
+
+### **Phase 3 Status: Near Completion** 
+**Core Infrastructure**: ✅ Complete
+- JSON-RPC 2.0 compliant MCP server
+- Tool registry with security validation
+- Transport layer (STDIO + HTTP)
+- Build system integration
+
+**Remaining Work**: 🚀 In Progress  
+- CLI integration for actual tool execution
+- End-to-end testing with LLM clients
+- Performance validation and documentation
 
 ---
 
-## Executive Summary
+## 🗺️ **STRATEGIC ROADMAP: PHASES 4-6**
+
+### **Phase 4: Security Hardening & Developer Experience** 🔒
+**Strategic Goal**: Transform from prototype to production-ready LLM runtime
+**Timeline**: After Phase 3 completion
+
+#### **Security Hardening**
+**Objective**: Enterprise-grade security posture
+
+- **Prebuilt Seccomp Profiles**: 
+  - Language-specific profiles (Python, Node.js, Go, Rust, Java)
+  - Toolchain-optimized syscall allowlists
+  - Automatic profile selection based on detected runtime
+
+- **Mandatory Access Control**:
+  - AppArmor policy templates for Linux distributions
+  - SELinux integration for RHEL/CentOS environments
+  - Profile inheritance and composition patterns
+
+- **Secrets Management API**:
+  - Tmpfs-based secret injection (no disk persistence)
+  - Automatic log scrubbing to prevent secret leakage
+  - Time-bounded secret access with auto-expiry
+  - Integration with existing secret stores (HashiCorp Vault, etc.)
+
+#### **Developer Experience Enhancement**
+**Objective**: Streamline common workflows and reduce friction
+
+- **Profile System**:
+  ```yaml
+  # profiles/dev.yaml - Permissive for development
+  name: dev-mode
+  security:
+    network: allow-egress
+    filesystem: relaxed
+    syscalls: development
+  
+  # profiles/strict.yaml - Locked down for production
+  name: strict-mode  
+  security:
+    network: deny-all
+    filesystem: read-only
+    syscalls: minimal
+  ```
+
+- **Snapshot/Restore Functionality**:
+  - `aisbx snap create <name>` - Checkpoint working environments
+  - `aisbx snap restore <name>` - Instant environment recovery
+  - Copy-on-write optimization for fast restoration
+  - Snapshot metadata and versioning
+
+- **Policy-as-Code Integration**:
+  - Rego (Open Policy Agent) integration for complex policies
+  - Declarative security rules with validation
+  - Policy testing and simulation capabilities
+  - Git-based policy versioning and review
+
+#### **Phase 4 Success Criteria**
+- [ ] Zero-configuration security for 90% of use cases
+- [ ] Sub-second snapshot/restore operations
+- [ ] Policy validation prevents 99.9% of security violations
+- [ ] Enterprise deployment ready with audit compliance
+
+---
+
+### **Phase 5: Scale & Operations** 📊
+**Strategic Goal**: Production operations and observability at scale
+**Timeline**: After Phase 4 completion
+
+#### **Operational Infrastructure**
+**Objective**: Support high-throughput LLM workloads
+
+- **Supervisor Micro-service**:
+  - Request queuing with priority scheduling
+  - Rate limiting per user/organization
+  - Resource pool management and optimization
+  - Health monitoring and automatic recovery
+
+- **Observability & Metrics**:
+  - **Prometheus Integration**:
+    - Execution duration histograms
+    - Out-of-memory (OOM) event tracking
+    - Denied syscall counters by profile
+    - Cache hit rates and storage efficiency
+  - **Distributed Tracing**:
+    - End-to-end request tracking through OpenTelemetry
+    - Performance bottleneck identification
+    - Error correlation and debugging
+
+#### **Packaging & Distribution**
+**Objective**: Simplified deployment and artifact management
+
+- **Container Integration**:
+  - **OCI → Rootfs Converter**: Transform existing containers to lightweight rootfs
+  - **Rootfs → Pseudo-image Packer**: Create distributable sandbox images
+  - Compatibility layer for existing Docker workflows
+  - Size optimization and layer deduplication
+
+- **Artifact Distribution**:
+  - Lightweight registry for sandbox images
+  - Content-addressable storage with compression
+  - Delta updates and efficient synchronization
+  - CDN integration for global distribution
+
+#### **Enhanced Runtime Features**
+**Objective**: Advanced execution capabilities
+
+- **Multi-service Networking**:
+  - CNI (Container Network Interface) plugin support
+  - Service discovery and load balancing
+  - Network policy enforcement
+  - Multi-sandbox communication patterns
+
+- **Resource Management**:
+  - Dynamic resource scaling based on workload
+  - GPU and specialized hardware integration
+  - Memory and CPU quota enforcement
+  - Storage lifecycle management
+
+#### **Phase 5 Success Criteria**
+- [ ] Support 1000+ concurrent sandbox executions
+- [ ] <100ms request queue latency under load
+- [ ] Full observability with 99.99% metric reliability
+- [ ] Compatible with 80% of existing container workflows
+
+---
+
+### **Phase 6: Ecosystem Integration** 🌍
+**Strategic Goal**: Complete LLM development ecosystem
+**Timeline**: After Phase 5 completion
+
+#### **Enterprise Integration**
+**Objective**: Seamless integration with enterprise toolchains
+
+- **OCI Compatibility Layer**:
+  - Full OCI runtime specification compliance
+  - Docker Desktop plugin integration
+  - Kubernetes CRI (Container Runtime Interface) support
+  - Podman and containerd compatibility
+
+- **Registry & Artifact System**:
+  - OCI-compliant artifact distribution
+  - Private registry deployment options
+  - Role-based access control (RBAC)
+  - Vulnerability scanning integration
+
+#### **Advanced Security Features**
+**Objective**: Zero-trust security model
+
+- **Enterprise Hardening Profiles**:
+  - SOC 2 Type II compliance templates
+  - FIPS 140-2 cryptographic validation
+  - Common Criteria EAL4+ certification path
+  - Industry-specific security frameworks (PCI-DSS, HIPAA)
+
+- **Multi-tenant Isolation**:
+  - Organization-level resource isolation
+  - Cross-tenant security boundary enforcement
+  - Audit logging with tamper protection
+  - Compliance reporting automation
+
+#### **Developer Ecosystem**
+**Objective**: Rich third-party integration landscape
+
+- **IDE Integration**:
+  - VSCode extension for sandbox management
+  - IntelliJ IDEA plugin support
+  - Language server protocol (LSP) integration
+  - Debug adapter protocol (DAP) support
+
+- **CI/CD Pipeline Integration**:
+  - GitHub Actions plugin
+  - GitLab CI/CD integration
+  - Jenkins pipeline support
+  - Azure DevOps compatibility
+
+#### **Phase 6 Success Criteria**
+- [ ] Drop-in replacement for Docker in 95% of development workflows
+- [ ] Enterprise certification for security compliance
+- [ ] Active ecosystem with 100+ third-party integrations
+- [ ] Industry adoption as standard LLM runtime
+
+---
 
 You built a **contextual runtime** for code execution that’s **LLM-native** and **lighter than Docker**. It mixes **bubblewrap**, **chroot**, and **Lima** under a **Go** control plane, wrapped by a **Model Context Protocol (MCP)**. Net effect: an **agent dojo**—LLMs can generate, run, and iterate code safely without polluting your real **maktab \[workspace]**. Humans piggyback with the same smooth UX.
 
