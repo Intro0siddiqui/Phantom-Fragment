@@ -1,4 +1,5 @@
 package driver
+
 import (
 	"bytes"
 	"context"
@@ -11,8 +12,8 @@ import (
 	"github.com/you/ai-sandbox/pkg/types"
 )
 
-const ( 
-    limaInstanceName = "ai-sandbox"
+const (
+	limaInstanceName = "ai-sandbox"
 )
 
 // LimaDriver implements the SandboxDriver interface using Lima (Linux virtual machines on macOS and Windows).
@@ -22,11 +23,6 @@ type LimaDriver struct{}
 func NewLimaDriver() *LimaDriver {
 	return &LimaDriver{}
 }
-
-
-
-
-
 
 func (d *LimaDriver) Create(ctx context.Context, image, workdir string, binds []string, env map[string]string) (string, error) {
 	// Check if the Lima instance is already running

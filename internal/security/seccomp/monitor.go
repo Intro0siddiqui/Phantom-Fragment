@@ -46,11 +46,11 @@ func (m *Monitor) SetLogger(logger *audit.Logger) {
 func (m *Monitor) MonitorProcess(ctx context.Context, cmd *exec.Cmd, containerID, profileName string) error {
 	// Use ptrace to monitor syscalls and detect seccomp violations
 	// This is a simplified implementation - in production, you'd use eBPF or ptrace
-	
+
 	// Capture stderr for seccomp-related errors
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	
+
 	// Monitor the process exit status
 	go m.monitorProcessResult(cmd, &stderr, containerID, profileName)
 	return nil
@@ -78,8 +78,8 @@ func (m *Monitor) monitorProcessResult(cmd *exec.Cmd, stderr *bytes.Buffer, cont
 		output := stderr.String()
 		if output != "" {
 			if strings.Contains(output, "Operation not permitted") ||
-			   strings.Contains(output, "seccomp") ||
-			   strings.Contains(output, "syscall") {
+				strings.Contains(output, "seccomp") ||
+				strings.Contains(output, "syscall") {
 				m.RecordSeccompViolation(containerID, "unknown", fmt.Sprintf("stderr: %s", output))
 			}
 		}
@@ -92,7 +92,7 @@ func (m *Monitor) RecordSeccompViolation(containerID, syscall, message string) {
 	if m.metrics != nil {
 		m.metrics.RecordDeniedSyscall(containerID, syscall)
 	}
-	
+
 	// Log audit event
 	if m.logger != nil {
 		details := map[string]interface{}{

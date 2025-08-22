@@ -7,10 +7,10 @@ import (
 
 // Collector holds all the Prometheus metrics for the sandbox
 type Collector struct {
-	RunDuration     *prometheus.HistogramVec
-	OOMs            *prometheus.CounterVec
-	DeniedSyscalls  *prometheus.CounterVec
-	CacheHitRate    *prometheus.GaugeVec
+	RunDuration       *prometheus.HistogramVec
+	OOMs              *prometheus.CounterVec
+	DeniedSyscalls    *prometheus.CounterVec
+	CacheHitRate      *prometheus.GaugeVec
 	NetworkViolations *prometheus.CounterVec
 }
 

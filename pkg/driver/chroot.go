@@ -32,17 +32,17 @@ func NewChrootDriver() *ChrootDriver {
 		// Fallback to basic logger if seccomp fails
 		seccompMonitor = &seccomp.Monitor{}
 	}
-	
+
 	driver := &ChrootDriver{
 		logger:  audit.NewLogger("/var/log/sandbox-security.log"),
 		metrics: metrics.NewCollector(),
 		seccomp: seccompMonitor,
 	}
-	
+
 	// Set up metrics and logger for seccomp monitoring
 	seccompMonitor.SetMetricsCollector(driver.metrics)
 	seccompMonitor.SetLogger(driver.logger)
-	
+
 	return driver
 }
 
@@ -50,22 +50,22 @@ func (d *ChrootDriver) Create(ctx context.Context, image, workdir string, binds 
 	// In a real scenario, this might involve setting up the rootfs for chroot
 	// For now, we just generate a container ID and assume the rootfs is handled externally.
 	containerID := uuid.New().String()
-	
+
 	// Log container creation
 	d.logger.LogContainerCreation(containerID, map[string]interface{}{
-		"image": image,
+		"image":   image,
 		"workdir": workdir,
-		"binds": binds,
-		"env": env,
+		"binds":   binds,
+		"env":     env,
 	})
-	
+
 	// The actual container state (workdir, binds, env) will be stored in the main package's map.
 	return containerID, nil
 }
 
 func (d *ChrootDriver) Exec(ctx context.Context, container types.Container, cmdArgs []string, timeoutMs int, memoryLimitMB int, cpuLimitCores int) (int, string, string, error) {
 	startTime := time.Now()
-	
+
 	// Create cgroup for the container
 	cgroupManager := cgroups.NewManager(container.ID)
 	cgroupManager.SetMetricsCollector(d.metrics)
@@ -97,21 +97,21 @@ func (d *ChrootDriver) Exec(ctx context.Context, container types.Container, cmdA
 
 	// Log container execution
 	d.logger.LogContainerExecution(container.ID, map[string]interface{}{
-		"cmd": cmdArgs,
+		"cmd":             cmdArgs,
 		"memory_limit_mb": memoryLimitMB,
 		"cpu_limit_cores": cpuLimitCores,
 		"seccomp_profile": container.SeccompProfile,
 	})
 
 	opts := bwrap.Options{
-		Workdir: container.Workdir,
-		Binds:   container.Binds,
-		Env:     container.Env,
-		Cmd:     cmdArgs,
-		MemoryLimitMB: memoryLimitMB,
-		CPULimitCores: cpuLimitCores,
+		Workdir:        container.Workdir,
+		Binds:          container.Binds,
+		Env:            container.Env,
+		Cmd:            cmdArgs,
+		MemoryLimitMB:  memoryLimitMB,
+		CPULimitCores:  cpuLimitCores,
 		SeccompProfile: container.SeccompProfile,
-		ContainerID: container.ID,
+		ContainerID:    container.ID,
 	}
 
 	args := bwrap.BuildArgs(opts)
@@ -120,11 +120,11 @@ func (d *ChrootDriver) Exec(ctx context.Context, container types.Container, cmdA
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	
+
 	// Monitor for seccomp violations if a seccomp profile is being used
-		if container.SeccompProfile != "" {
-			d.seccomp.MonitorProcess(ctx, cmd, container.ID, container.SeccompProfile)
-		}
+	if container.SeccompProfile != "" {
+		d.seccomp.MonitorProcess(ctx, cmd, container.ID, container.SeccompProfile)
+	}
 
 	// Add process to cgroup
 	if err := cgroupManager.AddProcess(cmd.Process.Pid); err != nil {
@@ -150,7 +150,7 @@ func (d *ChrootDriver) Exec(ctx context.Context, container types.Container, cmdA
 func (d *ChrootDriver) Destroy(ctx context.Context, containerID string) error {
 	// Log container destruction
 	d.logger.LogContainerDestruction(containerID, map[string]interface{}{})
-	
+
 	// No specific action needed here for chroot, as it's ephemeral.
 	// The main package will remove the container from its map.
 	return nil

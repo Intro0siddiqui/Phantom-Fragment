@@ -13,9 +13,9 @@ import (
 
 // Profile represents a seccomp profile
 type Profile struct {
-	DefaultAction   string     `json:"defaultAction"`
-	Architectures   []string   `json:"architectures"`
-	Syscalls        []Syscall  `json:"syscalls"`
+	DefaultAction string    `json:"defaultAction"`
+	Architectures []string  `json:"architectures"`
+	Syscalls      []Syscall `json:"syscalls"`
 }
 
 // Syscall represents a syscall in a seccomp profile

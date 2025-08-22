@@ -88,7 +88,7 @@ func (s *stdioReadWriteCloser) Close() error {
 
 func main() {
 	fmt.Fprintf(os.Stderr, "Starting ai-sandbox...\n")
-	
+
 	// Initialize metrics
 	metricsCollector = metrics.NewCollector()
 	metricsServer = metrics.NewServer(":9090")
@@ -119,7 +119,7 @@ func main() {
 	stream := jsonrpc2.NewBufferedStream(rwc, jsonrpc2.VSCodeObjectCodec{})
 	conn := jsonrpc2.NewConn(context.Background(), stream, jsonrpc2.HandlerWithError(h.Handle))
 	<-conn.DisconnectNotify()
-	
+
 	// Stop metrics server on exit
 	metricsServer.Stop()
 }

@@ -7,16 +7,16 @@ import (
 // Policy represents a network policy
 type Policy struct {
 	AllowLoopback bool
-	AllowEgress  bool
-	AllowedHosts []string
+	AllowEgress   bool
+	AllowedHosts  []string
 }
 
 // DefaultPolicy returns the default network policy (no network access)
 func DefaultPolicy() Policy {
 	return Policy{
 		AllowLoopback: false,
-		AllowEgress:  false,
-		AllowedHosts: []string{},
+		AllowEgress:   false,
+		AllowedHosts:  []string{},
 	}
 }
 
@@ -29,8 +29,8 @@ func NoNetworkPolicy() Policy {
 func LoopbackOnlyPolicy() Policy {
 	return Policy{
 		AllowLoopback: true,
-		AllowEgress:  false,
-		AllowedHosts: []string{},
+		AllowEgress:   false,
+		AllowedHosts:  []string{},
 	}
 }
 
@@ -38,8 +38,8 @@ func LoopbackOnlyPolicy() Policy {
 func EgressRestrictedPolicy(allowedHosts []string) Policy {
 	return Policy{
 		AllowLoopback: true,
-		AllowEgress:  true,
-		AllowedHosts: allowedHosts,
+		AllowEgress:   true,
+		AllowedHosts:  allowedHosts,
 	}
 }
 
@@ -51,7 +51,7 @@ func (p Policy) Apply(containerID string) error {
 	// 2. Setting up iptables rules or nftables
 	// 3. Using eBPF programs for more advanced filtering
 	// 4. Integrating with container network interfaces (CNI)
-	
+
 	// For now, we'll just return nil as a placeholder
 	fmt.Printf("Applying network policy to container %s: %+v\n", containerID, p)
 	return nil

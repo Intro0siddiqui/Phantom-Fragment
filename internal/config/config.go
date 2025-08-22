@@ -18,24 +18,24 @@ type Config struct {
 
 // GlobalConfig contains global settings
 type GlobalConfig struct {
-	CacheDir    string `yaml:"cache_dir"`
+	CacheDir      string `yaml:"cache_dir"`
 	DefaultDriver string `yaml:"default_driver"`
-	Timeout     int    `yaml:"timeout"`
+	Timeout       int    `yaml:"timeout"`
 }
 
 // Profile represents a sandbox configuration profile
 type Profile struct {
-	Name        string            `yaml:"name"`
-	Driver      string            `yaml:"driver"`
-	CPU         string            `yaml:"cpu"`
-	Memory      string            `yaml:"memory"`
-	Network     NetworkConfig     `yaml:"network"`
-	Mounts      []MountConfig     `yaml:"mounts"`
-	Environment map[string]string `yaml:"environment"`
-	WorkingDir  string            `yaml:"working_dir"`
-	Seccomp     string            `yaml:"seccomp"`
-	Capabilities []string         `yaml:"capabilities"`
-	Timeout     int               `yaml:"timeout"`
+	Name         string            `yaml:"name"`
+	Driver       string            `yaml:"driver"`
+	CPU          string            `yaml:"cpu"`
+	Memory       string            `yaml:"memory"`
+	Network      NetworkConfig     `yaml:"network"`
+	Mounts       []MountConfig     `yaml:"mounts"`
+	Environment  map[string]string `yaml:"environment"`
+	WorkingDir   string            `yaml:"working_dir"`
+	Seccomp      string            `yaml:"seccomp"`
+	Capabilities []string          `yaml:"capabilities"`
+	Timeout      int               `yaml:"timeout"`
 }
 
 // NetworkConfig defines network settings
@@ -61,25 +61,25 @@ type LoggingConfig struct {
 
 // SeccompConfig contains seccomp-related configuration
 type SeccompConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	Dir       string `yaml:"dir"`
+	Enabled bool   `yaml:"enabled"`
+	Dir     string `yaml:"dir"`
 }
 
 // SecurityConfig contains security settings
 type SecurityConfig struct {
 	UserNamespaces bool          `yaml:"user_namespaces"`
-	Seccomp       SeccompConfig `yaml:"seccomp"`
-	AppArmor      bool          `yaml:"apparmor"`
-	SELinux       bool          `yaml:"selinux"`
+	Seccomp        SeccompConfig `yaml:"seccomp"`
+	AppArmor       bool          `yaml:"apparmor"`
+	SELinux        bool          `yaml:"selinux"`
 }
 
 // DefaultConfig returns a new default configuration
 func DefaultConfig() *Config {
 	return &Config{
 		Global: GlobalConfig{
-			CacheDir:     "",
+			CacheDir:      "",
 			DefaultDriver: "bwrap",
-			Timeout:      300,
+			Timeout:       300,
 		},
 		Profiles: []Profile{
 			{
@@ -102,10 +102,10 @@ func DefaultConfig() *Config {
 				Environment: map[string]string{
 					"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 				},
-				WorkingDir: "/workspace",
-				Seccomp:    "default",
+				WorkingDir:   "/workspace",
+				Seccomp:      "default",
 				Capabilities: []string{},
-				Timeout:    300,
+				Timeout:      300,
 			},
 			{
 				Name:   "python-dev",
@@ -130,14 +130,14 @@ func DefaultConfig() *Config {
 					},
 				},
 				Environment: map[string]string{
-					"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+					"PATH":             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
 					"PYTHONUNBUFFERED": "1",
-					"PYTHONPATH": "/workspace",
+					"PYTHONPATH":       "/workspace",
 				},
-				WorkingDir: "/workspace",
-				Seccomp:    "python",
+				WorkingDir:   "/workspace",
+				Seccomp:      "python",
 				Capabilities: []string{"CAP_NET_BIND_SERVICE"},
-				Timeout:    600,
+				Timeout:      600,
 			},
 		},
 		Logging: LoggingConfig{
@@ -146,14 +146,14 @@ func DefaultConfig() *Config {
 			File:   "",
 		},
 		Security: SecurityConfig{
-	UserNamespaces: true,
-	Seccomp: SeccompConfig{
-		Enabled: true,
-		Dir:     "", // Will be set dynamically during initialization
-	},
-	AppArmor: false,
-	SELinux:  false,
-},
+			UserNamespaces: true,
+			Seccomp: SeccompConfig{
+				Enabled: true,
+				Dir:     "", // Will be set dynamically during initialization
+			},
+			AppArmor: false,
+			SELinux:  false,
+		},
 	}
 }
 
