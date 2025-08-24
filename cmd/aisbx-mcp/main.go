@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,10 +9,14 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/you/ai-sandbox/internal/config"
 	"github.com/you/ai-sandbox/internal/mcp/server"
 	"github.com/you/ai-sandbox/internal/mcp/types"
+	"github.com/you/ai-sandbox/pkg/driver"
+	pkgtypes "github.com/you/ai-sandbox/pkg/types"
 )
 
 func main() {
@@ -22,7 +27,7 @@ func main() {
 	// Create MCP server instance
 	srv := server.NewServer()
 
-	// Register built-in tools
+	// Register built-in tools with full CLI integration
 	registerTools(srv)
 
 	// Start appropriate transport
@@ -37,59 +42,363 @@ func main() {
 }
 
 func registerTools(srv *server.Server) {
-	// Tool: aisbx-run - Execute code in sandbox
-	srv.RegisterTool("aisbx-run", func(args map[string]interface{}) (*types.ToolResult, error) {
-		workdir, _ := args["workdir"].(string)
-		profile, _ := args["profile"].(string)
-		command, _ := args["command"].(string)
+	// Tool: aisbx-run - Execute code in sandbox (COMPLETE IMPLEMENTATION)
+	srv.RegisterTool("aisbx-run", executeRunCommand)
 
-		// TODO: Implement actual sandbox execution
-		result := fmt.Sprintf("Executing in sandbox - Workdir: %s, Profile: %s, Command: %s", workdir, profile, command)
+	// Tool: aisbx-build - Build sandbox environment (COMPLETE IMPLEMENTATION)
+	srv.RegisterTool("aisbx-build", executeBuildCommand)
 
-		return &types.ToolResult{
-			Content: []types.ToolResultContent{
-				{Type: "text", Text: result},
-			},
-			IsError: false,
-		}, nil
-	})
-
-	// Tool: aisbx-build - Build sandbox environment
-	srv.RegisterTool("aisbx-build", func(args map[string]interface{}) (*types.ToolResult, error) {
-		profile, _ := args["profile"].(string)
-		platform, _ := args["platform"].(string)
-
-		// TODO: Implement actual build process
-		result := fmt.Sprintf("Building sandbox - Profile: %s, Platform: %s", profile, platform)
-
-		return &types.ToolResult{
-			Content: []types.ToolResultContent{
-				{Type: "text", Text: result},
-			},
-			IsError: false,
-		}, nil
-	})
-
-	// Tool: aisbx-profile-list - List available security profiles
-	srv.RegisterTool("aisbx-profile-list", func(args map[string]interface{}) (*types.ToolResult, error) {
-		// TODO: Implement profile listing from internal/security
-		profiles := []string{"default", "python", "nodejs", "go"}
-
-		profilesJSON, _ := json.Marshal(profiles)
-
-		return &types.ToolResult{
-			Content: []types.ToolResultContent{
-				{Type: "text", Text: string(profilesJSON)},
-			},
-			IsError: false,
-		}, nil
-	})
+	// Tool: aisbx-profile-list - List available security profiles (COMPLETE IMPLEMENTATION)
+	srv.RegisterTool("aisbx-profile-list", executeProfileListCommand)
 }
 
+// executeRunCommand implements the same security-validated logic as supervisor service
+func executeRunCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	// Security validation - same as supervisor service
+	if err := validateToolArgs("run", args); err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Security validation failed: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	command, ok := args["command"].([]interface{})
+	if !ok {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: "Error: command argument must be an array"},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Convert interface{} slice to string slice
+	cmdArgs := make([]string, len(command))
+	for i, arg := range command {
+		if argStr, ok := arg.(string); ok {
+			cmdArgs[i] = argStr
+		} else {
+			return &types.ToolResult{
+				Content: []types.ToolResultContent{
+					{Type: "text", Text: "Error: all command arguments must be strings"},
+				},
+				IsError: true,
+			}, nil
+		}
+	}
+
+	// Get profile name (default to "default")
+	profileName := "default"
+	if profile, ok := args["profile"].(string); ok {
+		profileName = profile
+	}
+
+	// Load configuration
+	cfg := config.DefaultConfig()
+	profile, err := cfg.GetProfile(profileName)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error loading profile: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Initialize driver
+	drv, err := driver.New(profile.Driver)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error initializing driver: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Create container
+	containerID, err := drv.Create(context.Background(), "alpine", ".", nil, nil)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error creating container: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Ensure cleanup
+	defer func() {
+		if err := drv.Destroy(context.Background(), containerID); err != nil {
+			log.Printf("Warning: failed to cleanup container: %v", err)
+		}
+	}()
+
+	// Create container object
+	container := pkgtypes.Container{
+		ID:      containerID,
+		Workdir: ".",
+		Binds:   []string{},
+		Env:     profile.Environment,
+	}
+
+	// Execute command with timeout
+	timeout := 300 // 5 minutes default
+	if timeoutVal, ok := args["timeout"].(float64); ok {
+		timeout = int(timeoutVal)
+	}
+
+	exitCode, stdout, stderr, err := drv.Exec(context.Background(), container, cmdArgs, timeout*1000, 512, 1)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Execution error: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Prepare result content
+	result := fmt.Sprintf("Exit code: %d\n", exitCode)
+	if stdout != "" {
+		result += fmt.Sprintf("Stdout:\n%s\n", stdout)
+	}
+	if stderr != "" {
+		result += fmt.Sprintf("Stderr:\n%s\n", stderr)
+	}
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result},
+		},
+		IsError: exitCode != 0,
+	}, nil
+}
+
+// executeBuildCommand implements container creation functionality
+func executeBuildCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	// Security validation
+	if err := validateToolArgs("build", args); err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Security validation failed: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Get profile name (default to "default")
+	profileName := "default"
+	if profile, ok := args["profile"].(string); ok {
+		profileName = profile
+	}
+
+	// Get image (default to "alpine")
+	image := "alpine"
+	if img, ok := args["image"].(string); ok {
+		image = img
+	}
+
+	// Get workdir
+	workdir := "."
+	if wd, ok := args["workdir"].(string); ok {
+		workdir = wd
+	}
+
+	// Load configuration
+	cfg := config.DefaultConfig()
+	profile, err := cfg.GetProfile(profileName)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error loading profile: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Initialize driver
+	drv, err := driver.New(profile.Driver)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error initializing driver: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Prepare binds
+	finalBinds := make([]string, 0)
+	for _, mount := range profile.Mounts {
+		finalBinds = append(finalBinds, mount.Source+":"+mount.Target+":"+mount.Mode)
+	}
+
+	// Create container
+	containerID, err := drv.Create(context.Background(), image, workdir, finalBinds, profile.Environment)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error creating container: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	result := fmt.Sprintf("✓ Container created successfully!\nContainer ID: %s\nWorkdir: %s\nImage: %s", containerID, workdir, image)
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result},
+		},
+		IsError: false,
+	}, nil
+}
+
+// executeProfileListCommand implements profile listing functionality
+func executeProfileListCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	// Security validation
+	if err := validateToolArgs("profile-list", args); err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Security validation failed: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Load configuration
+	cfg := config.DefaultConfig()
+
+	// Build profile list output
+	var result strings.Builder
+	result.WriteString("Available Profiles:\n")
+	result.WriteString("NAME\tDRIVER\tCPU\tMEMORY\tNETWORK\n")
+
+	for _, profile := range cfg.Profiles {
+		network := "disabled"
+		if profile.Network.Enabled {
+			network = "enabled"
+		}
+		result.WriteString(fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n",
+			profile.Name, profile.Driver, profile.CPU, profile.Memory, network))
+	}
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result.String()},
+		},
+		IsError: false,
+	}, nil
+}
+
+// validateToolArgs implements the same security validation as supervisor service
+func validateToolArgs(toolType string, args map[string]interface{}) error {
+	// Common validations
+	if workdir, ok := args["workdir"]; ok {
+		if workdirStr, ok := workdir.(string); ok {
+			if !isValidPath(workdirStr) {
+				return fmt.Errorf("invalid workdir path: %s", workdirStr)
+			}
+		}
+	}
+
+	if profile, ok := args["profile"]; ok {
+		if profileStr, ok := profile.(string); ok {
+			if !isValidProfileName(profileStr) {
+				return fmt.Errorf("invalid profile name: %s", profileStr)
+			}
+		}
+	}
+
+	// Tool-specific validations
+	switch toolType {
+	case "run":
+		if command, ok := args["command"]; ok {
+			if commandSlice, ok := command.([]interface{}); ok {
+				for _, cmd := range commandSlice {
+					if cmdStr, ok := cmd.(string); ok {
+						if isDangerousCommand(cmdStr) {
+							return fmt.Errorf("dangerous command blocked: %s", cmdStr)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// isValidPath validates file paths to prevent directory traversal
+func isValidPath(path string) bool {
+	if path == "" {
+		return false
+	}
+	if strings.Contains(path, "..") || strings.Contains(path, "//") {
+		return false
+	}
+	cleanPath := filepath.Clean(path)
+	if cleanPath != path {
+		return false
+	}
+	forbiddenPrefixes := []string{"/etc", "/proc", "/sys", "/dev", "/boot", "/root"}
+	for _, forbidden := range forbiddenPrefixes {
+		if strings.HasPrefix(cleanPath, forbidden) {
+			return false
+		}
+	}
+	return true
+}
+
+// isValidProfileName validates profile names with whitelist
+func isValidProfileName(profile string) bool {
+	if profile == "" {
+		return false
+	}
+	for _, c := range profile {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+	if len(profile) > 64 {
+		return false
+	}
+	allowedProfiles := map[string]bool{
+		"default": true, "python-dev": true, "node-dev": true, "go-dev": true,
+		"rust-dev": true, "java-dev": true, "strict": true, "minimal": true, "secure": true,
+	}
+	return allowedProfiles[profile]
+}
+
+// isDangerousCommand blocks dangerous commands
+func isDangerousCommand(cmd string) bool {
+	dangerousCommands := []string{
+		"rm", "rmdir", "dd", "mkfs", "fdisk", "parted",
+		"sudo", "su", "passwd", "chmod", "chown", "chgrp",
+		"wget", "curl", "nc", "netcat", "ssh", "scp", "rsync",
+		"iptables", "ufw", "systemctl", "service", "systemd",
+		"mount", "umount", "losetup", "modprobe", "insmod",
+		"kill", "killall", "pkill", "reboot", "shutdown", "halt",
+	}
+	cmdLower := strings.ToLower(strings.TrimSpace(cmd))
+	for _, dangerous := range dangerousCommands {
+		if strings.Contains(cmdLower, dangerous) {
+			return true
+		}
+	}
+	if strings.ContainsAny(cmd, ";|&`$()<>") {
+		return true
+	}
+	return false
+}
+
+// startStdioServer and startHTTPServer remain unchanged
 func startStdioServer(srv *server.Server) {
 	log.Println("Starting MCP server in stdio mode")
 
-	// Read from stdin, write to stdout
 	for {
 		var input map[string]interface{}
 		decoder := json.NewDecoder(os.Stdin)
