@@ -1,4 +1,4 @@
-﻿package supervisor
+﻿﻿﻿﻿package supervisor
 
 import (
 	"context"
@@ -22,6 +22,8 @@ import (
 	"github.com/you/ai-sandbox/internal/security/audit"
 	"github.com/you/ai-sandbox/internal/security/seccomp"
 	"github.com/you/ai-sandbox/internal/security/secrets"
+	"github.com/you/ai-sandbox/pkg/driver"
+	pkgtypes "github.com/you/ai-sandbox/pkg/types"
 )
 
 // RateLimiter interface for rate limiting functionality
@@ -489,19 +491,33 @@ func (s *Service) createSecureTool(toolType string) func(args map[string]interfa
 		if err := s.validateToolArgs(toolType, args); err != nil {
 			s.metrics.securityViolations.Inc()
 			s.auditLogger.LogSecurityViolation("", "tool_validation_failed", err.Error(), args)
-			return nil, err
+			return &types.ToolResult{
+				Content: []types.ToolResultContent{
+					{Type: "text", Text: fmt.Sprintf("Security validation failed: %v", err)},
+				},
+				IsError: true,
+			}, nil
 		}
 
 		// Log tool execution
 		s.auditLogger.LogEvent("tool_execution", "", fmt.Sprintf("Tool %s executed", toolType), args)
 
-		// Return success response (placeholder for actual implementation)
-		return &types.ToolResult{
-			Content: []types.ToolResultContent{
-				{Type: "text", Text: fmt.Sprintf("Tool %s executed successfully", toolType)},
-			},
-			IsError: false,
-		}, nil
+		// Call actual CLI implementation
+		switch toolType {
+		case "run":
+			return s.executeRunCommand(args)
+		case "build":
+			return s.executeBuildCommand(args)
+		case "profile-list":
+			return s.executeProfileListCommand(args)
+		default:
+			return &types.ToolResult{
+				Content: []types.ToolResultContent{
+					{Type: "text", Text: fmt.Sprintf("Unknown tool type: %s", toolType)},
+				},
+				IsError: true,
+			}, nil
+		}
 	}
 }
 
@@ -1187,4 +1203,225 @@ func (s *Service) handleSecurityViolations(w http.ResponseWriter, r *http.Reques
 	})
 
 	s.metrics.requestsDuration.Observe(time.Since(start).Seconds())
+}
+
+// CLI execution methods for MCP tool integration
+
+// executeRunCommand executes the run CLI command through MCP
+func (s *Service) executeRunCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	command, ok := args["command"].([]interface{})
+	if !ok {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: "Error: command argument must be an array"},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Convert interface{} slice to string slice
+	cmdArgs := make([]string, len(command))
+	for i, arg := range command {
+		if argStr, ok := arg.(string); ok {
+			cmdArgs[i] = argStr
+		} else {
+			return &types.ToolResult{
+				Content: []types.ToolResultContent{
+					{Type: "text", Text: "Error: all command arguments must be strings"},
+				},
+				IsError: true,
+			}, nil
+		}
+	}
+
+	// Get profile name (default to "default")
+	profileName := "default"
+	if profile, ok := args["profile"].(string); ok {
+		profileName = profile
+	}
+
+	// Load configuration
+	cfg := config.DefaultConfig()
+	profile, err := cfg.GetProfile(profileName)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error loading profile: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Initialize driver
+	drv, err := driver.New(profile.Driver)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error initializing driver: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Create container
+	containerID, err := drv.Create(context.Background(), "alpine", ".", nil, nil)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error creating container: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Ensure cleanup
+	defer func() {
+		if err := drv.Destroy(context.Background(), containerID); err != nil {
+			s.auditLogger.LogSecurityViolation("", "cleanup_error", fmt.Sprintf("Failed to cleanup container: %v", err), nil)
+		}
+	}()
+
+	// Create container object
+	container := pkgtypes.Container{
+		ID:      containerID,
+		Workdir: ".",
+		Binds:   []string{},
+		Env:     profile.Environment,
+	}
+
+	// Execute command with timeout
+	timeout := 300 // 5 minutes default
+	if timeoutVal, ok := args["timeout"].(float64); ok {
+		timeout = int(timeoutVal)
+	}
+
+	exitCode, stdout, stderr, err := drv.Exec(context.Background(), container, cmdArgs, timeout*1000, 512, 1)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Execution error: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Prepare result content
+	result := fmt.Sprintf("Exit code: %d\n", exitCode)
+	if stdout != "" {
+		result += fmt.Sprintf("Stdout:\n%s\n", stdout)
+	}
+	if stderr != "" {
+		result += fmt.Sprintf("Stderr:\n%s\n", stderr)
+	}
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result},
+		},
+		IsError: exitCode != 0,
+	}, nil
+}
+
+// executeBuildCommand executes the build (create) CLI command through MCP
+func (s *Service) executeBuildCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	// Get profile name (default to "default")
+	profileName := "default"
+	if profile, ok := args["profile"].(string); ok {
+		profileName = profile
+	}
+
+	// Get image (default to "alpine")
+	image := "alpine"
+	if img, ok := args["image"].(string); ok {
+		image = img
+	}
+
+	// Get workdir
+	workdir := "."
+	if wd, ok := args["workdir"].(string); ok {
+		workdir = wd
+	}
+
+	// Load configuration
+	cfg := config.DefaultConfig()
+	profile, err := cfg.GetProfile(profileName)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error loading profile: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Initialize driver
+	drv, err := driver.New(profile.Driver)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error initializing driver: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Prepare binds
+	finalBinds := make([]string, 0)
+	for _, mount := range profile.Mounts {
+		finalBinds = append(finalBinds, mount.Source+":"+mount.Target+":"+mount.Mode)
+	}
+
+	// Create container
+	containerID, err := drv.Create(context.Background(), image, workdir, finalBinds, profile.Environment)
+	if err != nil {
+		return &types.ToolResult{
+			Content: []types.ToolResultContent{
+				{Type: "text", Text: fmt.Sprintf("Error creating container: %v", err)},
+			},
+			IsError: true,
+		}, nil
+	}
+
+	// Log successful creation
+	s.auditLogger.LogEvent("container_creation", containerID, "Container created via MCP", map[string]interface{}{
+		"image":   image,
+		"workdir": workdir,
+		"profile": profileName,
+	})
+
+	result := fmt.Sprintf("✓ Container created successfully!\nContainer ID: %s\nWorkdir: %s\nImage: %s", containerID, workdir, image)
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result},
+		},
+		IsError: false,
+	}, nil
+}
+
+// executeProfileListCommand executes the profile list CLI command through MCP
+func (s *Service) executeProfileListCommand(args map[string]interface{}) (*types.ToolResult, error) {
+	// Load configuration
+	cfg := config.DefaultConfig()
+
+	// Build profile list output
+	var result strings.Builder
+	result.WriteString("Available Profiles:\n")
+	result.WriteString("NAME\tDRIVER\tCPU\tMEMORY\tNETWORK\n")
+
+	for _, profile := range cfg.Profiles {
+		network := "disabled"
+		if profile.Network.Enabled {
+			network = "enabled"
+		}
+		result.WriteString(fmt.Sprintf("%s\t%s\t%s\t%s\t%s\n",
+			profile.Name, profile.Driver, profile.CPU, profile.Memory, network))
+	}
+
+	return &types.ToolResult{
+		Content: []types.ToolResultContent{
+			{Type: "text", Text: result.String()},
+		},
+		IsError: false,
+	}, nil
 }
