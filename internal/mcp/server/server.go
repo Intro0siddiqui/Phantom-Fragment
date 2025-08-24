@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"github.com/you/ai-sandbox/internal/mcp/types"
 )
@@ -128,34 +130,218 @@ func (s *Server) validateToolCall(toolName string, args map[string]interface{}) 
 		return fmt.Errorf("unknown tool: %s", toolName)
 	}
 
-	// 2. Validate workdir path if provided
+	// 2. Validate workdir path if provided - SECURITY CRITICAL
 	if workdir, ok := args["workdir"]; ok {
-		if !isValidWorkdir(workdir.(string)) {
-			return fmt.Errorf("invalid workdir path")
+		workdirStr, ok := workdir.(string)
+		if !ok {
+			return fmt.Errorf("workdir must be a string")
+		}
+		if !isValidWorkdir(workdirStr) {
+			return fmt.Errorf("invalid workdir path: %s", workdirStr)
 		}
 	}
 
-	// 3. Validate profile if provided
+	// 3. Validate profile if provided - SECURITY CRITICAL
 	if profile, ok := args["profile"]; ok {
-		if !isValidProfile(profile.(string)) {
-			return fmt.Errorf("invalid profile")
+		profileStr, ok := profile.(string)
+		if !ok {
+			return fmt.Errorf("profile must be a string")
+		}
+		if !isValidProfile(profileStr) {
+			return fmt.Errorf("invalid profile: %s", profileStr)
+		}
+	}
+
+	// 4. Validate command arguments if provided
+	if command, ok := args["command"]; ok {
+		if err := validateCommand(command); err != nil {
+			return fmt.Errorf("invalid command: %w", err)
+		}
+	}
+
+	// 5. Validate file paths in arguments
+	for key, value := range args {
+		if strings.Contains(key, "path") || strings.Contains(key, "file") {
+			if pathStr, ok := value.(string); ok {
+				if !isValidPath(pathStr) {
+					return fmt.Errorf("invalid path in %s: %s", key, pathStr)
+				}
+			}
 		}
 	}
 
 	return nil
 }
 
-// isValidWorkdir validates that workdir is within safe boundaries
+// isValidWorkdir validates that workdir is within safe boundaries - SECURITY CRITICAL
 func isValidWorkdir(path string) bool {
-	// TODO: Implement proper path validation
-	// For now, allow any path - implement sandbox-specific validation
+	// Reject empty paths
+	if path == "" {
+		return false
+	}
+
+	// Reject paths containing directory traversal sequences
+	if strings.Contains(path, "..") {
+		return false
+	}
+
+	// Reject paths with double slashes
+	if strings.Contains(path, "//") {
+		return false
+	}
+
+	// Clean and normalize the path
+	cleanPath := filepath.Clean(path)
+
+	// Path must be the same after cleaning (no traversals)
+	if cleanPath != path {
+		return false
+	}
+
+	// Reject absolute paths to sensitive directories
+	forbiddenPrefixes := []string{
+		"/etc", "/proc", "/sys", "/dev", "/boot", "/root",
+		"/var/log", "/var/run", "/tmp", "/usr/bin", "/usr/sbin",
+		"/bin", "/sbin", "/lib", "/lib64",
+	}
+
+	for _, forbidden := range forbiddenPrefixes {
+		if strings.HasPrefix(cleanPath, forbidden) {
+			return false
+		}
+	}
+
+	// Only allow relative paths under current directory or /workspace
+	if strings.HasPrefix(cleanPath, "/") {
+		// If absolute path, only allow /workspace subdirectories
+		return strings.HasPrefix(cleanPath, "/workspace/") || cleanPath == "/workspace"
+	}
+
+	// For relative paths, ensure they don't escape current directory
+	return !strings.HasPrefix(cleanPath, "/")
+}
+
+// isValidProfile validates that profile exists and is allowed - SECURITY CRITICAL
+func isValidProfile(profile string) bool {
+	// Reject empty profiles
+	if profile == "" {
+		return false
+	}
+
+	// Only allow alphanumeric characters, hyphens, and underscores
+	for _, c := range profile {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			return false
+		}
+	}
+
+	// Enforce maximum length
+	if len(profile) > 64 {
+		return false
+	}
+
+	// Whitelist of allowed profiles
+	allowedProfiles := map[string]bool{
+		"default":    true,
+		"python-dev": true,
+		"node-dev":   true,
+		"go-dev":     true,
+		"rust-dev":   true,
+		"java-dev":   true,
+		"strict":     true,
+		"minimal":    true,
+		"secure":     true,
+	}
+
+	return allowedProfiles[profile]
+}
+
+// isValidPath validates file paths to prevent directory traversal - SECURITY CRITICAL
+func isValidPath(path string) bool {
+	// Reject empty paths
+	if path == "" {
+		return false
+	}
+
+	// Reject paths containing directory traversal sequences
+	if strings.Contains(path, "..") {
+		return false
+	}
+
+	// Reject paths with double slashes or other anomalies
+	if strings.Contains(path, "//") || strings.Contains(path, "./") {
+		return false
+	}
+
+	// Clean the path and ensure it hasn't changed
+	cleanPath := filepath.Clean(path)
+	if cleanPath != path {
+		return false
+	}
+
+	// Reject access to sensitive system directories
+	forbiddenPrefixes := []string{
+		"/etc", "/proc", "/sys", "/dev", "/boot", "/root",
+		"/var/log", "/var/run", "/usr/bin", "/usr/sbin",
+		"/bin", "/sbin", "/lib", "/lib64",
+	}
+
+	for _, forbidden := range forbiddenPrefixes {
+		if strings.HasPrefix(cleanPath, forbidden) {
+			return false
+		}
+	}
+
 	return true
 }
 
-// isValidProfile validates that profile exists and is allowed
-func isValidProfile(profile string) bool {
-	// TODO: Implement profile validation against available profiles
-	return true
+// validateCommand validates command arguments for security - SECURITY CRITICAL
+func validateCommand(command interface{}) error {
+	switch cmd := command.(type) {
+	case string:
+		return validateSingleCommand(cmd)
+	case []interface{}:
+		for i, c := range cmd {
+			if cmdStr, ok := c.(string); ok {
+				if err := validateSingleCommand(cmdStr); err != nil {
+					return fmt.Errorf("command[%d]: %w", i, err)
+				}
+			} else {
+				return fmt.Errorf("command[%d] must be a string", i)
+			}
+		}
+	default:
+		return fmt.Errorf("command must be string or array of strings")
+	}
+	return nil
+}
+
+// validateSingleCommand validates a single command string
+func validateSingleCommand(cmd string) error {
+	// Block dangerous commands
+	dangerousCommands := []string{
+		"rm", "rmdir", "dd", "mkfs", "fdisk", "parted",
+		"sudo", "su", "passwd", "chmod", "chown", "chgrp",
+		"wget", "curl", "nc", "netcat", "ssh", "scp", "rsync",
+		"iptables", "ufw", "systemctl", "service", "systemd",
+		"mount", "umount", "losetup", "modprobe", "insmod",
+		"kill", "killall", "pkill", "reboot", "shutdown", "halt",
+	}
+
+	cmdLower := strings.ToLower(strings.TrimSpace(cmd))
+
+	for _, dangerous := range dangerousCommands {
+		if strings.Contains(cmdLower, dangerous) {
+			return fmt.Errorf("dangerous command blocked: %s", dangerous)
+		}
+	}
+
+	// Block shell operators that could be used for command injection
+	if strings.ContainsAny(cmd, ";|&`$()<>") {
+		return fmt.Errorf("shell operators not allowed in commands")
+	}
+
+	return nil
 }
 
 // handleInitialize handles server initialization

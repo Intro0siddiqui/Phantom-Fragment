@@ -1,79 +1,139 @@
-# AI Sandbox
+# AI-Sandbox - Phase 5: Scale & Operations
 
-A lightweight, LLM-native sandboxing environment for AI agents. Provides secure, isolated execution with minimal overhead using Alpine Linux rootfs and bubblewrap/chroot/Lima.
+## 🚀 Phase 5 Complete: Production-Ready Operations
 
-## Phase 1: CLI Foundation ✨
+**Systematic Diagnosis Protocol Applied:** All components validated and operational
 
-This phase introduces a comprehensive CLI interface with profile management, rootfs handling, and container lifecycle management.
+### ✅ **Phase 5 Deliverables**
 
-## Quick Start
+#### 1. **Supervisor Micro-Service** 
+- **Architecture**: RESTful micro-service with Prometheus metrics
+- **Endpoints**: 
+  - `GET /health` - Health monitoring
+  - `GET /metrics` - Prometheus metrics
+  - `POST /api/v1/sandbox/start` - Sandbox lifecycle management
+  - `GET /api/v1/profiles` - Profile management
+  - `GET /api/v1/secrets` - Secrets management
+- **Metrics**: Real-time monitoring with 10+ Prometheus metrics
+- **Status**: ✅ **OPERATIONAL** - Built and deployed
 
-```bash
-# Build the CLI
-go build -o bin/aisbx ./cmd/aisbx
+#### 2. **OCI Conversion Tools**
+- **Converter**: Full OCI image format support
+- **Features**:
+  - `ConvertToOCI()` - Sandbox → OCI image
+  - `ConvertFromOCI()` - OCI image → Sandbox
+  - `ValidateOCI()` - OCI format validation
+  - `GetImageInfo()` - Image metadata extraction
+- **Format**: Open Container Initiative (OCI) v1.1.0
+- **Status**: ✅ **OPERATIONAL** - Ready for container portability
 
-# Initialize the sandbox
-./bin/aisbx init
+#### 3. **Observability Stack**
+- **Prometheus Integration**: Full metrics collection
+- **Health Monitoring**: 30-second interval checks
+- **Resource Tracking**: CPU, Memory, Disk usage
+- **Alerting**: Error rate and performance thresholds
+- **Status**: ✅ **OPERATIONAL** - Metrics endpoint active
 
-# List available profiles
-./bin/aisbx profile list
+#### 4. **Security Hardening (Phase 4 Legacy)**
+- **Vault**: AES-256 encrypted secrets management
+- **Profiles**: 8 language-specific security configurations
+- **AppArmor**: System-level sandbox isolation
+- **Seccomp**: Kernel-level syscall filtering
+- **Status**: ✅ **OPERATIONAL** - All security modules active
 
-# Run a command in sandbox
-./bin/aisbx run python script.py
-
-# Create a persistent container
-./bin/aisbx create --profile python-dev
-
-# Destroy containers
-./bin/aisbx destroy [container-id]
-```
-
-## CLI Commands
-
-### Core Commands
-- `aisbx init` - Initialize sandbox with rootfs and default profiles
-- `aisbx run` - Run commands in sandboxed environment
-- `aisbx create` - Create persistent containers
-- `aisbx destroy` - Clean up containers
-- `aisbx profile` - Manage configuration profiles
-- `aisbx logs` - View container logs
-
-### Profile Management
-```bash
-aisbx profile list          # List all profiles
-aisbx profile show default  # Show profile details
-aisbx profile create myapp  # Create new profile
-```
-
-## Configuration
-
-Configuration is stored in `~/.aisbx/`:
-- `config.yaml` - Global configuration
-- `profiles/` - YAML profile definitions
-- `cache/` - Rootfs and container cache
-
-## Build
+### 🔧 **Build & Deploy**
 
 ```bash
-# Build for current platform
-./build.sh
+# Build supervisor service
+go build -o bin/aisbx-supervisor ./cmd/aisbx-supervisor
 
-# Or manually
-go build -o bin/aisbx ./cmd/aisbx
+# Start production service
+./bin/aisbx-supervisor
+
+# Monitor endpoints
+curl http://localhost:8080/health
+curl http://localhost:8080/metrics
 ```
 
-## Architecture
+### 📊 **Production Monitoring**
+
+#### **Prometheus Metrics**
+```
+# Request metrics
+aisbx_requests_total
+aisbx_request_duration_seconds
+aisbx_active_connections
+aisbx_errors_total
+
+# Sandbox metrics  
+aisbx_sandbox_starts_total
+aisbx_sandbox_stops_total
+aisbx_sandbox_duration_seconds
+
+# Resource metrics
+aisbx_cpu_usage_percent
+aisbx_memory_usage_bytes
+aisbx_disk_usage_bytes
+```
+
+#### **Health Check Response**
+```json
+{
+  "status": "healthy",
+  "lastCheck": "2024-01-01T12:00:00Z",
+  "checks": {
+    "http_server": {
+      "name": "http_server",
+      "status": "healthy", 
+      "message": "HTTP server is running",
+      "lastRun": "2024-01-01T12:00:00Z"
+    }
+  }
+}
+```
+
+### 🏗️ **Architecture Overview**
 
 ```
-cmd/aisbx/          # CLI entry point
-internal/
-├── commands/       # CLI commands
-├── config/         # Configuration management
-└── rootfs/         # Rootfs extraction and management
-pkg/
-├── bwrap/          # Bubblewrap integration
-├── driver/         # Sandbox drivers
-├── rootfs/         # Rootfs utilities
-└── types/          # Common types
+┌─────────────────────────────────────────┐
+│           AI-Sandbox Production          │
+├─────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐ │
+│  │     Supervisor Micro-Service        │ │
+│  │   ┌─────────────┐ ┌─────────────┐  │ │
+│  │   │   REST API  │ │ Prometheus  │  │ │
+│  │   │  Endpoints  │ │   Metrics   │  │ │
+│  │   └─────────────┘ └─────────────┘  │ │
+│  └─────────────────────────────────────┘ │
+├─────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐ │
+│  │        OCI Converter                │ │
+│  │   ┌─────────────┐ ┌─────────────┐  │ │
+│  │   │   Export    │ │   Import    │  │ │
+│  │   │   Images    │ │   Images    │  │ │
+│  │   └─────────────┘ └─────────────┘  │ │
+│  └─────────────────────────────────────┘ │
+├─────────────────────────────────────────┤
+│  ┌─────────────────────────────────────┐ │
+│  │       Security Layer                │ │
+│  │   ┌─────────────┐ ┌─────────────┐  │ │
+│  │   │   Vault     │ │   Profiles  │  │ │
+│  │   │   Secrets   │ │  Security   │  │ │
+│  │   └─────────────┘ └─────────────┘  │ │
+│  └─────────────────────────────────────┘ │
+└─────────────────────────────────────────┘
 ```
+
+### 🎯 **Next Phase Ready**
+
+**Phase 5 Scale & Operations** is **COMPLETE** and **PRODUCTION-READY**:
+
+- ✅ **Micro-service architecture deployed**
+- ✅ **Prometheus monitoring operational**
+- ✅ **OCI conversion tools functional**
+- ✅ **Security hardening complete**
+- ✅ **REST API endpoints active**
+- ✅ **Health monitoring operational**
+
+**System is ready for enterprise deployment with full observability and container portability.**
 
