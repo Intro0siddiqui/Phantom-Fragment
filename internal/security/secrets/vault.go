@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/you/ai-sandbox/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
 )
 
 // SecretMetadata contains additional security metadata

@@ -12,11 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/mcp/server"
-	"github.com/you/ai-sandbox/internal/mcp/types"
-	"github.com/you/ai-sandbox/pkg/driver"
-	pkgtypes "github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/mcp/server"
+	"github.com/phantom-fragment/phantom-fragment/internal/mcp/types"
+	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
+	pkgtypes "github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 func main() {

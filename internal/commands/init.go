@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/rootfs"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/rootfs"
 )
 
 // NewInitCommand creates the init command

@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/metrics"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/metrics"
 )
 
 // Profile represents a seccomp profile

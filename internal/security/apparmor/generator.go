@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"text/template"
 
-	"github.com/you/ai-sandbox/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
 )
 
 // Profile represents an AppArmor security profile

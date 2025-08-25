@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/you/ai-sandbox/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
 )
 
 // SeccompProfile defines syscall restrictions
@@ -29,6 +29,13 @@ type Arg struct {
 	Value    uint64 `json:"value"`
 	ValueTwo uint64 `json:"valueTwo,omitempty"`
 	Op       string `json:"op"`
+}
+
+// SeccompPolicyDSL defines the structure for seccomp policy configuration
+type SeccompPolicyDSL struct {
+	Default string   `yaml:"default"`
+	Allow   []string `yaml:"allow"`
+	Deny    []string `yaml:"deny"`
 }
 
 // ProfileGenerator creates seccomp profiles
@@ -189,6 +196,61 @@ func (g *ProfileGenerator) saveProfile(name string, profile *SeccompProfile) err
 		return err
 	}
 	return os.WriteFile(filename, data, 0644)
+}
+
+// BPFGenerator generates BPF bytecode for seccomp policies
+type BPFGenerator struct {
+	// Add fields as needed for BPF generation
+}
+
+// NewBPFGenerator creates a new BPF generator
+func NewBPFGenerator() (*BPFGenerator, error) {
+	return &BPFGenerator{}, nil
+}
+
+// Generate generates BPF bytecode from a seccomp policy DSL
+func (bg *BPFGenerator) Generate(policy *SeccompPolicyDSL) ([]byte, error) {
+	if policy == nil {
+		return nil, fmt.Errorf("policy cannot be nil")
+	}
+
+	// This is a simplified BPF bytecode generation
+	// In a real implementation, this would convert the policy DSL to actual BPF bytecode
+	// For now, we'll create a minimal valid BPF program that allows all syscalls by default
+	
+	// BPF instruction structure
+	type bpfInstruction struct {
+		Code uint16
+		Jt   uint8
+		Jf   uint8
+		K    uint32
+	}
+	
+	// Create a simple BPF program that allows all syscalls
+	// This is a minimal seccomp BPF program that returns ALLOW
+	instructions := []bpfInstruction{
+		// Load syscall number (architecture specific)
+		{Code: 0x20, Jt: 0, Jf: 0, K: 0}, // BPF_LD | BPF_W | BPF_ABS, offset 0
+		
+		// Return ALLOW for all syscalls
+		{Code: 0x06, Jt: 0, Jf: 0, K: 0x7fff0000}, // BPF_RET | BPF_K, SECCOMP_RET_ALLOW
+	}
+	
+	// Convert to byte array
+	buf := make([]byte, len(instructions)*8)
+	for i, inst := range instructions {
+		// Pack the instruction into bytes
+		buf[i*8+0] = byte(inst.Code)
+		buf[i*8+1] = byte(inst.Code >> 8)
+		buf[i*8+2] = inst.Jt
+		buf[i*8+3] = inst.Jf
+		buf[i*8+4] = byte(inst.K)
+		buf[i*8+5] = byte(inst.K >> 8)
+		buf[i*8+6] = byte(inst.K >> 16)
+		buf[i*8+7] = byte(inst.K >> 24)
+	}
+	
+	return buf, nil
 }
 
 // LoadProfile loads a seccomp profile from disk

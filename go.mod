@@ -1,4 +1,4 @@
-module github.com/you/ai-sandbox
+module github.com/phantom-fragment/phantom-fragment
 
 go 1.21
 

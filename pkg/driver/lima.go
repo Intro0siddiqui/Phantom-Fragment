@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 const (

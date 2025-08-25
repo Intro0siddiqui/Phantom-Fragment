@@ -9,14 +9,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/metrics"
-	"github.com/you/ai-sandbox/internal/security/audit"
-	"github.com/you/ai-sandbox/internal/security/cgroups"
-	"github.com/you/ai-sandbox/internal/security/network"
-	"github.com/you/ai-sandbox/internal/security/seccomp"
-	"github.com/you/ai-sandbox/pkg/bwrap"
-	"github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/metrics"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/audit"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/cgroups"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/network"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/seccomp"
+	"github.com/phantom-fragment/phantom-fragment/pkg/bwrap"
+	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 type ChrootDriver struct {

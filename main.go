@@ -9,9 +9,9 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
-	"github.com/you/ai-sandbox/internal/metrics"
-	"github.com/you/ai-sandbox/pkg/driver"
-	"github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/internal/metrics"
+	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
+	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 var rootfs []byte
@@ -87,7 +87,7 @@ func (s *stdioReadWriteCloser) Close() error {
 }
 
 func main() {
-	fmt.Fprintf(os.Stderr, "Starting ai-sandbox...\n")
+	fmt.Fprintf(os.Stderr, "Starting Phantom Fragment v2.0...\n")
 
 	// Initialize metrics
 	metricsCollector = metrics.NewCollector()

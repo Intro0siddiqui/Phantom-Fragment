@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/metrics"
-	"github.com/you/ai-sandbox/internal/security/audit"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/metrics"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/audit"
 )
 
 // SyscallViolation represents a detected syscall violation

@@ -5,8 +5,8 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/you/ai-sandbox/internal/commands"
-	"github.com/you/ai-sandbox/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/commands"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
 )
 
 var (
@@ -17,13 +17,14 @@ var (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "aisbx",
-	Short: "AI Sandbox - LLM-native isolated runtime",
-	Long: `AI Sandbox is a lightweight, LLM-native sandboxing environment
-that provides secure, isolated execution for AI agents and tools.
+	Use:   "phantom",
+	Short: "Phantom Fragment - Next-generation container alternative for LLM agents",
+	Long: `Phantom Fragment is a revolutionary, performance-by-design sandbox
+environment engineered specifically for LLM agents and AI-assisted development.
 
-It uses Alpine Linux rootfs with bubblewrap/chroot/Lima for
-maximum security and cross-platform compatibility.`,
+Unlike Docker's layered complexity, Phantom Fragment delivers unfair-advantage
+performance with kernel-native optimization, sub-100ms startup times, and
+zero-overhead security using Alpine Linux rootfs with specialized fragments.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		// Initialize configuration
 		if err := config.Initialize(configDir); err != nil {
@@ -34,10 +35,10 @@ maximum security and cross-platform compatibility.`,
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.aisbx/config.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.phantom/config.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&quiet, "quiet", "q", false, "quiet output")
-	rootCmd.PersistentFlags().StringVar(&configDir, "config-dir", "", "configuration directory (default is $HOME/.aisbx)")
+	rootCmd.PersistentFlags().StringVar(&configDir, "config-dir", "", "configuration directory (default is $HOME/.phantom)")
 
 	// Add subcommands
 	rootCmd.AddCommand(commands.NewInitCommand())

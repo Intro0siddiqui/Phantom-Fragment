@@ -7,7 +7,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
-	"github.com/you/ai-sandbox/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
 )
 
 // NewProfileCommand creates the profile command

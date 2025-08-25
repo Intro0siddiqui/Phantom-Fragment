@@ -8,8 +8,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/supervisor"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/supervisor"
 )
 
 func main() {

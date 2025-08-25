@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"github.com/you/ai-sandbox/pkg/driver"
+	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
 )
 
 // NewDestroyCommand creates the destroy command

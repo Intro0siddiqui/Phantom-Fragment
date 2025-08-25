@@ -16,14 +16,14 @@ import (
 	"github.com/gorilla/mux"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/mcp/server"
-	"github.com/you/ai-sandbox/internal/mcp/types"
-	"github.com/you/ai-sandbox/internal/security/audit"
-	"github.com/you/ai-sandbox/internal/security/seccomp"
-	"github.com/you/ai-sandbox/internal/security/secrets"
-	"github.com/you/ai-sandbox/pkg/driver"
-	pkgtypes "github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/mcp/server"
+	"github.com/phantom-fragment/phantom-fragment/internal/mcp/types"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/audit"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/seccomp"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/secrets"
+	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
+	pkgtypes "github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 // RateLimiter interface for rate limiting functionality

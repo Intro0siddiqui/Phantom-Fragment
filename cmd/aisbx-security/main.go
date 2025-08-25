@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/you/ai-sandbox/internal/config"
-	"github.com/you/ai-sandbox/internal/security/secrets"
+	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/phantom-fragment/phantom-fragment/internal/security/secrets"
 )
 
 func main() {

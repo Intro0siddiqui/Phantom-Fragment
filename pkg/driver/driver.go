@@ -3,7 +3,7 @@ package driver
 import (
 	"context"
 
-	"github.com/you/ai-sandbox/pkg/types"
+	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 // SandboxDriver is the interface for creating, executing, and destroying sandboxed environments.
