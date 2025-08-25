@@ -2,9 +2,11 @@
 
 **Phantom Fragment** is a revolutionary, performance-by-design sandbox environment engineered specifically for LLM agents and AI-assisted development. Unlike normal layered complexity, Phantom Fragment delivers **quite-advantage performance** with kernel-native optimization, sub-100ms startup times, and zero-overhead security.
 
+This document provides a comprehensive overview of Phantom Fragment, from basic installation and usage to advanced topics like performance tuning, security, and testing.
+
 ## 🚀 Performance Highlights
 
-Phantom Fragment is designed to be significantly faster and lighter than traditional container solutions.
+Phantom Fragment is designed from the ground up to be significantly faster and lighter than traditional containerization solutions like Docker. This is achieved through a combination of kernel-native features and an architecture optimized for the common workflows of AI agents.
 
 | Metric | Phantom Fragment | Docker | Improvement |
 |------------------|------------------|--------|-------------|
@@ -21,9 +23,13 @@ Phantom Fragment is designed to be significantly faster and lighter than traditi
 ### **Quick Install (Recommended)**
 
 ```bash
-# Download latest release
+# Download the latest release for Linux
 wget https://github.com/phantom-fragment/releases/latest/phantom-fragment-linux.tar.gz
+
+# Extract the archive
 tar xzf phantom-fragment-linux.tar.gz
+
+# Navigate into the project directory
 cd phantom-fragment
 ```
 
@@ -31,69 +37,84 @@ cd phantom-fragment
 
 **ALL COMMANDS MUST BE RUN FROM THE PROJECT DIRECTORY.**
 
-Phantom Fragment uses an optimized directory structure for performance. Always navigate into the `phantom-fragment` directory before running any commands.
+Phantom Fragment is designed with an optimized directory structure. To ensure all components work correctly, always run commands from within the `phantom-fragment` directory.
 
 ```powershell
-# ✅ CORRECT:
-cd phantom-fragment
-./bin/phantom --help
+# ❌ WRONG (running from a parent directory):
+PS C:\path\to\parent> phantom-fragment\bin\phantom.exe --help
+# This will likely fail to find necessary resources.
+
+# ✅ CORRECT (navigate to the project directory first):
+PS C:\path\to\parent> cd phantom-fragment
+PS C:\path\to\parent\phantom-fragment> .\bin\phantom.exe --help
+# This will work as expected.
 ```
 
 ## 🚀 Quick Start
 
-This example runs a simple Python script inside a Phantom Fragment sandbox.
+This example demonstrates how to run a simple Python script inside a secure Phantom Fragment sandbox.
 
 ```bash
 # Navigate to the project directory
 cd phantom-fragment
 
-# Benchmark startup time (target: <100ms)
+# Execute a one-line Python script and measure the startup time
 time ./bin/phantom run --profile python-dev python -c "import sys; print(f'Python {sys.version} in {sys.platform} fragment')"
 
-# Compare with Docker (for reference)
+# For comparison, run the same command with Docker
 time docker run --rm python:3.11-alpine python -c "import sys; print(f'Python {sys.version} in {sys.platform} container')"
 ```
-You should see that Phantom Fragment starts 4-6x faster than Docker.
+You should observe that Phantom Fragment completes the task in a fraction of the time it takes Docker, typically 4-6 times faster.
 
 ## 💻 Usage
 
-### **For Human Developers**
+### **For Human Developers (CLI)**
 
-The command-line interface (CLI) is designed for a fast and efficient development workflow.
+The `phantom` CLI is your primary tool for interacting with fragments. It's designed to be fast, intuitive, and powerful.
 
 ```bash
-# Lightning-fast Python execution with security
-./bin/phantom run --profile python-dev --mode sandbox python script.py
+# Run a command in a sandboxed environment with a specific profile
+# The 'python-dev' profile provides a secure environment for Python development
+./bin/phantom run --profile python-dev python your_script.py
 
-# Create a persistent workspace
-./bin/phantom create --name ai-project --profile go-dev --mode direct
+# Create a persistent workspace for a project
+# This creates a 'zygote' (a pre-warmed instance) for ultra-fast access
+./bin/phantom create --name my-ai-project --profile go-dev --mode direct
 
-# List available performance-tuned profiles
+# List all available security and performance profiles
 ./bin/phantom profile list --benchmark
 
-# Monitor fragment performance
-./bin/phantom monitor ai-project --metrics
+# Monitor the real-time performance of a running fragment
+./bin/phantom monitor my-ai-project --metrics
 
-# Cleanly shut down a workspace
-./bin/phantom destroy ai-project
+# Properly shut down and clean up a fragment and its resources
+./bin/phantom destroy my-ai-project
 ```
 
-### **For LLM Agents (Claude, GPT, Gemini, etc.)**
+### **For LLM Agents (MCP Integration)**
 
-Integrate with AI assistants using the Model Context Protocol (MCP) for sub-100ms response times.
+Phantom Fragment can be integrated with LLM agents like Claude, GPT, or Gemini via the Model Context Protocol (MCP), providing them with a secure, high-performance execution environment.
 
-**1. Start the High-Performance MCP Server**
+**1. Start the MCP Server**
+
+The MCP server acts as a bridge between the LLM agent and Phantom Fragment.
+
 ```bash
 # Navigate to the project directory
 cd phantom-fragment
 
-# Start MCP server with zygote pre-warming for the fastest response
+# Start the MCP server in stdio mode with pre-warmed zygotes for the fastest response
+# This is ideal for desktop agents or tools that can communicate over stdin/stdout
 ./bin/phantom-mcp --transport stdio --mode zygote --profiles python,node,go
+
+# Alternatively, start an HTTP server for web-based LLMs or services
+# This uses io_uring for high-performance networking on Linux
+./bin/phantom-mcp --transport http --port 8080 --io-mode uring
 ```
 
-**2. Configure your LLM Agent**
+**2. Configure Your LLM Agent**
 
-Add the MCP server to your agent's configuration. Here is an example for Claude Desktop:
+You'll need to configure your agent to use the MCP server. Here is an example for a hypothetical desktop agent:
 
 ```json
 {
@@ -109,19 +130,63 @@ Add the MCP server to your agent's configuration. Here is an example for Claude 
   }
 }
 ```
+Once configured, your LLM agent can execute code, manage files, and perform other tasks within the secure confines of Phantom Fragment, with near-native performance.
 
-Once configured, your LLM agent gains access to high-performance, secure code execution.
+## 🧪 Testing
+
+This project includes several scripts to test functionality, performance, and integrations.
+
+### **Performance & Integration Tests**
+
+These scripts run a comprehensive suite of tests to benchmark performance and validate key features.
+
+-   `test-phantom-performance.sh` (for Linux/macOS)
+-   `test-phantom-performance.ps1` (for Windows)
+
+**Usage:**
+```bash
+# On Linux or macOS
+./test-phantom-performance.sh
+
+# On Windows (you may need to adjust your execution policy)
+powershell -ExecutionPolicy Bypass -File ./test-phantom-performance.ps1
+```
+These tests will benchmark core operations like startup time, I/O throughput, and memory usage, and compare them against Docker if it is installed.
+
+### **MCP Protocol Tests**
+
+This script specifically tests the Model Context Protocol (MCP) server to ensure it's functioning correctly and measures its responsiveness.
+
+-   `test-mcp-basic.sh`
+
+**Usage:**
+```bash
+# This script tests the basic functionality of the MCP server
+./test-mcp-basic.sh
+```
+
+### **Fragment-Specific Benchmarks**
+
+This script allows you to run performance tests on specific fragments to measure their individual performance.
+
+-   `test-fragments-benchmark.sh`
+
+**Usage:**
+```bash
+# Run benchmarks on all fragments with 100 iterations each
+./test-fragments-benchmark.sh --fragment all --iterations 100
+
+# Run a benchmark specifically on the 'zygote' fragment
+./test-fragments-benchmark.sh --fragment zygote
+```
 
 ## 🛠️ How it Works
 
+Phantom Fragment avoids the overhead of traditional virtualization and containerization by using a set of specialized, high-performance components called "fragments."
+
 ### **Fragment Architecture**
 
-Phantom Fragment is built from specialized "fragments" that work in harmony to deliver performance and security. This approach avoids the overhead of traditional containerization.
-
--   **Zygote Spawning**: Pre-warmed processes enable sub-100ms startup times.
--   **Direct Rootfs**: A layer-free filesystem provides faster I/O.
--   **Kernel-Native Security**: BPF, seccomp, and namespaces are used for zero-overhead security.
--   **Self-Contained**: The tool is a single binary with an embedded Alpine rootfs.
+Instead of a monolithic daemon, Phantom Fragment is composed of independent yet cooperative fragments, each optimized for a specific task.
 
 ```mermaid
 graph TB
@@ -153,36 +218,56 @@ graph TB
     MODE --> FRAG
 ```
 
-### **Security-by-Design**
+**Key Advantages over Docker:**
 
-Phantom Fragment provides zero-overhead security through kernel-native enforcement, using technologies like:
+-   **Zygote Spawning**: We use pre-warmed process templates (`clone3()`) instead of starting a new container from scratch every time. This is a primary reason for our sub-100ms startup times.
+-   **Direct Rootfs**: We use a simple, direct filesystem layout, avoiding the performance penalty of Docker's layered filesystem (like overlay2).
+-   **Kernel-Native Integration**: We leverage advanced Linux kernel features like BPF, seccomp, and io_uring directly for maximum performance and security.
+-   **Self-Contained Binary**: The entire system is distributed as a single, ~50MB binary with an embedded Alpine Linux rootfs, making it portable and easy to deploy.
 
--   **User Namespaces**: Unprivileged containers.
--   **Seccomp Profiles**: System call filtering tailored to each language.
--   **Read-only Filesystem**: Immutable base environment.
--   **Network Isolation**: Optional network access control.
+## 🔒 Security-by-Design
+
+Security is not an afterthought in Phantom Fragment; it is a core design principle with zero performance overhead.
+
+### **Isolation Technologies**
+
+We use a multi-layered security approach to isolate sandboxed environments:
+
+-   **User Namespaces**: Ensures that processes inside the sandbox run as unprivileged users on the host system.
+-   **Seccomp Profiles**: We use strict system call filtering to restrict what a sandboxed process can do. Profiles are tailored for each language (e.g., Python, Node.js) to minimize the attack surface.
+-   **Capabilities Control**: We drop all unnecessary Linux capabilities, following the principle of least privilege.
+-   **Read-only Filesystem**: The base rootfs is immutable, preventing any modification of the core environment.
+-   **Network Isolation**: Network access is disabled by default and can be enabled with strict eBPF/XDP-based rules.
+-   **Resource Limits**: CPU, memory, and disk usage are constrained using cgroups.
+
+### **Security Profiles**
+
+Phantom Fragment comes with pre-configured security profiles for common use cases. You can see the full list by running `./bin/phantom profile list`.
+
+| Profile | Language | Network | Filesystem | Use Case |
+|---------|----------|---------|------------|-----------|
+| `python-dev` | Python | Limited | Restricted | Secure Python development |
+| `node-dev` | Node.js | Limited | Restricted | Secure JavaScript/Node development |
+| `strict` | Any | Disabled | Read-only | For maximum security applications |
 
 ## 🎯 Use Cases
 
--   **AI Agent Development**: Safely execute and test code generated by LLMs.
--   **Educational Environments**: Provide secure and isolated environments for student code.
--   **CI/CD Integration**: Run tests in clean, fast, and isolated environments.
--   **Research & Experimentation**: Analyze code or test new tools without system contamination.
+-   **AI Agent Development**: Provide a safe and fast execution environment for code generated by LLMs.
+-   **Educational Environments**: Allow students to run code in a secure, isolated sandbox.
+-   **CI/CD Integration**: Run build and test jobs in clean, fast, and disposable environments.
+-   **Malware Analysis**: Safely analyze suspicious code without risking system integrity.
 
 ## 🔧 Building from Source
 
-### **Prerequisites**
-- Go 1.21+
-- Git
-- PowerShell (Windows) or Bash (Linux/macOS)
-
-### **Build Steps**
+If you want to build Phantom Fragment from source, you will need Go 1.21+ and Git.
 
 ```bash
 # Navigate to the project directory
 cd phantom-fragment
 
 # Build all components with performance optimizations
+# The -ldflags="-s -w" strips debug information, making the binary smaller
+# The -tags="netgo,osusergo,static" creates a statically linked binary
 go build -ldflags="-s -w" -tags="netgo,osusergo,static" -o bin/phantom ./cmd/phantom
 go build -ldflags="-s -w" -tags="netgo,osusergo,static" -o bin/phantom-mcp ./cmd/phantom-mcp
 go build -ldflags="-s -w" -tags="netgo,osusergo,static" -o bin/phantom-supervisor ./cmd/phantom-supervisor
@@ -190,56 +275,74 @@ go build -ldflags="-s -w" -tags="netgo,osusergo,static" -o bin/phantom-superviso
 
 ## ⚙️ Configuration
 
-You can customize profiles and settings in a `config.yaml` file.
+You can customize Phantom Fragment's behavior through a `config.yaml` file or environment variables.
 
 ### **Profile Configuration Example**
+
+Here is an example of how to define a custom profile in your `config.yaml`:
 
 ```yaml
 profiles:
   my-custom-profile:
     name: "my-custom-profile"
-    driver: "bwrap"
-    cpu: "1"
-    memory: "512m"
+    driver: "bwrap"  # The execution driver to use (Bubblewrap on Linux)
+    cpu: "1"         # CPU core limit
+    memory: "512m"   # Memory limit
     network:
-      enabled: false
+      enabled: false # Disable network access for this profile
     mounts:
-      - source: "./workspace"
-        target: "/workspace"
-        mode: "rw"
+      - source: "./workspace" # Mount the local './workspace' directory...
+        target: "/workspace"  # ...to '/workspace' inside the sandbox
+        mode: "rw"            # with read-write permissions
 ```
 
 ### **Environment Variables**
 
 ```bash
-# Configuration file location
-PHANTOM_CONFIG_PATH=/path/to/config.yaml
+# Set the path to your configuration file
+export PHANTOM_CONFIG_PATH=/path/to/your/config.yaml
 
-# Default security profile
-PHANTOM_DEFAULT_PROFILE=python-dev
+# Set the default security profile to use
+export PHANTOM_DEFAULT_PROFILE=my-custom-profile
 
-# Enable debug logging
-PHANTOM_DEBUG=true
+# Enable verbose debug logging
+export PHANTOM_DEBUG=true
 ```
 
 ## 🔍 Troubleshooting
 
 ### **"Command Not Found" Errors**
--   **Cause**: Running commands from outside the `phantom-fragment` project directory.
--   **Solution**: Navigate to the `phantom-fragment` directory before running commands.
 
-### **Permission Errors**
--   **Cause**: Shell execution policies on Windows.
--   **Solution**: Run PowerShell as an administrator or use `powershell -ExecutionPolicy Bypass -File ./script.ps1`.
+-   **Error Message**: `bash: ./bin/phantom: No such file or directory` or `The term '.\bin\phantom.exe' is not recognized...`
+-   **Cause**: You are likely in the wrong directory.
+-   **Solution**: Make sure you have navigated into the `phantom-fragment` project directory before running any commands.
 
-### **Getting Help**
+### **Go Module Errors**
+
+-   **Error Message**: `go: go.mod file not found in current directory`
+-   **Cause**: You are trying to run a `go build` command from outside the project directory.
+-   **Solution**: Navigate to the `phantom-fragment` directory where the `go.mod` file is located.
+
+### **Permission Errors on Windows**
+
+-   **Error Message**: `...cannot be loaded because running scripts is disabled on this system.`
+-   **Cause**: PowerShell's execution policy is preventing the test scripts from running.
+-   **Solution**: You can bypass the policy for a single command by running PowerShell as an administrator or using the `-ExecutionPolicy Bypass` flag:
+    ```powershell
+    powershell -ExecutionPolicy Bypass -File .\test-phantom-performance.ps1
+    ```
+
+### **Getting Help from the CLI**
+
+If you need more information about a command, you can use the `--help` flag.
+
 ```bash
-# General help
+# Get help for the main command
 ./bin/phantom --help
 
-# Help for a specific command
+# Get help for a specific subcommand, like 'run'
 ./bin/phantom run --help
 
-# List available profiles
-./bin/phantom profile list
+# Get help for the MCP server
+./bin/phantom-mcp --help
 ```
