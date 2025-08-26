@@ -1,0 +1,20 @@
+# Build outputs and binaries
+bin/
+*.exe
+*.log
+
+# Specific binaries
+/aisbx
+/aisbx.exe
+/aisbx-mcp
+/aisbx-mcp.exe
+/aisbx-supervisor
+/aisbx-supervisor.exe
+
+# Distributions
+build/
+dist/
+
+# OS junk
+.DS_Store
+Thumbs.db
