@@ -2,16 +2,15 @@ package oci
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
 	"github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -74,8 +73,10 @@ func (c *Converter) ConvertToOCI(sandboxID string) error {
 
 	// Create config
 	config := v1.Image{
-		Architecture: "amd64",
-		OS:           "linux",
+		Platform: v1.Platform{
+			Architecture: "amd64",
+			OS:           "linux",
+		},
 		Config: v1.ImageConfig{
 			Env: []string{
 				"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
@@ -85,13 +86,13 @@ func (c *Converter) ConvertToOCI(sandboxID string) error {
 		},
 		RootFS: v1.RootFS{
 			Type:    "layers",
-			DiffIDs: []v1.Hash{{Algorithm: "sha256", Hex: "abcdef1234567890"}},
+			DiffIDs: []digest.Digest{"sha256:abcdef1234567890"},
 		},
 		History: []v1.History{
 			{
-				Created:   time.Now(),
-				CreatedBy: "ai-sandbox",
-				Comment:   "Generated from sandbox environment",
+				Created:    func() *time.Time { t := time.Now(); return &t }(),
+				CreatedBy:  "ai-sandbox",
+				Comment:    "Generated from sandbox environment",
 			},
 		},
 	}

@@ -5,7 +5,6 @@ package io
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 

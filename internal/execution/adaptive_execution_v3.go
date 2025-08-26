@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-
-	"github.com/phantom-fragment/phantom-fragment/internal/fragments"
-	"github.com/phantom-fragment/phantom-fragment/internal/security"
-	"github.com/phantom-fragment/phantom-fragment/internal/monitoring"
 )
 
 // Adaptive Execution Engine V3 with intelligent mode switching

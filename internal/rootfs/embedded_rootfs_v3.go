@@ -3,18 +3,13 @@ package rootfs
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 
-	"golang.org/x/sys/unix"
 	"github.com/phantom-fragment/phantom-fragment/internal/storage"
-	"github.com/phantom-fragment/phantom-fragment/internal/compression"
 )
 
 // Embedded RootFS Management System V3 with COW and advanced compression

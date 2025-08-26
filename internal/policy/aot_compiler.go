@@ -1,7 +1,6 @@
 package policy
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -216,7 +215,13 @@ func (apc *AOTPolicyCompiler) CompilePolicy(yamlContent string) (*CompiledPolicy
 
 	// Generate seccomp BPF
 	if optimized.Security.Seccomp.Default != "" {
-		compiled.SeccompBPF, err = apc.seccompGenerator.Generate(&optimized.Security.Seccomp)
+		// Convert policy DSL to seccomp package type
+		seccompPolicy := &seccomp.SeccompPolicyDSL{
+			Default: optimized.Security.Seccomp.Default,
+			Allow:   optimized.Security.Seccomp.Allow,
+			Deny:    optimized.Security.Seccomp.Deny,
+		}
+		compiled.SeccompBPF, err = apc.seccompGenerator.Generate(seccompPolicy)
 		if err != nil {
 			return nil, fmt.Errorf("seccomp BPF generation failed: %w", err)
 		}
@@ -385,8 +390,6 @@ func (apc *AOTPolicyCompiler) saveWasmPolicy(policy *WasmPolicy, path string) er
 type BPFLSMGenerator struct{}
 type CgroupConfigGenerator struct{}
 type WasmPolicyGenerator struct{}
-type PolicyOptimizer struct{}
-type PolicyValidator struct{}
 type PolicyCacheManager struct{}
 type CgroupConfig struct{}
 type WasmPolicy struct{}
@@ -395,8 +398,6 @@ type OptimizerStats struct{}
 func NewBPFLSMGenerator() *BPFLSMGenerator { return &BPFLSMGenerator{} }
 func NewCgroupConfigGenerator() *CgroupConfigGenerator { return &CgroupConfigGenerator{} }
 func NewWasmPolicyGenerator() *WasmPolicyGenerator { return &WasmPolicyGenerator{} }
-func NewPolicyOptimizer(level int) *PolicyOptimizer { return &PolicyOptimizer{} }
-func NewPolicyValidator() *PolicyValidator { return &PolicyValidator{} }
 func NewPolicyCacheManager(dir string) *PolicyCacheManager { return &PolicyCacheManager{} }
 
 // Placeholder methods

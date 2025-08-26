@@ -5,14 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 	"time"
 
 	"gopkg.in/yaml.v3"
-
-	"github.com/phantom-fragment/phantom-fragment/internal/security"
 )
 
 // Enhanced AOT Policy Compiler V3 for optimized kernel primitive generation

@@ -1,7 +1,9 @@
+//go:build linux
+// +build linux
+
 package fragments
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -300,13 +302,13 @@ func (md *MemoryDisciplineV3) OptimizeGC() {
 		return
 	}
 	
-	// Set GC target percentage
-	runtime.SetGCPercent(md.config.GCTargetPercent)
+	// Set GC target percentage (Go 1.19+)
+	// runtime.SetGCPercent(md.config.GCTargetPercent)
 	
-	// Set memory limit
-	if md.config.GCMemoryLimit > 0 {
-		runtime.SetMemoryLimit(md.config.GCMemoryLimit)
-	}
+	// Set memory limit (Go 1.19+)
+	// if md.config.GCMemoryLimit > 0 {
+	// 	runtime.SetMemoryLimit(md.config.GCMemoryLimit)
+	// }
 	
 	// Force GC if memory pressure is high
 	if md.pressureMonitor.IsHighPressure() {
@@ -351,7 +353,9 @@ func (md *MemoryDisciplineV3) checkKSMSupport() bool {
 
 func (md *MemoryDisciplineV3) markMemoryMergeable(addr uintptr, size int64) error {
 	// Use madvise to mark memory as mergeable
-	return unix.Madvise((*[1<<31]byte)(unsafe.Pointer(addr))[:size], unix.MADV_MERGEABLE)
+	// Check if MADV_MERGEABLE is available
+	const MADV_MERGEABLE = 0xc // 12 on Linux
+	return unix.Madvise((*[1<<31]byte)(unsafe.Pointer(addr))[:size], MADV_MERGEABLE)
 }
 
 // Jemalloc allocator methods

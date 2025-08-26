@@ -11,8 +11,6 @@ import (
 	"sort"
 	"sync"
 	"time"
-
-	"github.com/phantom-fragment/phantom-fragment/internal/compression"
 )
 
 // Content-Addressed Storage System V3 with Merkle Tree optimization

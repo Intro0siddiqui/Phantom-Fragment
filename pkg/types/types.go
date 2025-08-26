@@ -19,6 +19,14 @@ type Container struct {
 	WasmInstance interface{} // Will be WasmContainer in the fragments package
 }
 
+// Destroy performs best-effort cleanup of the container's resources.
+// In this minimal implementation, it is a no-op to avoid coupling the types
+// package to driver or platform specifics. Higher layers should perform the
+// actual teardown and can still call this safely.
+func (c *Container) Destroy() error {
+    return nil
+}
+
 // Execution modes for containers
 type ExecutionMode string
 

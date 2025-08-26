@@ -110,7 +110,7 @@ func main() {
 }
 
 func printBanner() {
-	fmt.Println(`
+	fmt.Print(`
 ┌─────────────────────────────────────────────────────────────┐
 │                 Phantom Fragment V3                        │
 │            Performance Benchmark Suite                     │

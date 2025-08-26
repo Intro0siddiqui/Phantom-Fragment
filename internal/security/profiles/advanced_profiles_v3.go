@@ -3,6 +3,7 @@ package profiles
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -17,8 +18,8 @@ type AdvancedSecurityProfilesV3 struct {
 	profileCache    *ProfileCache
 	
 	// Capability management
-	capManager      *capabilities.CapabilityManager
-	capEnforcer     *capabilities.CapabilityEnforcer
+	capManager      *capabilities.Manager
+	capEnforcer     *capabilities.Dropper
 	
 	// Runtime enforcement
 	enforcement     *RuntimeEnforcement
@@ -162,11 +163,9 @@ func NewAdvancedSecurityProfilesV3(config *ProfileConfig) (*AdvancedSecurityProf
 	}
 
 	// Initialize components
-	var err error
-	
-	// Initialize capability manager and enforcer
-	asp.capManager = capabilities.NewCapabilityManager()
-	asp.capEnforcer = capabilities.NewCapabilityEnforcer()
+	// Initialize capability manager and enforcer (cross-platform no-ops)
+	asp.capManager = capabilities.NewManager(nil)
+	asp.capEnforcer = capabilities.NewDropper()
 	
 	// Initialize other components
 	asp.profileCache = NewProfileCache(config.CacheSize, config.CacheTTL)

@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package benchmarks
 
 import (
@@ -11,6 +14,7 @@ import (
 
 	"github.com/phantom-fragment/phantom-fragment/internal/fragments"
 	"github.com/phantom-fragment/phantom-fragment/internal/security"
+	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
 // Enhanced Performance Benchmarking Suite V3
@@ -236,8 +240,6 @@ func NewPhantomFragmentBenchmarkV3(config *BenchmarkV3Config) (*PhantomFragmentB
 	// Initialize Zygote Spawner V3
 	zygoteConfig := &fragments.ZygoteConfig{
 		DefaultPoolSize: 5,
-		EnableClone3: true,
-		EnablePrewarmMounts: true,
 	}
 	benchmark.zygoteSpawner, err = fragments.NewZygoteSpawnerV3(zygoteConfig)
 	if err != nil {
@@ -377,9 +379,9 @@ func (b *PhantomFragmentBenchmarkV3) runZygoteBenchmarksV3(ctx context.Context) 
 		start := time.Now()
 		
 		// Use enhanced zygote spawning
-		container, err := b.zygoteSpawner.SpawnFromZygote(ctx, "python-ai", &fragments.SpawnRequest{
-			Profile: "python-ai",
-			Mode:    "enhanced",
+		container, err := b.zygoteSpawner.SpawnFromPool(ctx, "python-ai", &types.SpawnRequest{
+			Profile:  "python-ai",
+			PoolType: types.PoolTypeNamespace,
 		})
 		if err == nil {
 			latency := time.Since(start)
