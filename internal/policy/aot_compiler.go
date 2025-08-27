@@ -24,9 +24,9 @@ type AOTPolicyCompiler struct {
 	wasmGenerator     *WasmPolicyGenerator
 
 	// Optimization and caching
-	optimizer     *PolicyOptimizer
-	cacheManager  *PolicyCacheManager
-	validator     *PolicyValidator
+	optimizer    *PolicyOptimizer
+	cacheManager *PolicyCacheManager
+	validator    *PolicyValidator
 
 	// Configuration
 	config *CompilerConfig
@@ -34,22 +34,22 @@ type AOTPolicyCompiler struct {
 
 // Policy DSL structure matching the YAML format
 type PolicyDSL struct {
-	Profile     string                 `yaml:"profile"`
-	Mode        string                 `yaml:"mode"`
-	Runtime     string                 `yaml:"runtime"`
-	Security    SecurityPolicyDSL      `yaml:"security"`
-	Performance PerformancePolicyDSL   `yaml:"performance"`
-	Resources   ResourcePolicyDSL      `yaml:"resources"`
-	Network     NetworkPolicyDSL       `yaml:"network"`
-	Adaptive    AdaptivePolicyDSL      `yaml:"adaptive"`
+	Profile     string               `yaml:"profile"`
+	Mode        string               `yaml:"mode"`
+	Runtime     string               `yaml:"runtime"`
+	Security    SecurityPolicyDSL    `yaml:"security"`
+	Performance PerformancePolicyDSL `yaml:"performance"`
+	Resources   ResourcePolicyDSL    `yaml:"resources"`
+	Network     NetworkPolicyDSL     `yaml:"network"`
+	Adaptive    AdaptivePolicyDSL    `yaml:"adaptive"`
 }
 
 type SecurityPolicyDSL struct {
-	Level       string           `yaml:"level"`
-	Capabilities []string        `yaml:"capabilities"`
-	Seccomp     SeccompPolicyDSL `yaml:"seccomp"`
-	Landlock    LandlockPolicyDSL `yaml:"landlock"`
-	BPFLSM      BPFLSMPolicyDSL  `yaml:"bpf_lsm"`
+	Level        string            `yaml:"level"`
+	Capabilities []string          `yaml:"capabilities"`
+	Seccomp      SeccompPolicyDSL  `yaml:"seccomp"`
+	Landlock     LandlockPolicyDSL `yaml:"landlock"`
+	BPFLSM       BPFLSMPolicyDSL   `yaml:"bpf_lsm"`
 }
 
 type SeccompPolicyDSL struct {
@@ -59,8 +59,8 @@ type SeccompPolicyDSL struct {
 }
 
 type LandlockPolicyDSL struct {
-	Enabled bool                   `yaml:"enabled"`
-	Paths   []LandlockPathRuleDSL  `yaml:"paths"`
+	Enabled bool                  `yaml:"enabled"`
+	Paths   []LandlockPathRuleDSL `yaml:"paths"`
 }
 
 type LandlockPathRuleDSL struct {
@@ -97,8 +97,8 @@ type NetworkPolicyDSL struct {
 }
 
 type AdaptivePolicyDSL struct {
-	AutoUpgrade   string              `yaml:"auto_upgrade"`
-	AutoDowngrade string              `yaml:"auto_downgrade"`
+	AutoUpgrade   string               `yaml:"auto_upgrade"`
+	AutoDowngrade string               `yaml:"auto_downgrade"`
 	Triggers      []AdaptiveTriggerDSL `yaml:"triggers"`
 }
 
@@ -126,22 +126,22 @@ type CompiledPolicy struct {
 
 // Compiler configuration
 type CompilerConfig struct {
-	CacheDir           string
-	MaxCompilationTime time.Duration
-	OptimizationLevel  int
+	CacheDir            string
+	MaxCompilationTime  time.Duration
+	OptimizationLevel   int
 	TargetKernelVersion string
-	EnableCrossCompile bool
+	EnableCrossCompile  bool
 }
 
 // NewAOTPolicyCompiler creates a new policy compiler
 func NewAOTPolicyCompiler(config *CompilerConfig) (*AOTPolicyCompiler, error) {
 	if config == nil {
 		config = &CompilerConfig{
-			CacheDir:           "/tmp/phantom-fragment/policy-cache",
-			MaxCompilationTime: 50 * time.Millisecond,
-			OptimizationLevel:  2,
+			CacheDir:            "/tmp/phantom-fragment/policy-cache",
+			MaxCompilationTime:  50 * time.Millisecond,
+			OptimizationLevel:   2,
 			TargetKernelVersion: "6.11",
-			EnableCrossCompile: true,
+			EnableCrossCompile:  true,
 		}
 	}
 
@@ -268,7 +268,7 @@ func (apc *AOTPolicyCompiler) CompilePolicy(yamlContent string) (*CompiledPolicy
 	// Phase 4: Validate compilation time
 	compiled.CompilationTime = time.Since(start)
 	if compiled.CompilationTime > apc.config.MaxCompilationTime {
-		return nil, fmt.Errorf("compilation too slow: %v (target: <%v)", 
+		return nil, fmt.Errorf("compilation too slow: %v (target: <%v)",
 			compiled.CompilationTime, apc.config.MaxCompilationTime)
 	}
 
@@ -368,19 +368,19 @@ func (apc *AOTPolicyCompiler) convertLandlockAccess(access string) landlock.Acce
 	}
 }
 
-func (apc *AOTPolicyCompiler) saveLandlockRules(rules *landlock.CompiledRules, path string) error {
+func (apc *AOTPolicyCompiler) saveLandlockRules(_ *landlock.CompiledRules, _ string) error {
 	// Serialize landlock rules to binary format
 	// Implementation would depend on the landlock.CompiledRules structure
 	return nil
 }
 
-func (apc *AOTPolicyCompiler) saveCgroupConfig(config *CgroupConfig, path string) error {
+func (apc *AOTPolicyCompiler) saveCgroupConfig(_ *CgroupConfig, _ string) error {
 	// Serialize cgroup config to JSON
 	// Implementation would marshal the config to JSON
 	return nil
 }
 
-func (apc *AOTPolicyCompiler) saveWasmPolicy(policy *WasmPolicy, path string) error {
+func (apc *AOTPolicyCompiler) saveWasmPolicy(_ *WasmPolicy, _ string) error {
 	// Serialize Wasm policy to JSON
 	// Implementation would marshal the policy to JSON
 	return nil
@@ -395,9 +395,9 @@ type CgroupConfig struct{}
 type WasmPolicy struct{}
 type OptimizerStats struct{}
 
-func NewBPFLSMGenerator() *BPFLSMGenerator { return &BPFLSMGenerator{} }
-func NewCgroupConfigGenerator() *CgroupConfigGenerator { return &CgroupConfigGenerator{} }
-func NewWasmPolicyGenerator() *WasmPolicyGenerator { return &WasmPolicyGenerator{} }
+func NewBPFLSMGenerator() *BPFLSMGenerator                 { return &BPFLSMGenerator{} }
+func NewCgroupConfigGenerator() *CgroupConfigGenerator     { return &CgroupConfigGenerator{} }
+func NewWasmPolicyGenerator() *WasmPolicyGenerator         { return &WasmPolicyGenerator{} }
 func NewPolicyCacheManager(dir string) *PolicyCacheManager { return &PolicyCacheManager{} }
 
 // Placeholder methods

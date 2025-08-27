@@ -16,64 +16,63 @@ import (
 // Content-Addressed Storage System V3 with Merkle Tree optimization
 type ContentAddressedStorageV3 struct {
 	// Storage backend
-	storageBackend  StorageBackend
-	metadataStore   MetadataStore
-	
+	storageBackend StorageBackend
+	metadataStore  MetadataStore
+
 	// Merkle tree management
-	merkleForest    *MerkleForest
-	hashAlgorithm   HashAlgorithm
-	
+	merkleForest  *MerkleForest
+	hashAlgorithm HashAlgorithm
+
 	// Deduplication and compression
-	deduplicator    *Deduplicator
-	compressor      *SmartCompressor
-	
+	deduplicator *Deduplicator
+	compressor   *SmartCompressor
+
 	// Caching layers
-	hotCache        *HotCache
-	coldStorage     *ColdStorage
-	
+	hotCache    *HotCache
+	coldStorage *ColdStorage
+
 	// Fragment management
 	fragmentTracker *FragmentTracker
 	deltaManager    *DeltaManager
-	
+
 	// Distribution
-	distributor     *FragmentDistributor
-	peerManager     *PeerManager
-	
+	distributor *FragmentDistributor
+	peerManager *PeerManager
+
 	// Configuration
-	config          *CASConfig
-	
+	config *CASConfig
+
 	// Synchronization
-	mu              sync.RWMutex
-	shutdown        chan struct{}
+	shutdown chan struct{}
 }
 
 // Content-addressed storage configuration
 type CASConfig struct {
 	// Storage settings
-	StorageRoot         string
-	ChunkSize           int64
-	CompressionEnabled  bool
-	CompressionLevel    int
-	
+	StorageRoot        string
+	ChunkSize          int64
+	CompressionEnabled bool
+	CompressionLevel   int
+
 	// Deduplication settings
 	DeduplicationEnabled bool
-	MinFileSize         int64
-	BlockSize           int64
-	
+	MinFileSize          int64
+	BlockSize            int64
+
 	// Caching settings
-	HotCacheSize        int64
-	ColdCacheSize       int64
-	CacheTTL            time.Duration
-	
+	HotCacheSize  int64
+	ColdCacheSize int64
+	CacheTTL      time.Duration
+
 	// Distribution settings
-	EnableDistribution  bool
-	MaxPeers            int
-	SyncInterval        time.Duration
-	
+	EnableDistribution bool
+	MaxPeers           int
+	SyncInterval       time.Duration
+
 	// Verification settings
-	VerifyOnRead        bool
-	VerifyOnWrite       bool
-	HashAlgorithm       string
+	VerifyOnRead  bool
+	VerifyOnWrite bool
+	HashAlgorithm string
 }
 
 // Content identifier
@@ -97,64 +96,64 @@ const (
 
 // Merkle tree for content verification
 type MerkleTree struct {
-	Root        *MerkleNode
-	Leaves      []*MerkleNode
-	ChunkSize   int64
-	Algorithm   HashAlgorithm
-	ContentID   ContentID
+	Root      *MerkleNode
+	Leaves    []*MerkleNode
+	ChunkSize int64
+	Algorithm HashAlgorithm
+	ContentID ContentID
 }
 
 // Merkle tree node
 type MerkleNode struct {
-	Hash        string
-	Left        *MerkleNode
-	Right       *MerkleNode
-	ChunkIndex  int
-	IsLeaf      bool
-	Data        []byte
+	Hash       string
+	Left       *MerkleNode
+	Right      *MerkleNode
+	ChunkIndex int
+	IsLeaf     bool
+	Data       []byte
 }
 
 // Merkle forest manages multiple trees
 type MerkleForest struct {
-	trees       map[string]*MerkleTree
-	rootHashes  map[string]string
-	mu          sync.RWMutex
+	trees      map[string]*MerkleTree
+	rootHashes map[string]string
+	mu         sync.RWMutex
 }
 
 // Storage object
 type StorageObject struct {
-	ID              ContentID
-	MerkleTree      *MerkleTree
-	Metadata        *ObjectMetadata
-	Chunks          []*Chunk
-	CompressedSize  int64
-	OriginalSize    int64
-	CreatedAt       time.Time
-	AccessedAt      time.Time
-	RefCount        int64
+	ID             ContentID
+	MerkleTree     *MerkleTree
+	Metadata       *ObjectMetadata
+	Chunks         []*Chunk
+	CompressedSize int64
+	OriginalSize   int64
+	CreatedAt      time.Time
+	AccessedAt     time.Time
+	RefCount       int64
 }
 
 // Object metadata
 type ObjectMetadata struct {
-	Name            string
-	Path            string
-	MimeType        string
-	Permissions     os.FileMode
-	Owner           string
-	Group           string
-	Labels          map[string]string
-	Annotations     map[string]string
-	CustomFields    map[string]interface{}
+	Name         string
+	Path         string
+	MimeType     string
+	Permissions  os.FileMode
+	Owner        string
+	Group        string
+	Labels       map[string]string
+	Annotations  map[string]string
+	CustomFields map[string]interface{}
 }
 
 // Storage chunk
 type Chunk struct {
-	Index       int
-	Hash        string
-	Data        []byte
-	Size        int64
-	Compressed  bool
-	RefCount    int64
+	Index      int
+	Hash       string
+	Data       []byte
+	Size       int64
+	Compressed bool
+	RefCount   int64
 }
 
 // Hash algorithm interface
@@ -173,9 +172,9 @@ func NewContentAddressedStorageV3(config *CASConfig) (*ContentAddressedStorageV3
 			CompressionEnabled:   true,
 			CompressionLevel:     6,
 			DeduplicationEnabled: true,
-			MinFileSize:          1024, // 1KB minimum
-			BlockSize:            4096, // 4KB blocks
-			HotCacheSize:         100 * 1024 * 1024, // 100MB
+			MinFileSize:          1024,               // 1KB minimum
+			BlockSize:            4096,               // 4KB blocks
+			HotCacheSize:         100 * 1024 * 1024,  // 100MB
 			ColdCacheSize:        1024 * 1024 * 1024, // 1GB
 			CacheTTL:             1 * time.Hour,
 			EnableDistribution:   false,
@@ -194,17 +193,17 @@ func NewContentAddressedStorageV3(config *CASConfig) (*ContentAddressedStorageV3
 
 	// Initialize components
 	var err error
-	
+
 	cas.storageBackend, err = NewFileSystemBackend(config.StorageRoot)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize storage backend: %w", err)
 	}
-	
+
 	cas.metadataStore, err = NewMetadataStore(filepath.Join(config.StorageRoot, "metadata"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize metadata store: %w", err)
 	}
-	
+
 	cas.merkleForest = NewMerkleForest()
 	cas.hashAlgorithm = NewHashAlgorithm(config.HashAlgorithm)
 	cas.deduplicator = NewDeduplicator(config.BlockSize)
@@ -429,7 +428,7 @@ func (cas *ContentAddressedStorageV3) chunkData(reader io.Reader) ([]*Chunk, int
 	chunkIndex := 0
 
 	buffer := make([]byte, cas.config.ChunkSize)
-	
+
 	for {
 		n, err := reader.Read(buffer)
 		if err == io.EOF {
@@ -443,7 +442,7 @@ func (cas *ContentAddressedStorageV3) chunkData(reader io.Reader) ([]*Chunk, int
 		copy(chunkData, buffer[:n])
 
 		hash := cas.hashAlgorithm.Hash(chunkData)
-		
+
 		chunk := &Chunk{
 			Index:      chunkIndex,
 			Hash:       hash,
@@ -482,11 +481,11 @@ func (cas *ContentAddressedStorageV3) buildMerkleTree(chunks []*Chunk) (*MerkleT
 	currentLevel := leaves
 	for len(currentLevel) > 1 {
 		nextLevel := make([]*MerkleNode, 0, (len(currentLevel)+1)/2)
-		
+
 		for i := 0; i < len(currentLevel); i += 2 {
 			left := currentLevel[i]
 			var right *MerkleNode
-			
+
 			if i+1 < len(currentLevel) {
 				right = currentLevel[i+1]
 			} else {
@@ -497,17 +496,17 @@ func (cas *ContentAddressedStorageV3) buildMerkleTree(chunks []*Chunk) (*MerkleT
 			// Create parent node
 			combined := left.Hash + right.Hash
 			parentHash := cas.hashAlgorithm.Hash([]byte(combined))
-			
+
 			parent := &MerkleNode{
 				Hash:   parentHash,
 				Left:   left,
 				Right:  right,
 				IsLeaf: false,
 			}
-			
+
 			nextLevel = append(nextLevel, parent)
 		}
-		
+
 		currentLevel = nextLevel
 	}
 
@@ -531,7 +530,7 @@ func (cas *ContentAddressedStorageV3) verifyIntegrity(tree *MerkleTree, chunks [
 	for i, chunk := range chunks {
 		expectedHash := tree.Leaves[i].Hash
 		actualHash := cas.hashAlgorithm.Hash(chunk.Data)
-		
+
 		if actualHash != expectedHash {
 			return fmt.Errorf("chunk %d hash mismatch: expected %s, got %s", i, expectedHash, actualHash)
 		}
@@ -584,7 +583,7 @@ func (cas *ContentAddressedStorageV3) calculateCompressedSize(chunks []*Chunk) i
 	return total
 }
 
-func (cas *ContentAddressedStorageV3) serializeManifest(manifest *FragmentManifest) (io.Reader, error) {
+func (cas *ContentAddressedStorageV3) serializeManifest(_ *FragmentManifest) (io.Reader, error) {
 	// Serialize manifest to JSON or other format
 	return nil, nil // Placeholder
 }
@@ -612,7 +611,7 @@ func (brc *ByteReadCloser) Read(p []byte) (n int, err error) {
 	if brc.offset >= len(brc.data) {
 		return 0, io.EOF
 	}
-	
+
 	n = copy(p, brc.data[brc.offset:])
 	brc.offset += n
 	return n, nil
@@ -622,7 +621,7 @@ func (brc *ByteReadCloser) Close() error {
 	return nil
 }
 
-func detectMimeType(path string) string {
+func detectMimeType(_ string) string {
 	// Detect MIME type based on file extension
 	return "application/octet-stream" // Placeholder
 }
@@ -671,8 +670,8 @@ type DeltaPackage struct {
 }
 
 type DeltaChange struct {
-	Type   string
-	Path   string
+	Type    string
+	Path    string
 	OldHash string
 	NewHash string
 }
@@ -698,7 +697,7 @@ func (sh *SHA256Hash) Name() string {
 }
 
 // Constructor functions
-func NewMerkleForest() *MerkleForest { 
+func NewMerkleForest() *MerkleForest {
 	return &MerkleForest{
 		trees:      make(map[string]*MerkleTree),
 		rootHashes: make(map[string]string),
@@ -715,24 +714,30 @@ func NewHashAlgorithm(name string) HashAlgorithm {
 }
 
 func NewFileSystemBackend(root string) (StorageBackend, error) { return &FileSystemBackend{}, nil }
-func NewMetadataStore(path string) (MetadataStore, error) { return &SQLiteMetadataStore{}, nil }
-func NewDeduplicator(blockSize int64) *Deduplicator { return &Deduplicator{blockSize: blockSize} }
-func NewSmartCompressor(level int) *SmartCompressor { return &SmartCompressor{level: level} }
-func NewHotCache(size int64, ttl time.Duration) *HotCache { return &HotCache{} }
-func NewColdStorage(size int64) *ColdStorage { return &ColdStorage{} }
-func NewFragmentTracker() *FragmentTracker { return &FragmentTracker{} }
-func NewDeltaManager() *DeltaManager { return &DeltaManager{} }
-func NewFragmentDistributor() *FragmentDistributor { return &FragmentDistributor{} }
-func NewPeerManager(maxPeers int) *PeerManager { return &PeerManager{} }
+func NewMetadataStore(path string) (MetadataStore, error)      { return &SQLiteMetadataStore{}, nil }
+func NewDeduplicator(blockSize int64) *Deduplicator            { return &Deduplicator{blockSize: blockSize} }
+func NewSmartCompressor(level int) *SmartCompressor            { return &SmartCompressor{level: level} }
+func NewHotCache(size int64, ttl time.Duration) *HotCache      { return &HotCache{} }
+func NewColdStorage(size int64) *ColdStorage                   { return &ColdStorage{} }
+func NewFragmentTracker() *FragmentTracker                     { return &FragmentTracker{} }
+func NewDeltaManager() *DeltaManager                           { return &DeltaManager{} }
+func NewFragmentDistributor() *FragmentDistributor             { return &FragmentDistributor{} }
+func NewPeerManager(maxPeers int) *PeerManager                 { return &PeerManager{} }
 
 // Placeholder implementations
 type FileSystemBackend struct{}
 type SQLiteMetadataStore struct{}
 
 func (fsb *FileSystemBackend) StoreChunk(ctx context.Context, chunk *Chunk) error { return nil }
-func (fsb *FileSystemBackend) LoadChunk(ctx context.Context, hash string) (*Chunk, error) { return &Chunk{}, nil }
-func (sms *SQLiteMetadataStore) Store(ctx context.Context, id ContentID, obj *StorageObject) error { return nil }
-func (sms *SQLiteMetadataStore) Load(ctx context.Context, id ContentID) (*StorageObject, error) { return &StorageObject{}, nil }
+func (fsb *FileSystemBackend) LoadChunk(ctx context.Context, hash string) (*Chunk, error) {
+	return &Chunk{}, nil
+}
+func (sms *SQLiteMetadataStore) Store(ctx context.Context, id ContentID, obj *StorageObject) error {
+	return nil
+}
+func (sms *SQLiteMetadataStore) Load(ctx context.Context, id ContentID) (*StorageObject, error) {
+	return &StorageObject{}, nil
+}
 
 func (mf *MerkleForest) AddTree(id string, tree *MerkleTree) {
 	mf.mu.Lock()
@@ -741,10 +746,14 @@ func (mf *MerkleForest) AddTree(id string, tree *MerkleTree) {
 	mf.rootHashes[id] = tree.Root.Hash
 }
 
-func (d *Deduplicator) Deduplicate(chunks []*Chunk) ([]*Chunk, float64, error) { return chunks, 1.0, nil }
+func (d *Deduplicator) Deduplicate(chunks []*Chunk) ([]*Chunk, float64, error) {
+	return chunks, 1.0, nil
+}
 func (sc *SmartCompressor) CompressChunks(chunks []*Chunk) ([]*Chunk, error) { return chunks, nil }
-func (sc *SmartCompressor) Decompress(data []byte) ([]byte, error) { return data, nil }
-func (hc *HotCache) Get(key string) interface{} { return nil }
-func (hc *HotCache) Put(key string, value interface{}) {}
-func (ft *FragmentTracker) TrackFragment(id ContentID, ratio float64) {}
-func (dm *DeltaManager) CalculateDelta(old, new *StorageObject) (*DeltaPackage, error) { return &DeltaPackage{}, nil }
+func (sc *SmartCompressor) Decompress(data []byte) ([]byte, error)           { return data, nil }
+func (hc *HotCache) Get(key string) interface{}                              { return nil }
+func (hc *HotCache) Put(key string, value interface{})                       {}
+func (ft *FragmentTracker) TrackFragment(id ContentID, ratio float64)        {}
+func (dm *DeltaManager) CalculateDelta(old, new *StorageObject) (*DeltaPackage, error) {
+	return &DeltaPackage{}, nil
+}

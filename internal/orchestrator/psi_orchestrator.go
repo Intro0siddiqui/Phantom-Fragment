@@ -16,36 +16,35 @@ import (
 // PSI-aware Fragment Graph Orchestrator for optimal container placement
 type PSIAwareOrchestrator struct {
 	// PSI monitoring
-	psiMonitor       *PSIMonitor
-	numaTopology     *NUMATopology
-	systemResources  *SystemResourceManager
-	
+	psiMonitor      *PSIMonitor
+	numaTopology    *NUMATopology
+	systemResources *SystemResourceManager
+
 	// Fragment management
-	zygoteSpawner    *fragments.ZygoteSpawnerV3
-	fragmentPools    map[string]*FragmentPool
-	loadBalancer     *LoadBalancer
-	
+	zygoteSpawner *fragments.ZygoteSpawnerV3
+	fragmentPools map[string]*FragmentPool
+	loadBalancer  *LoadBalancer
+
 	// Scheduling and placement
-	scheduler        *IntelligentScheduler
-	placementEngine  *PlacementEngine
-	affinityManager  *AffinityManager
-	
+	scheduler       *IntelligentScheduler
+	placementEngine *PlacementEngine
+	affinityManager *AffinityManager
+
 	// Performance optimization
 	performanceModel *PerformanceModel
 	predictionEngine *PredictionEngine
 	adaptiveScaler   *AdaptiveScaler
-	
+
 	// Monitoring and metrics
-	metrics          *OrchestratorMetrics
-	healthChecker    *HealthChecker
-	
+	metrics       *OrchestratorMetrics
+	healthChecker *HealthChecker
+
 	// Configuration
-	config           *OrchestratorConfig
-	
+	config *OrchestratorConfig
+
 	// Synchronization
-	mu               sync.RWMutex
-	shutdown         chan struct{}
-	wg               sync.WaitGroup
+	shutdown chan struct{}
+	wg       sync.WaitGroup
 }
 
 // PSI (Pressure Stall Information) monitoring for system pressure awareness
@@ -54,37 +53,29 @@ type PSIMonitor struct {
 	cpuPSIPath    string
 	memoryPSIPath string
 	ioPSIPath     string
-	
+
 	// Current pressure readings
 	cpuPressure    *PressureMetrics
 	memoryPressure *PressureMetrics
 	ioPressure     *PressureMetrics
-	
-	// Historical data
-	pressureHistory *PressureHistory
-	trendAnalyzer   *TrendAnalyzer
-	
-	// Thresholds and alerts
-	thresholds      *PressureThresholds
-	alertManager    *AlertManager
-	
+
 	// Update frequency
-	updateInterval  time.Duration
-	lastUpdate      time.Time
-	
-	mu              sync.RWMutex
+	updateInterval time.Duration
+	lastUpdate     time.Time
+
+	mu sync.RWMutex
 }
 
 // Pressure metrics from PSI
 type PressureMetrics struct {
-	Some10     float64 // 10-second average for "some" pressure
-	Some60     float64 // 60-second average for "some" pressure
-	Some300    float64 // 300-second average for "some" pressure
-	Full10     float64 // 10-second average for "full" pressure (CPU doesn't have this)
-	Full60     float64 // 60-second average for "full" pressure
-	Full300    float64 // 300-second average for "full" pressure
-	Total      uint64  // Total stall time in microseconds
-	Timestamp  time.Time
+	Some10    float64 // 10-second average for "some" pressure
+	Some60    float64 // 60-second average for "some" pressure
+	Some300   float64 // 300-second average for "some" pressure
+	Full10    float64 // 10-second average for "full" pressure (CPU doesn't have this)
+	Full60    float64 // 60-second average for "full" pressure
+	Full300   float64 // 300-second average for "full" pressure
+	Total     uint64  // Total stall time in microseconds
+	Timestamp time.Time
 }
 
 // NUMA topology awareness for optimal placement
@@ -93,31 +84,31 @@ type NUMATopology struct {
 	nodeCount       int
 	cpuToNode       map[int]int
 	memoryDistances [][]int
-	
+
 	// Current utilization
 	nodeUtilization map[int]*NodeUtilization
-	
+
 	// Affinity tracking
 	processAffinity map[string]int // containerID -> preferred node
-	
-	mu              sync.RWMutex
+
+	mu sync.RWMutex
 }
 
 type NUMANode struct {
-	ID            int
-	CPUs          []int
-	Memory        int64    // Available memory in bytes
-	Distance      []int    // Distance to other nodes
-	Available     bool
-	Utilization   *NodeUtilization
+	ID          int
+	CPUs        []int
+	Memory      int64 // Available memory in bytes
+	Distance    []int // Distance to other nodes
+	Available   bool
+	Utilization *NodeUtilization
 }
 
 type NodeUtilization struct {
-	CPUUsage     float64
-	MemoryUsage  int64
-	IOLoad       float64
+	CPUUsage       float64
+	MemoryUsage    int64
+	IOLoad         float64
 	ContainerCount int
-	LastUpdate   time.Time
+	LastUpdate     time.Time
 }
 
 // Fragment pool management
@@ -128,21 +119,19 @@ type FragmentPool struct {
 	TargetSize    int
 	MinSize       int
 	MaxSize       int
-	
+
 	// Performance tracking
 	SpawnCount    int64
 	AvgSpawnTime  time.Duration
 	LastSpawnTime time.Time
-	
+
 	// NUMA affinity
 	PreferredNode int
 	NodeAffinity  map[int]int // node -> process count
-	
+
 	// Health and lifecycle
-	HealthStatus  PoolHealthStatus
+	HealthStatus    PoolHealthStatus
 	LastHealthCheck time.Time
-	
-	mu            sync.RWMutex
 }
 
 type PoolHealthStatus int
@@ -160,27 +149,27 @@ type OrchestratorConfig struct {
 	CPUPressureThreshold    float64
 	MemoryPressureThreshold float64
 	IOPressureThreshold     float64
-	
+
 	// NUMA settings
-	EnableNUMAAffinity      bool
-	NUMABalancingEnabled    bool
-	PreferLocalMemory       bool
-	
+	EnableNUMAAffinity   bool
+	NUMABalancingEnabled bool
+	PreferLocalMemory    bool
+
 	// Pool management
-	DefaultPoolSize         int
-	MaxPoolSize             int
-	PoolScaleUpThreshold    float64
-	PoolScaleDownThreshold  float64
-	
+	DefaultPoolSize        int
+	MaxPoolSize            int
+	PoolScaleUpThreshold   float64
+	PoolScaleDownThreshold float64
+
 	// Performance optimization
 	EnablePredictiveScaling bool
 	PredictionWindow        time.Duration
 	AdaptiveThresholds      bool
-	
+
 	// Monitoring
-	PSIUpdateInterval       time.Duration
-	MetricsUpdateInterval   time.Duration
-	HealthCheckInterval     time.Duration
+	PSIUpdateInterval     time.Duration
+	MetricsUpdateInterval time.Duration
+	HealthCheckInterval   time.Duration
 }
 
 // NewPSIAwareOrchestrator creates a new PSI-aware orchestrator
@@ -192,7 +181,7 @@ func NewPSIAwareOrchestrator(config *OrchestratorConfig, zygoteSpawner *fragment
 			IOPressureThreshold:     0.6,
 			EnableNUMAAffinity:      true,
 			DefaultPoolSize:         3,
-			MaxPoolSize:            10,
+			MaxPoolSize:             10,
 			PSIUpdateInterval:       1 * time.Second,
 			MetricsUpdateInterval:   5 * time.Second,
 			HealthCheckInterval:     30 * time.Second,
@@ -284,19 +273,19 @@ func (o *PSIAwareOrchestrator) checkSystemCapacity() error {
 
 	// Check CPU pressure
 	if o.psiMonitor.cpuPressure.Some10 > o.config.CPUPressureThreshold {
-		return fmt.Errorf("high CPU pressure: %.2f > %.2f", 
+		return fmt.Errorf("high CPU pressure: %.2f > %.2f",
 			o.psiMonitor.cpuPressure.Some10, o.config.CPUPressureThreshold)
 	}
 
 	// Check memory pressure
 	if o.psiMonitor.memoryPressure.Some10 > o.config.MemoryPressureThreshold {
-		return fmt.Errorf("high memory pressure: %.2f > %.2f", 
+		return fmt.Errorf("high memory pressure: %.2f > %.2f",
 			o.psiMonitor.memoryPressure.Some10, o.config.MemoryPressureThreshold)
 	}
 
 	// Check I/O pressure
 	if o.psiMonitor.ioPressure.Some10 > o.config.IOPressureThreshold {
-		return fmt.Errorf("high I/O pressure: %.2f > %.2f", 
+		return fmt.Errorf("high I/O pressure: %.2f > %.2f",
 			o.psiMonitor.ioPressure.Some10, o.config.IOPressureThreshold)
 	}
 
@@ -331,26 +320,26 @@ func (o *PSIAwareOrchestrator) selectOptimalNode(profile string, request *types.
 }
 
 // calculateNodeScore calculates placement score for a NUMA node
-func (o *PSIAwareOrchestrator) calculateNodeScore(node *NUMANode, profile string, request *types.SpawnRequest) float64 {
+func (o *PSIAwareOrchestrator) calculateNodeScore(node *NUMANode, profile string, _ *types.SpawnRequest) float64 {
 	utilization := node.Utilization
-	
+
 	// Base score from resource utilization (lower is better)
 	cpuScore := 1.0 - utilization.CPUUsage
 	memoryScore := 1.0 - float64(utilization.MemoryUsage)/float64(node.Memory)
 	ioScore := 1.0 - utilization.IOLoad
-	
+
 	// Container density penalty (avoid overloading nodes)
 	densityScore := 1.0 - float64(utilization.ContainerCount)/20.0 // Assume max 20 containers per node
-	
+
 	// Profile affinity bonus (prefer nodes that have run this profile before)
 	affinityScore := 0.0
 	if o.hasProfileAffinity(node.ID, profile) {
 		affinityScore = 0.2
 	}
-	
+
 	// Weighted final score
 	finalScore := (cpuScore*0.3 + memoryScore*0.3 + ioScore*0.2 + densityScore*0.1 + affinityScore*0.1)
-	
+
 	return finalScore
 }
 
@@ -382,7 +371,7 @@ func (o *PSIAwareOrchestrator) Start(ctx context.Context) error {
 // psiMonitorLoop continuously monitors PSI metrics
 func (o *PSIAwareOrchestrator) psiMonitorLoop(ctx context.Context) {
 	defer o.wg.Done()
-	
+
 	ticker := time.NewTicker(o.config.PSIUpdateInterval)
 	defer ticker.Stop()
 
@@ -457,7 +446,7 @@ func (m *PSIMonitor) updatePressureFile(path string, metrics *PressureMetrics, h
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
-	
+
 	// Parse "some" line
 	if len(lines) > 0 {
 		if err := m.parsePressureLine(lines[0], "some", metrics, false); err != nil {
@@ -532,17 +521,19 @@ func (m *PSIMonitor) parsePressureLine(line, prefix string, metrics *PressureMet
 }
 
 // Placeholder implementations for other components
-func NewNUMATopology() (*NUMATopology, error) { return &NUMATopology{}, nil }
+func NewNUMATopology() (*NUMATopology, error)          { return &NUMATopology{}, nil }
 func NewSystemResourceManager() *SystemResourceManager { return &SystemResourceManager{} }
 func NewLoadBalancer(numa *NUMATopology) *LoadBalancer { return &LoadBalancer{} }
-func NewIntelligentScheduler(psi *PSIMonitor, numa *NUMATopology) *IntelligentScheduler { return &IntelligentScheduler{} }
-func NewPlacementEngine(numa *NUMATopology) *PlacementEngine { return &PlacementEngine{} }
-func NewAffinityManager() *AffinityManager { return &AffinityManager{} }
-func NewPerformanceModel() *PerformanceModel { return &PerformanceModel{} }
-func NewPredictionEngine() *PredictionEngine { return &PredictionEngine{} }
+func NewIntelligentScheduler(psi *PSIMonitor, numa *NUMATopology) *IntelligentScheduler {
+	return &IntelligentScheduler{}
+}
+func NewPlacementEngine(numa *NUMATopology) *PlacementEngine       { return &PlacementEngine{} }
+func NewAffinityManager() *AffinityManager                         { return &AffinityManager{} }
+func NewPerformanceModel() *PerformanceModel                       { return &PerformanceModel{} }
+func NewPredictionEngine() *PredictionEngine                       { return &PredictionEngine{} }
 func NewAdaptiveScaler(config *OrchestratorConfig) *AdaptiveScaler { return &AdaptiveScaler{} }
-func NewOrchestratorMetrics() *OrchestratorMetrics { return &OrchestratorMetrics{} }
-func NewHealthChecker() *HealthChecker { return &HealthChecker{} }
+func NewOrchestratorMetrics() *OrchestratorMetrics                 { return &OrchestratorMetrics{} }
+func NewHealthChecker() *HealthChecker                             { return &HealthChecker{} }
 
 // Placeholder types and methods
 type SystemResourceManager struct{}
@@ -560,13 +551,20 @@ type TrendAnalyzer struct{}
 type PressureThresholds struct{}
 type AlertManager struct{}
 
-func (o *PSIAwareOrchestrator) getFragmentPool(profile string, node int) (*FragmentPool, error) { return &FragmentPool{}, nil }
-func (o *PSIAwareOrchestrator) spawnFromPool(ctx context.Context, pool *FragmentPool, request *types.SpawnRequest) (*types.Container, error) { return &types.Container{}, nil }
-func (o *PSIAwareOrchestrator) applyNUMAAffinity(container *types.Container, node int) error { return nil }
+func (o *PSIAwareOrchestrator) getFragmentPool(_ string, _ int) (*FragmentPool, error) {
+	return &FragmentPool{}, nil
+}
+func (o *PSIAwareOrchestrator) spawnFromPool(_ context.Context, _ *FragmentPool, _ *types.SpawnRequest) (*types.Container, error) {
+	return &types.Container{}, nil
+}
+func (o *PSIAwareOrchestrator) applyNUMAAffinity(_ *types.Container, _ int) error {
+	return nil
+}
 func (o *PSIAwareOrchestrator) updatePoolMetrics(pool *FragmentPool, duration time.Duration) {}
-func (o *PSIAwareOrchestrator) hasProfileAffinity(nodeID int, profile string) bool { return false }
-func (o *PSIAwareOrchestrator) numaUtilizationLoop(ctx context.Context) {}
-func (o *PSIAwareOrchestrator) poolManagementLoop(ctx context.Context) {}
-func (o *PSIAwareOrchestrator) healthCheckLoop(ctx context.Context) {}
-func (o *PSIAwareOrchestrator) metricsLoop(ctx context.Context) {}
-func (m *OrchestratorMetrics) RecordContainerSpawn(profile string, node int, duration time.Duration) {}
+func (o *PSIAwareOrchestrator) hasProfileAffinity(_ int, _ string) bool                      { return false }
+func (o *PSIAwareOrchestrator) numaUtilizationLoop(ctx context.Context)                      {}
+func (o *PSIAwareOrchestrator) poolManagementLoop(ctx context.Context)                       {}
+func (o *PSIAwareOrchestrator) healthCheckLoop(ctx context.Context)                          {}
+func (o *PSIAwareOrchestrator) metricsLoop(ctx context.Context)                              {}
+func (m *OrchestratorMetrics) RecordContainerSpawn(profile string, node int, duration time.Duration) {
+}
