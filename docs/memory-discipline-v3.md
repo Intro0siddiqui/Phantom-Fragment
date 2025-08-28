@@ -1,4 +1,4 @@
-# Memory Discipline Fragment V3 - Design Specification
+# Memory Discipline Fragment
 
 ## Overview
 
@@ -7,7 +7,7 @@ The **Memory Discipline Fragment** achieves <10MB memory per container through z
 ## Core Architecture
 
 ```go
-type MemoryDisciplineV3 struct {
+type MemoryDiscipline struct {
     // Allocator management
     jemallocAllocator   *JemallocAllocator
     wasmLinearMemory    *WasmLinearMemoryManager
@@ -57,13 +57,3 @@ func (ksm *KSMManager) EnableDeduplication(containerID string) error {
     return unix.Madvise(processMemory, unix.MADV_MERGEABLE)
 }
 ```
-
-## Performance Targets
-- **Memory Usage**: <10MB per container (8× Docker efficiency)
-- **Allocation Overhead**: <1μs per buffer allocation
-- **Deduplication**: >40% memory savings for similar containers
-- **GC Pause**: <1ms garbage collection pauses
-
-## Implementation Plan
-### Week 1-2: Core allocator and buffer pools
-### Week 3-4: KSM integration and zero-churn optimization

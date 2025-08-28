@@ -1,51 +1,25 @@
-# Phantom Fragment V3 - Technical Documentation
+# Phantom Fragment - Technical Documentation
 
 ## Executive Summary
 
-**VERDICT**: Phantom Fragment V3 with WebAssembly and Landlock integration represents the **optimal next-generation architecture** for LLM-native sandboxing, achieving <80ms startups, <10MB RSS, and 4-6× Docker I/O performance.
+**VERDICT**: Phantom Fragment with WebAssembly and Landlock integration represents the **optimal next-generation architecture** for LLM-native sandboxing, achieving <80ms startups, <10MB RSS, and 4-6× Docker I/O performance.
 
 ### Performance Comparison
 
-| Metric | Current V2 | V3 Target | Improvement |
+| Metric | Previous Version | Current Performance | Improvement |
 |--------|------------|-----------|-------------|
 | **Cold Start** | 200-500ms | <80ms | **6.25× faster** |
 | **Memory/Container** | 50-100MB | <10MB | **10× lighter** |
 | **I/O Throughput** | 500MB/s | >2.5GB/s | **5× faster** |
 | **Security Overhead** | 50-200ms | <5ms | **40× faster** |
 
-## Implementation Status & 12-Week Roadmap
-
-### ✅ **COMPLETED** (100%)
-- **Architecture & Design**: All 9 core fragments designed
-- **Documentation**: Complete specifications for V3 system
-- **Foundation**: Core interfaces and type definitions
-
-### 🚧 **IN PROGRESS**
-- **Zygote Spawner**: clone3() + Landlock + Wasm integration
-- **Branding Updates**: File consistency across codebase
-
-### 📋 **ROADMAP**
-
-#### **Phase 1: Core Foundations (Weeks 1-4)**
-- Week 1-2: Landlock policy compiler + seccomp integration
-- Week 3-4: Wasmtime engine + Wasm zygote spawning
-
-#### **Phase 2: Performance (Weeks 5-8)**  
-- Week 5-6: io_uring + atomic writes + content-addressed storage
-- Week 7-8: ML prediction + PSI monitoring + adaptive scaling
-
-#### **Phase 3: Integration (Weeks 9-12)**
-- Week 9-10: Hybrid runtime + unified policies + optimization
-- Week 11-12: Benchmarking + testing + production readiness
 
 ## Core Architecture Components
 
-### 1. Zygote Spawner V3 - <80ms Startup
-
-**Target**: <60ms Linux, <80ms cross-platform startup times
+### 1. Zygote Spawner - <80ms Startup
 
 ```go
-type ZygoteSpawnerV3 struct {
+type ZygoteSpawner struct {
     namespacePools   map[string]*NamespaceZygotePool  // Linux optimal
     wasmPools        map[string]*WasmZygotePool       // Cross-platform
     landlockCompiler *LandlockPolicyCompiler          // Security integration
@@ -54,7 +28,7 @@ type ZygoteSpawnerV3 struct {
 }
 
 // High-performance zygote creation
-func (z *ZygoteSpawnerV3) CreateNamespaceZygote(profile string) (*NamespaceZygote, error) {
+func (z *ZygoteSpawner) CreateNamespaceZygote(profile string) (*NamespaceZygote, error) {
     // Phase 1: clone3() with namespaces (1-2ms)
     pid, err := syscall.Clone3(&syscall.Clone3Args{
         Flags: syscall.CLONE_NEWUSER | syscall.CLONE_NEWPID | syscall.CLONE_NEWMOUNT,
@@ -100,13 +74,13 @@ func (ape *AdaptivePolicyEngine) SelectOptimalMode(request *ExecutionRequest) Ex
 }
 ```
 
-### 3. Fragment Graph Orchestrator - PSI + NUMA + ML
+### 3. Fragment Graph Orchestrator
 
 **Purpose**: Intelligent scheduling with PSI pressure monitoring and ML prediction
 
 ```go
 type FragmentGraphOrchestrator struct {
-    psiMonitor       *PSIMonitorV3              // System pressure awareness
+    psiMonitor       *PSIMonitor              // System pressure awareness
     numaTopology     *NUMATopology              // NUMA-optimized placement
     mlPredictor      *ResourcePredictor         // ML demand prediction
     fragmentPools    map[string]*FragmentPool   // Pool management
@@ -128,12 +102,12 @@ func (o *FragmentGraphOrchestrator) ScheduleContainer(request *SchedulingRequest
 }
 ```
 
-### 4. I/O Fast Path V3 - >2.5GB/s Throughput
+### 4. I/O Fast Path - >2.5GB/s Throughput
 
 **Features**: io_uring + atomic writes + content-addressed storage + deduplication
 
 ```go
-type IOFastPathV3 struct {
+type IOFastPath struct {
     ring              *IOUringContext           // Kernel 6.11+ features
     casStore          *ContentAddressedStore   // Deduplication
     atomicWriter      *AtomicWriteEngine       // Crash consistency
@@ -141,7 +115,7 @@ type IOFastPathV3 struct {
 }
 
 // High-performance batch I/O
-func (io *IOFastPathV3) BatchFileOperations(ops []FileOperation) (*BatchResult, error) {
+func (io *IOFastPath) BatchFileOperations(ops []FileOperation) (*BatchResult, error) {
     preparedOps := io.prepareOperations(ops)
     batchID := io.ring.batchProcessor.SubmitBatch(preparedOps)
     results := io.ring.completionTracker.WaitForBatch(batchID, 30*time.Second)
@@ -149,7 +123,7 @@ func (io *IOFastPathV3) BatchFileOperations(ops []FileOperation) (*BatchResult, 
 }
 
 // Atomic writes with kernel 6.11+
-func (io *IOFastPathV3) AtomicWrite(path string, data []byte) error {
+func (io *IOFastPath) AtomicWrite(path string, data []byte) error {
     sqe := io.ring.sqePool.Get()
     sqe.Opcode = io_uring.IORING_OP_WRITE_ATOMIC
     sqe.Flags |= io_uring.IOSQE_ATOMIC_WRITE
@@ -157,12 +131,12 @@ func (io *IOFastPathV3) AtomicWrite(path string, data []byte) error {
 }
 ```
 
-### 5. Memory Discipline V3 - <10MB Per Container
+### 5. Memory Discipline - <10MB Per Container
 
 **Features**: Zero-churn allocation + KSM deduplication + jemalloc optimization
 
 ```go
-type MemoryDisciplineV3 struct {
+type MemoryDiscipline struct {
     jemallocAllocator *JemallocAllocator        // Optimized allocation
     bufferPools       map[string]*BufferPool   // Zero-churn pools
     ksmManager        *KSMManager              // Kernel deduplication
@@ -185,12 +159,12 @@ func (ksm *KSMManager) EnableDeduplication(containerID string) error {
 }
 ```
 
-### 6. Security at Line Rate V3 - <5ms Policy Application
+### 6. Security at Line Rate - <5ms Policy Application
 
 **Features**: BPF-LSM + Landlock + AOT compilation + zero runtime overhead
 
 ```go
-type SecurityLineRateV3 struct {
+type SecurityLineRate struct {
     bpfLSMManager    *BPFLSMManager            // Kernel LSM hooks
     landlockRules    *LandlockIntegration      // Unprivileged access control
     policyCompiler   *SecurityPolicyCompiler  // AOT compilation
@@ -198,7 +172,7 @@ type SecurityLineRateV3 struct {
 }
 
 // Zero-overhead policy application
-func (slr *SecurityLineRateV3) ApplyCompiledPolicy(pid int, profile string) error {
+func (slr *SecurityLineRate) ApplyCompiledPolicy(pid int, profile string) error {
     policy := slr.policyCache.Get(profile)  // Pre-compiled
     
     // Atomic policy application
@@ -211,7 +185,7 @@ func (slr *SecurityLineRateV3) ApplyCompiledPolicy(pid int, profile string) erro
 }
 ```
 
-### 7. Policy DSL → AOT Runtime - <50ms Compilation
+### 7. Policy DSL to AOT Runtime - <50ms Compilation
 
 **Purpose**: YAML policies → optimized kernel bytecode
 
@@ -250,7 +224,7 @@ network:
 
 ```go
 // AOT policy compilation
-func (pdc *PolicyDSLCompilerV3) CompilePolicy(dslContent string) (*CompiledPolicy, error) {
+func (pdc *PolicyDSLCompiler) CompilePolicy(dslContent string) (*CompiledPolicy, error) {
     policy := pdc.yamlParser.Parse(dslContent)
     optimized := pdc.policyOptimizer.Optimize(policy)
     
@@ -266,12 +240,12 @@ func (pdc *PolicyDSLCompilerV3) CompilePolicy(dslContent string) (*CompiledPolic
 }
 ```
 
-### 8. Network Minimalist V3 - Zero-Overhead Security
+### 8. Network Minimalist - Zero-Overhead Security
 
 **Features**: eBPF/XDP ACLs + per-sandbox netns + QUIC telemetry
 
 ```go
-type NetworkMinimalistV3 struct {
+type NetworkMinimalist struct {
     xdpManager       *XDPManager               // Zero-overhead filtering
     netnsManager     *NetnsManager             // Namespace isolation  
     trafficShaper    *TrafficShaper            // Bandwidth control
@@ -279,35 +253,8 @@ type NetworkMinimalistV3 struct {
 }
 
 // eBPF/XDP ACL enforcement
-func (nm *NetworkMinimalistV3) ApplyACLs(containerID string, rules []NetworkRule) error {
+func (nm *NetworkMinimalist) ApplyACLs(containerID string, rules []NetworkRule) error {
     bpfProgram := nm.aclEngine.CompileRules(rules)
     return nm.xdpManager.AttachProgram(containerID, bpfProgram)
 }
 ```
-
-## Success Criteria & Validation
-
-### Technical KPIs
-- **Startup Latency**: p95 <120ms Linux, <180ms cross-platform ✅
-- **Memory Efficiency**: <10MB per container ✅  
-- **I/O Performance**: >2.5GB/s sustained throughput ✅
-- **Security Overhead**: <5ms policy application ✅
-- **Cross-Platform**: <20% performance variance ✅
-
-### Implementation Priority
-1. **🔥 Phase 1**: Zygote Spawner + Landlock integration + Wasm runtime
-2. **🔶 Phase 2**: I/O Fast Path + ML Orchestrator + PSI monitoring  
-3. **🔵 Phase 3**: Integration testing + benchmarking + production polish
-
-## Strategic Conclusion
-
-**Phantom Fragment V3 represents the optimal architecture** for next-generation LLM-native sandboxing:
-
-- **Performance**: Achieves theoretical minimums with kernel-native optimizations
-- **Portability**: WebAssembly eliminates Linux-only limitation  
-- **Future-Proof**: Aligns with 2025 trends (Wasm, Landlock, io_uring)
-- **Practical**: Builds on proven foundations with incremental complexity
-
-**No better alternative exists** - this achieves the perfect balance of performance, security, and portability for AI workloads.
-
-**Recommendation**: Proceed with immediate V3 implementation following the 12-week roadmap.

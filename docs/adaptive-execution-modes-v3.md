@@ -1,4 +1,4 @@
-# Adaptive Execution Modes V3 - Design Specification
+# Adaptive Execution Modes
 
 ## Overview
 
@@ -45,7 +45,6 @@ type ExecutionModeConfig struct {
     ResourceLimits ResourceLimits
     NetworkPolicy  NetworkPolicy
     
-    // V3 enhancements
     LandlockRules  *LandlockRuleSet
     WasmCapabilities *WasmCapabilitySet
     AdaptivePolicy   *AdaptivePolicy
@@ -66,7 +65,6 @@ type ExecutionModeConfig struct {
 
 ### 1. **Direct Mode** - Ultra-Fast Development
 
-**Target**: <15ms startup, minimal security overhead
 **Use Cases**: Inner development loops, debugging, trusted code
 
 ```yaml
@@ -137,7 +135,6 @@ func (em *ExecutionModeManager) ConfigureDirectMode(profile string) *ExecutionMo
 
 ### 2. **Sandbox Mode** - Balanced Default
 
-**Target**: <25ms startup, optimal security/performance balance
 **Use Cases**: LLM code execution, general development, testing
 
 ```yaml
@@ -216,7 +213,6 @@ func (em *ExecutionModeManager) ConfigureSandboxMode(profile string) *ExecutionM
 
 ### 3. **Hardened Mode** - Maximum Security
 
-**Target**: <60ms startup, enterprise-grade security
 **Use Cases**: Production environments, CI/CD, untrusted code
 
 ```yaml
@@ -266,7 +262,6 @@ adaptive:
 
 ### 4. **WebAssembly Mode** - Cross-Platform
 
-**Target**: <30ms startup, portable execution
 **Use Cases**: Cross-platform compatibility, edge devices, web integration
 
 ```yaml
@@ -543,51 +538,4 @@ var ModePerformanceProfiles = map[ExecutionMode]PerformanceProfile{
 }
 ```
 
-## Implementation Plan
-
-### Phase 1: Core Mode Infrastructure (Week 1-2)
-- [ ] Implement ExecutionModeManager
-- [ ] Basic mode configuration system
-- [ ] Mode selection matrix
-- [ ] Direct and Sandbox mode implementation
-
-### Phase 2: Advanced Modes (Week 2-3)
-- [ ] Hardened mode with full security stack
-- [ ] WebAssembly mode integration
-- [ ] Cross-platform compatibility layer
-- [ ] Performance optimization per mode
-
-### Phase 3: Adaptive Engine (Week 3-4)
-- [ ] AdaptivePolicyEngine implementation
-- [ ] Runtime behavior analysis
-- [ ] Mode transition system
-- [ ] Hot migration for compatible modes
-
-### Phase 4: Testing & Validation (Week 4)
-- [ ] Mode performance benchmarking
-- [ ] Security validation for each mode
-- [ ] Transition testing
-- [ ] Cross-platform compatibility testing
-
-## Success Criteria
-
-### Performance Targets
-- [ ] **Direct Mode**: <15ms startup, minimal overhead
-- [ ] **Sandbox Mode**: <25ms startup, <5ms security overhead  
-- [ ] **Hardened Mode**: <60ms startup, comprehensive security
-- [ ] **Wasm Mode**: <30ms startup, cross-platform native performance
-- [ ] **Mode Transitions**: <100ms hot migration, <500ms cold migration
-
-### Security Validation
-- [ ] Each mode meets specified security level
-- [ ] No privilege escalation during transitions
-- [ ] Proper isolation boundaries maintained
-- [ ] Audit trail for all mode changes
-
-### Adaptive Intelligence
-- [ ] >85% optimal mode selection accuracy
-- [ ] <5% false positive security upgrades
-- [ ] Smooth degradation under resource pressure
-- [ ] Learning from historical behavior patterns
-
-This adaptive execution system provides the foundation for Phantom Fragment V3's intelligent runtime optimization while maintaining security guarantees across different threat models and performance requirements.
+This adaptive execution system provides the foundation for Phantom Fragment's intelligent runtime optimization while maintaining security guarantees across different threat models and performance requirements.

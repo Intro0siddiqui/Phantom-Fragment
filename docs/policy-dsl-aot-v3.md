@@ -1,4 +1,4 @@
-# Policy DSL → AOT-Compiled Runtime V3 - Design Specification
+# Policy DSL to AOT-Compiled Runtime
 
 ## Overview
 
@@ -7,7 +7,7 @@ The **Policy DSL to AOT-Compiled Runtime** system transforms human-readable YAML
 ## Core Architecture
 
 ```go
-type PolicyDSLCompilerV3 struct {
+type PolicyDSLCompiler struct {
     // DSL parsing
     yamlParser          *YAMLPolicyParser
     policyValidator     *PolicyValidator
@@ -96,7 +96,7 @@ adaptive:
 `
 
 // AOT compilation process
-func (pdc *PolicyDSLCompilerV3) CompilePolicy(dslContent string) (*CompiledPolicy, error) {
+func (pdc *PolicyDSLCompiler) CompilePolicy(dslContent string) (*CompiledPolicy, error) {
     start := time.Now()
     
     // Phase 1: Parse and validate DSL
@@ -236,13 +236,3 @@ graph TD
     I --> K
     J --> K
 ```
-
-## Performance Targets
-- **Compilation Time**: <50ms for complex policies
-- **Policy Size**: <10KB compiled policy bundle
-- **Runtime Overhead**: 0% (pure kernel enforcement)
-- **Cache Hit Rate**: >90% for repeated policy compilations
-
-## Implementation Plan
-### Week 1-2: DSL parser and code generators
-### Week 3-4: Cross-platform support and optimization
