@@ -1,4 +1,4 @@
-# Zygote Spawner Fragment V3 - Design Specification
+# Zygote Spawner Fragment
 
 ## Overview
 
@@ -9,8 +9,8 @@ The **Zygote Spawner Fragment V3** is the cornerstone of Phantom Fragment's perf
 ### Core Components
 
 ```go
-// Enhanced Zygote Spawner with V3 capabilities
-type ZygoteSpawnerV3 struct {
+// Enhanced Zygote Spawner
+type ZygoteSpawner struct {
     // Core pools for different execution modes
     namespacePools    map[string]*NamespaceZygotePool
     wasmPools         map[string]*WasmZygotePool
@@ -21,7 +21,7 @@ type ZygoteSpawnerV3 struct {
     
     // Performance optimization
     mlPredictor       *DemandPredictor
-    psiMonitor        *PSIMonitorV3
+    psiMonitor        *PSIMonitor
     numaScheduler     *NUMAScheduler
     
     // I/O optimization
@@ -41,7 +41,6 @@ type NamespaceZygotePool struct {
     targetSize        int
     spawnedCount      int64
     
-    // V3 enhancements
     landlockRules     *CompiledLandlockRules
     atomicOverlays    []string
     cpuAffinity       []int
@@ -96,20 +95,15 @@ type WasmZygote struct {
 }
 ```
 
-## Performance Targets & Implementation
+## Implementation Details
 
 ### 1. **Startup Performance Optimization**
-
-#### **Target Metrics**
-- **Linux (Namespace Mode)**: <60ms cold start, <15ms warm spawn
-- **Cross-Platform (Wasm Mode)**: <80ms cold start, <25ms warm spawn
-- **Memory Usage**: <8MB per warm process, <6MB per Wasm instance
 
 #### **Implementation Strategy**
 
 ```go
 // High-performance zygote creation with Landlock pre-application
-func (z *ZygoteSpawnerV3) CreateNamespaceZygote(profile string) (*NamespaceZygote, error) {
+func (z *ZygoteSpawner) CreateNamespaceZygote(profile string) (*NamespaceZygote, error) {
     start := time.Now()
     
     // Phase 1: clone3() with all namespaces (1-2ms)
@@ -167,7 +161,7 @@ func (z *ZygoteSpawnerV3) CreateNamespaceZygote(profile string) (*NamespaceZygot
 }
 
 // WebAssembly zygote creation for cross-platform
-func (z *ZygoteSpawnerV3) CreateWasmZygote(profile string) (*WasmZygote, error) {
+func (z *ZygoteSpawner) CreateWasmZygote(profile string) (*WasmZygote, error) {
     start := time.Now()
     
     // Phase 1: Get cached Wasm module (0.5ms)
@@ -288,7 +282,7 @@ type DemandPredictor struct {
 }
 
 // Predictive pool sizing
-func (z *ZygoteSpawnerV3) ManagePools() {
+func (z *ZygoteSpawner) ManagePools() {
     for profile, pool := range z.namespacePools {
         // Get ML prediction for next 5 minutes
         predicted := z.mlPredictor.PredictDemand(profile, 300*time.Second)
@@ -311,7 +305,7 @@ func (z *ZygoteSpawnerV3) ManagePools() {
 }
 
 // NUMA-aware zygote placement
-func (z *ZygoteSpawnerV3) selectOptimalNUMANode(profile string) int {
+func (z *ZygoteSpawner) selectOptimalNUMANode(profile string) int {
     // Check current CPU pressure per NUMA node
     topology := z.numaScheduler.GetTopology()
     
@@ -425,45 +419,4 @@ func (zm *ZygoteMetrics) RecordSpawn(profile string, duration time.Duration, mod
 }
 ```
 
-## Implementation Plan
-
-### Phase 1: Core Infrastructure (Week 1-2)
-- [ ] Implement basic ZygoteSpawnerV3 structure
-- [ ] Add clone3() support with proper error handling
-- [ ] Create Landlock policy compiler framework
-- [ ] Basic namespace zygote creation
-
-### Phase 2: WebAssembly Integration (Week 2-3)
-- [ ] Integrate wasmtime engine
-- [ ] Implement Wasm zygote pools
-- [ ] WASI sandbox configuration
-- [ ] Cross-platform compatibility testing
-
-### Phase 3: Performance Optimization (Week 3-4)
-- [ ] Atomic overlay filesystem
-- [ ] ML-based demand prediction
-- [ ] PSI monitoring integration
-- [ ] NUMA-aware scheduling
-
-### Phase 4: Testing & Validation (Week 4)
-- [ ] Comprehensive benchmarking suite
-- [ ] Performance regression testing
-- [ ] Cross-platform validation
-- [ ] Security policy validation
-
-## Success Criteria
-
-### Performance Targets
-- [ ] **Linux**: <60ms cold start, <15ms warm spawn
-- [ ] **Cross-platform**: <80ms cold start, <25ms warm spawn
-- [ ] **Memory**: <8MB per namespace zygote, <6MB per Wasm instance
-- [ ] **Security**: <5ms policy application time
-- [ ] **Reliability**: >99.9% zygote creation success rate
-
-### Quality Metrics  
-- [ ] Zero memory leaks in long-running pools
-- [ ] Graceful degradation under high load
-- [ ] Proper cleanup on system shutdown
-- [ ] Comprehensive error handling and logging
-
-This design provides the foundation for achieving Phantom Fragment V3's ambitious performance targets while maintaining security and cross-platform compatibility.
+This design provides the foundation for achieving Phantom Fragment's ambitious performance targets while maintaining security and cross-platform compatibility.

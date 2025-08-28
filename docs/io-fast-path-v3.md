@@ -1,4 +1,4 @@
-# I/O Fast Path Fragment V3 - Design Specification
+# I/O Fast Path Fragment
 
 ## Overview
 
@@ -9,7 +9,7 @@ The **I/O Fast Path Fragment** leverages kernel 6.11+ io_uring capabilities and 
 ### Core Components
 
 ```go
-type IOFastPathV3 struct {
+type IOFastPath struct {
     // io_uring integration
     ring               *IOUringContext
     fixedBuffers       [][]byte
@@ -92,7 +92,7 @@ type ContentAddressedStore struct {
 
 ```go
 // High-performance batch I/O operations
-func (io *IOFastPathV3) BatchFileOperations(ops []FileOperation) (*BatchResult, error) {
+func (io *IOFastPath) BatchFileOperations(ops []FileOperation) (*BatchResult, error) {
     start := time.Now()
     
     // Phase 1: Validate and prepare operations
@@ -137,7 +137,7 @@ func (io *IOFastPathV3) BatchFileOperations(ops []FileOperation) (*BatchResult, 
 }
 
 // Atomic write operations using kernel 6.11+ features
-func (io *IOFastPathV3) AtomicWrite(path string, data []byte, options *AtomicWriteOptions) error {
+func (io *IOFastPath) AtomicWrite(path string, data []byte, options *AtomicWriteOptions) error {
     if !io.ring.atomicSupport {
         // Fallback to traditional write with fsync
         return io.fallbackAtomicWrite(path, data, options)
@@ -175,7 +175,7 @@ func (io *IOFastPathV3) AtomicWrite(path string, data []byte, options *AtomicWri
 }
 
 // Zero-copy file operations using registered buffers
-func (io *IOFastPathV3) ZeroCopyRead(fd int, offset int64, size int) ([]byte, error) {
+func (io *IOFastPath) ZeroCopyRead(fd int, offset int64, size int) ([]byte, error) {
     // Get registered buffer from pool
     buffer, err := io.registeredBuffers.GetBuffer(size)
     if err != nil {
@@ -219,7 +219,7 @@ func (io *IOFastPathV3) ZeroCopyRead(fd int, offset int64, size int) ([]byte, er
 
 ```go
 // Multi-shot file monitoring for hot reload scenarios
-func (io *IOFastPathV3) WatchFileChanges(paths []string) (*FileWatcher, error) {
+func (io *IOFastPath) WatchFileChanges(paths []string) (*FileWatcher, error) {
     if !io.ring.multiShotSupport {
         return io.fallbackFileWatcher(paths)
     }
@@ -607,7 +607,7 @@ type IOPerformanceMetrics struct {
 }
 
 // Real-time performance optimization
-func (io *IOFastPathV3) OptimizePerformance() {
+func (io *IOFastPath) OptimizePerformance() {
     ticker := time.NewTicker(10 * time.Second)
     defer ticker.Stop()
     
@@ -621,7 +621,7 @@ func (io *IOFastPathV3) OptimizePerformance() {
     }
 }
 
-func (io *IOFastPathV3) performOptimizationCycle() {
+func (io *IOFastPath) performOptimizationCycle() {
     // Get current performance metrics
     metrics := io.metrics.GetCurrentMetrics()
     
@@ -638,7 +638,7 @@ func (io *IOFastPathV3) performOptimizationCycle() {
     io.optimizeCompression(metrics)
 }
 
-func (io *IOFastPathV3) optimizeIOUring(metrics *IOMetrics) {
+func (io *IOFastPath) optimizeIOUring(metrics *IOMetrics) {
     // Adjust queue depth based on latency and throughput
     currentQueueDepth := io.ring.GetQueueDepth()
     targetThroughput := metrics.TargetThroughput
@@ -657,51 +657,4 @@ func (io *IOFastPathV3) optimizeIOUring(metrics *IOMetrics) {
 }
 ```
 
-## Implementation Plan
-
-### Phase 1: Core io_uring Integration (Week 1-2)
-- [ ] Implement IOUringContext with kernel 6.11+ features
-- [ ] Atomic write operations support
-- [ ] Multi-shot operation handling
-- [ ] Zero-copy buffer management
-
-### Phase 2: Content-Addressed Storage (Week 2-3)
-- [ ] CAS implementation with deduplication
-- [ ] Atomic write engine
-- [ ] Transaction log for consistency
-- [ ] Garbage collection and cleanup
-
-### Phase 3: Performance Optimization (Week 3-4)
-- [ ] Multi-tier caching system
-- [ ] Intelligent prefetching engine
-- [ ] Real-time performance monitoring
-- [ ] Cross-platform Wasm VFS support
-
-### Phase 4: Testing and Validation (Week 4)
-- [ ] I/O performance benchmarking
-- [ ] Atomic operation validation
-- [ ] Cross-platform compatibility testing
-- [ ] Stress testing under high load
-
-## Success Criteria
-
-### Performance Targets
-- [ ] **Throughput**: >2.5GB/s sustained I/O performance
-- [ ] **Latency**: <1ms average I/O latency for cached operations
-- [ ] **Deduplication**: >60% storage savings for typical workloads
-- [ ] **Cache Hit Rate**: >85% for hot data access
-- [ ] **Atomic Operations**: <5ms for atomic write operations
-
-### Reliability Metrics
-- [ ] **Data Consistency**: 100% atomic operation guarantees
-- [ ] **Crash Recovery**: <100ms recovery time after system crash
-- [ ] **Error Handling**: Graceful fallback for all failure modes
-- [ ] **Cross-Platform**: <20% performance variance across platforms
-
-### Scalability Validation
-- [ ] Linear throughput scaling with additional I/O workers
-- [ ] Efficient memory usage under high concurrency
-- [ ] Proper backpressure handling under extreme load
-- [ ] Stable performance with large CAS stores (>1TB)
-
-The I/O Fast Path Fragment provides the high-performance I/O foundation needed to achieve Phantom Fragment V3's ambitious throughput and latency targets while maintaining data consistency and cross-platform compatibility.
+The I/O Fast Path Fragment provides the high-performance I/O foundation needed to achieve Phantom Fragment's ambitious throughput and latency targets while maintaining data consistency and cross-platform compatibility.

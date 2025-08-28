@@ -1,4 +1,4 @@
-# Security at Line Rate V3 - Design Specification
+# Security at Line Rate
 
 ## Overview
 
@@ -7,7 +7,7 @@ The **Security at Line Rate Fragment** delivers zero-overhead security through B
 ## Core Architecture
 
 ```go
-type SecurityLineRateV3 struct {
+type SecurityLineRate struct {
     // BPF-LSM integration
     bpfLSMManager       *BPFLSMManager
     landlockIntegration *LandlockIntegration
@@ -28,7 +28,7 @@ type SecurityLineRateV3 struct {
 }
 
 // AOT policy compilation for zero runtime overhead
-func (slr *SecurityLineRateV3) CompileSecurityPolicy(profile string, policy *SecurityPolicy) error {
+func (slr *SecurityLineRate) CompileSecurityPolicy(profile string, policy *SecurityPolicy) error {
     // Phase 1: Compile seccomp rules to BPF bytecode
     seccompBPF, err := slr.policyCompiler.CompileSeccomp(policy.SeccompRules)
     if err != nil {
@@ -59,7 +59,7 @@ func (slr *SecurityLineRateV3) CompileSecurityPolicy(profile string, policy *Sec
 }
 
 // Zero-overhead policy application
-func (slr *SecurityLineRateV3) ApplyCompiledPolicy(pid int, profile string) error {
+func (slr *SecurityLineRate) ApplyCompiledPolicy(pid int, profile string) error {
     start := time.Now()
     
     policy, err := slr.policyCache.Get(profile)
@@ -111,13 +111,3 @@ func (blm *BPFLSMManager) EnforcePolicy(policy *BFPLSMPolicy) error {
 - AppArmor/SELinux integration
 - Comprehensive audit logging
 - Real-time threat detection
-
-## Performance Targets
-- **Policy Application**: <5ms total time
-- **Runtime Overhead**: <1% performance impact
-- **Security Decision**: <1μs per system call
-- **Memory Overhead**: <2MB per security context
-
-## Implementation Plan
-### Week 1-2: BPF-LSM integration and policy compiler
-### Week 3-4: Landlock integration and performance optimization
