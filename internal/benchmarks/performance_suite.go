@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phantom-fragment/phantom-fragment/internal/fragments"
 	"github.com/phantom-fragment/phantom-fragment/internal/orchestrator"
+	"github.com/phantom-fragment/phantom-fragment/pkg/fragments"
 	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
@@ -27,7 +27,6 @@ type PerformanceBenchmarkSuite struct {
 	results *BenchmarkResults
 
 	// Concurrency control
-	mu sync.RWMutex
 }
 
 // Benchmark configuration

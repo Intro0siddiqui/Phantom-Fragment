@@ -26,10 +26,10 @@ This command displays logs from containers created with 'create'.
 It supports following logs in real-time and filtering by time.
 
 Examples:
-  aisbx logs abc123           # Show all logs
-  aisbx logs --follow abc123  # Follow logs in real-time
-  aisbx logs --tail 50 abc123 # Show last 50 lines
-  aisbx logs --since 1h abc123 # Show logs since 1 hour ago`,
+  phantom logs abc123           # Show all logs
+  phantom logs --follow abc123  # Follow logs in real-time
+  phantom logs --tail 50 abc123 # Show last 50 lines
+  phantom logs --since 1h abc123 # Show logs since 1 hour ago`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			containerID := args[0]
@@ -51,7 +51,7 @@ func showContainerLogs(containerID string, follow bool, tail int, since string) 
 		return fmt.Errorf("failed to get cache directory: %w", err)
 	}
 
-	logsDir := filepath.Join(cacheDir, "ai-sandbox", "logs")
+	logsDir := filepath.Join(cacheDir, "phantom", "logs")
 	logFile := filepath.Join(logsDir, containerID+".log")
 
 	// Check if log file exists

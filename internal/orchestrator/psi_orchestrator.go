@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/phantom-fragment/phantom-fragment/internal/fragments"
+	"github.com/phantom-fragment/phantom-fragment/pkg/fragments"
 	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
@@ -22,8 +22,8 @@ type PSIAwareOrchestrator struct {
 
 	// Fragment management
 	zygoteSpawner *fragments.ZygoteSpawnerV3
-	fragmentPools map[string]*FragmentPool
-	loadBalancer  *LoadBalancer
+	// fragmentPools are managed internally by the ZygoteSpawnerV3.
+	loadBalancer *LoadBalancer
 
 	// Scheduling and placement
 	scheduler       *IntelligentScheduler
@@ -111,29 +111,6 @@ type NodeUtilization struct {
 	LastUpdate     time.Time
 }
 
-// Fragment pool management
-type FragmentPool struct {
-	Profile       string
-	WarmProcesses []*fragments.WarmProcess
-	PoolSize      int
-	TargetSize    int
-	MinSize       int
-	MaxSize       int
-
-	// Performance tracking
-	SpawnCount    int64
-	AvgSpawnTime  time.Duration
-	LastSpawnTime time.Time
-
-	// NUMA affinity
-	PreferredNode int
-	NodeAffinity  map[int]int // node -> process count
-
-	// Health and lifecycle
-	HealthStatus    PoolHealthStatus
-	LastHealthCheck time.Time
-}
-
 type PoolHealthStatus int
 
 const (
@@ -191,8 +168,8 @@ func NewPSIAwareOrchestrator(config *OrchestratorConfig, zygoteSpawner *fragment
 	orchestrator := &PSIAwareOrchestrator{
 		config:        config,
 		zygoteSpawner: zygoteSpawner,
-		fragmentPools: make(map[string]*FragmentPool),
-		shutdown:      make(chan struct{}),
+		// fragmentPools are managed internally by the ZygoteSpawnerV3.
+		shutdown: make(chan struct{}),
 	}
 
 	// Initialize PSI monitor
@@ -238,14 +215,10 @@ func (o *PSIAwareOrchestrator) SpawnContainer(ctx context.Context, profile strin
 		return nil, fmt.Errorf("NUMA node selection failed: %w", err)
 	}
 
-	// Phase 3: Get or create fragment pool
-	pool, err := o.getFragmentPool(profile, targetNode)
-	if err != nil {
-		return nil, fmt.Errorf("fragment pool access failed: %w", err)
-	}
+	// Phase 3: Spawning is handled by the ZygoteSpawner, which manages pools internally.
 
 	// Phase 4: Spawn container from pool
-	container, err := o.spawnFromPool(ctx, pool, request)
+	container, err := o.zygoteSpawner.SpawnFromPool(ctx, profile, request)
 	if err != nil {
 		return nil, fmt.Errorf("container spawn failed: %w", err)
 	}
@@ -261,7 +234,7 @@ func (o *PSIAwareOrchestrator) SpawnContainer(ctx context.Context, profile strin
 	// Phase 6: Update metrics and tracking
 	spawnDuration := time.Since(start)
 	o.metrics.RecordContainerSpawn(profile, targetNode, spawnDuration)
-	o.updatePoolMetrics(pool, spawnDuration)
+	// Pool metrics are now handled internally by the ZygoteSpawner.
 
 	return container, nil
 }
@@ -353,9 +326,7 @@ func (o *PSIAwareOrchestrator) Start(ctx context.Context) error {
 	o.wg.Add(1)
 	go o.numaUtilizationLoop(ctx)
 
-	// Start pool management
-	o.wg.Add(1)
-	go o.poolManagementLoop(ctx)
+	// The poolManagementLoop is now handled internally by the ZygoteSpawnerV3.
 
 	// Start health checking
 	o.wg.Add(1)
@@ -551,20 +522,12 @@ type TrendAnalyzer struct{}
 type PressureThresholds struct{}
 type AlertManager struct{}
 
-func (o *PSIAwareOrchestrator) getFragmentPool(_ string, _ int) (*FragmentPool, error) {
-	return &FragmentPool{}, nil
-}
-func (o *PSIAwareOrchestrator) spawnFromPool(_ context.Context, _ *FragmentPool, _ *types.SpawnRequest) (*types.Container, error) {
-	return &types.Container{}, nil
-}
 func (o *PSIAwareOrchestrator) applyNUMAAffinity(_ *types.Container, _ int) error {
 	return nil
 }
-func (o *PSIAwareOrchestrator) updatePoolMetrics(pool *FragmentPool, duration time.Duration) {}
-func (o *PSIAwareOrchestrator) hasProfileAffinity(_ int, _ string) bool                      { return false }
-func (o *PSIAwareOrchestrator) numaUtilizationLoop(ctx context.Context)                      {}
-func (o *PSIAwareOrchestrator) poolManagementLoop(ctx context.Context)                       {}
-func (o *PSIAwareOrchestrator) healthCheckLoop(ctx context.Context)                          {}
-func (o *PSIAwareOrchestrator) metricsLoop(ctx context.Context)                              {}
+func (o *PSIAwareOrchestrator) hasProfileAffinity(_ int, _ string) bool { return false }
+func (o *PSIAwareOrchestrator) numaUtilizationLoop(ctx context.Context) {}
+func (o *PSIAwareOrchestrator) healthCheckLoop(ctx context.Context)     {}
+func (o *PSIAwareOrchestrator) metricsLoop(ctx context.Context)         {}
 func (m *OrchestratorMetrics) RecordContainerSpawn(profile string, node int, duration time.Duration) {
 }

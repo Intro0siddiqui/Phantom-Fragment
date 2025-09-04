@@ -5,7 +5,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/phantom-fragment/phantom-fragment/internal/fragments"
+	"github.com/phantom-fragment/phantom-fragment/pkg/fragments"
 )
 
 func main() {
@@ -157,84 +157,4 @@ func displayPerformanceMetrics(manager *fragments.ModularFragmentManager) {
 	fmt.Printf("Average Load Time: %v\n", metrics["average_load_time"])
 	fmt.Printf("Loaded Components: %d\n", metrics["loaded_components"])
 	fmt.Printf("Cached Fragments: %d\n", metrics["cached_fragments"])
-}
-
-// Example usage functions
-func demonstrateTaskAnalysis() {
-	fmt.Println("\n🔍 Task Analysis Demo:")
-	fmt.Println("--------------------")
-	
-	analyzer := fragments.NewTaskAnalyzer()
-	
-	tasks := []*fragments.Task{
-		fragments.NewTask("echo", "Hello"),
-		fragments.NewTask("curl", "https://example.com"),
-		fragments.NewTask("nslookup", "google.com"),
-		fragments.NewTask("systemctl", "status", "ssh"),
-		fragments.NewTask("mount", "/dev/sda1", "/mnt"),
-	}
-	
-	for _, task := range tasks {
-		capabilities := analyzer.AnalyzeTask(task)
-		complexity := analyzer.AnalyzeTaskComplexity(task)
-		
-		fmt.Printf("Task: %s\n", task.GetFullCommand())
-		fmt.Printf("  Complexity: %s\n", complexity.String())
-		fmt.Printf("  Capabilities: %d\n", len(capabilities))
-		
-		if len(capabilities) > 0 {
-			fmt.Printf("  Required: ")
-			first := true
-			for capability := range capabilities {
-				if !first {
-					fmt.Print(", ")
-				}
-				fmt.Print(string(capability))
-				first = false
-			}
-			fmt.Println()
-		}
-		fmt.Println()
-	}
-}
-
-func demonstrateComponentLoading() {
-	fmt.Println("\n📦 Component Loading Demo:")
-	fmt.Println("-------------------------")
-	
-	library := fragments.NewUnifiedOSLibrary()
-	loader := fragments.NewComponentLoader(library)
-	
-	// List all available components
-	components := library.ListComponents()
-	fmt.Printf("Available Components: %d\n", len(components))
-	
-	for name, component := range components {
-		fmt.Printf("  %s: %.1f MB - %s\n", 
-			name, 
-			float64(component.Size)/(1024*1024),
-			component.Description)
-	}
-	
-	// Load some components
-	fmt.Println("\nLoading components...")
-	componentNames := []string{"tcp-stack", "dns-resolver", "socket-api"}
-	
-	loaded, err := loader.LoadComponents(componentNames)
-	if err != nil {
-		fmt.Printf("Error loading components: %v\n", err)
-		return
-	}
-	
-	fmt.Printf("Successfully loaded %d components:\n", len(loaded))
-	for name, loadedComponent := range loaded {
-		fmt.Printf("  %s: Loaded in %v\n", name, loadedComponent.LoadTime)
-	}
-	
-	// Display loader statistics
-	stats := loader.GetLoadStats()
-	fmt.Printf("\nLoader Statistics:\n")
-	fmt.Printf("  Loaded Components: %d\n", stats["loaded_count"])
-	fmt.Printf("  Total Memory: %.1f MB\n", stats["total_memory_mb"])
-	fmt.Printf("  Average Load Time: %v\n", stats["avg_load_time"])
 }

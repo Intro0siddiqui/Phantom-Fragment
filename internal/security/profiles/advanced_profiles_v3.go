@@ -13,132 +13,132 @@ import (
 // Advanced Security Profile Management V3
 type AdvancedSecurityProfilesV3 struct {
 	// Profile management
-	profiles        map[string]*SecurityProfileV3
-	activeProfiles  map[string]*ActiveProfile
-	profileCache    *ProfileCache
-	
+	profiles       map[string]*SecurityProfileV3
+	activeProfiles map[string]*ActiveProfile
+	profileCache   *ProfileCache
+
 	// Capability management
-	capManager      *capabilities.Manager
-	capEnforcer     *capabilities.Dropper
-	
+	capManager  *capabilities.Manager
+	capEnforcer *capabilities.Dropper
+
 	// Runtime enforcement
-	enforcement     *RuntimeEnforcement
+	enforcement      *RuntimeEnforcement
 	violationTracker *ViolationTracker
-	auditLogger     *AuditLogger
-	
+	auditLogger      *AuditLogger
+
 	// Configuration
-	config          *ProfileConfig
-	
+	config *ProfileConfig
+
 	// Synchronization
-	mu              sync.RWMutex
-	shutdown        chan struct{}
+	mu       sync.RWMutex
+	shutdown chan struct{}
 }
 
 // Enhanced Security Profile V3
 type SecurityProfileV3 struct {
 	// Metadata
-	Name            string            `json:"name" yaml:"name"`
-	Version         string            `json:"version" yaml:"version"`
-	Description     string            `json:"description" yaml:"description"`
-	Tags            []string          `json:"tags" yaml:"tags"`
-	
+	Name        string   `json:"name" yaml:"name"`
+	Version     string   `json:"version" yaml:"version"`
+	Description string   `json:"description" yaml:"description"`
+	Tags        []string `json:"tags" yaml:"tags"`
+
 	// Security controls
-	Seccomp         *SeccompConfigV3  `json:"seccomp" yaml:"seccomp"`
-	Capabilities    *CapabilityConfig `json:"capabilities" yaml:"capabilities"`
-	Namespaces      *NamespaceConfig  `json:"namespaces" yaml:"namespaces"`
-	LSM             *LSMConfig        `json:"lsm" yaml:"lsm"`
-	
+	Seccomp      *SeccompConfigV3  `json:"seccomp" yaml:"seccomp"`
+	Capabilities *CapabilityConfig `json:"capabilities" yaml:"capabilities"`
+	Namespaces   *NamespaceConfig  `json:"namespaces" yaml:"namespaces"`
+	LSM          *LSMConfig        `json:"lsm" yaml:"lsm"`
+
 	// Resource limits
-	Resources       *ResourceLimits   `json:"resources" yaml:"resources"`
-	Network         *NetworkPolicy    `json:"network" yaml:"network"`
-	Filesystem      *FilesystemPolicy `json:"filesystem" yaml:"filesystem"`
-	
+	Resources  *ResourceLimits   `json:"resources" yaml:"resources"`
+	Network    *NetworkPolicy    `json:"network" yaml:"network"`
+	Filesystem *FilesystemPolicy `json:"filesystem" yaml:"filesystem"`
+
 	// Runtime behavior
-	Enforcement     *EnforcementMode  `json:"enforcement" yaml:"enforcement"`
-	Monitoring      *MonitoringConfig `json:"monitoring" yaml:"monitoring"`
-	
+	Enforcement *EnforcementMode  `json:"enforcement" yaml:"enforcement"`
+	Monitoring  *MonitoringConfig `json:"monitoring" yaml:"monitoring"`
+
 	// Performance settings
-	Performance     *PerformanceConfig `json:"performance" yaml:"performance"`
-	
+	Performance *PerformanceConfig `json:"performance" yaml:"performance"`
+
 	// Metadata
-	CreatedAt       time.Time         `json:"created_at"`
-	UpdatedAt       time.Time         `json:"updated_at"`
-	UsageCount      int64             `json:"usage_count"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	UsageCount int64     `json:"usage_count"`
 }
 
 // Enhanced Seccomp Configuration
 type SeccompConfigV3 struct {
 	// BPF program configuration
-	Mode            string                 `json:"mode" yaml:"mode"` // "strict", "filter", "allow"
-	DefaultAction   string                 `json:"default_action" yaml:"default_action"`
-	Architecture    []string               `json:"architecture" yaml:"architecture"`
-	
+	Mode          string   `json:"mode" yaml:"mode"` // "strict", "filter", "allow"
+	DefaultAction string   `json:"default_action" yaml:"default_action"`
+	Architecture  []string `json:"architecture" yaml:"architecture"`
+
 	// Syscall policies
-	AllowedSyscalls []SyscallRule         `json:"allowed_syscalls" yaml:"allowed_syscalls"`
-	DeniedSyscalls  []SyscallRule         `json:"denied_syscalls" yaml:"denied_syscalls"`
-	ConditionalRules []ConditionalSyscall  `json:"conditional_rules" yaml:"conditional_rules"`
-	
+	AllowedSyscalls  []SyscallRule        `json:"allowed_syscalls" yaml:"allowed_syscalls"`
+	DeniedSyscalls   []SyscallRule        `json:"denied_syscalls" yaml:"denied_syscalls"`
+	ConditionalRules []ConditionalSyscall `json:"conditional_rules" yaml:"conditional_rules"`
+
 	// Performance optimizations
-	FastPath        bool                  `json:"fast_path" yaml:"fast_path"`
-	JITCompile      bool                  `json:"jit_compile" yaml:"jit_compile"`
-	CachePolicy     string                `json:"cache_policy" yaml:"cache_policy"`
-	
+	FastPath    bool   `json:"fast_path" yaml:"fast_path"`
+	JITCompile  bool   `json:"jit_compile" yaml:"jit_compile"`
+	CachePolicy string `json:"cache_policy" yaml:"cache_policy"`
+
 	// Monitoring
-	LogViolations   bool                  `json:"log_violations" yaml:"log_violations"`
-	MetricsEnabled  bool                  `json:"metrics_enabled" yaml:"metrics_enabled"`
+	LogViolations  bool `json:"log_violations" yaml:"log_violations"`
+	MetricsEnabled bool `json:"metrics_enabled" yaml:"metrics_enabled"`
 }
 
 // Syscall rule with advanced conditions
 type SyscallRule struct {
-	Name            string                 `json:"name" yaml:"name"`
-	Number          int                    `json:"number,omitempty" yaml:"number,omitempty"`
-	Action          string                 `json:"action" yaml:"action"` // "allow", "deny", "trace", "trap"
-	Args            []SyscallArgument      `json:"args,omitempty" yaml:"args,omitempty"`
-	Comment         string                 `json:"comment,omitempty" yaml:"comment,omitempty"`
+	Name    string            `json:"name" yaml:"name"`
+	Number  int               `json:"number,omitempty" yaml:"number,omitempty"`
+	Action  string            `json:"action" yaml:"action"` // "allow", "deny", "trace", "trap"
+	Args    []SyscallArgument `json:"args,omitempty" yaml:"args,omitempty"`
+	Comment string            `json:"comment,omitempty" yaml:"comment,omitempty"`
 }
 
 // Conditional syscall with context
 type ConditionalSyscall struct {
-	Syscall         SyscallRule           `json:"syscall" yaml:"syscall"`
-	Conditions      []SecurityCondition   `json:"conditions" yaml:"conditions"`
-	Priority        int                   `json:"priority" yaml:"priority"`
+	Syscall    SyscallRule         `json:"syscall" yaml:"syscall"`
+	Conditions []SecurityCondition `json:"conditions" yaml:"conditions"`
+	Priority   int                 `json:"priority" yaml:"priority"`
 }
 
 // Security condition for dynamic enforcement
 type SecurityCondition struct {
-	Type            string                `json:"type" yaml:"type"` // "time", "resource", "process", "network"
-	Operator        string                `json:"operator" yaml:"operator"` // "eq", "lt", "gt", "contains"
-	Value           interface{}           `json:"value" yaml:"value"`
-	Description     string                `json:"description" yaml:"description"`
+	Type        string      `json:"type" yaml:"type"`         // "time", "resource", "process", "network"
+	Operator    string      `json:"operator" yaml:"operator"` // "eq", "lt", "gt", "contains"
+	Value       interface{} `json:"value" yaml:"value"`
+	Description string      `json:"description" yaml:"description"`
 }
 
 // Syscall argument constraint
 type SyscallArgument struct {
-	Index           int                   `json:"index" yaml:"index"`
-	Value           uint64                `json:"value" yaml:"value"`
-	ValueTwo        uint64                `json:"value_two,omitempty" yaml:"value_two,omitempty"`
-	Op              string                `json:"op" yaml:"op"` // "eq", "ne", "lt", "le", "gt", "ge", "masked_eq"
+	Index    int    `json:"index" yaml:"index"`
+	Value    uint64 `json:"value" yaml:"value"`
+	ValueTwo uint64 `json:"value_two,omitempty" yaml:"value_two,omitempty"`
+	Op       string `json:"op" yaml:"op"` // "eq", "ne", "lt", "le", "gt", "ge", "masked_eq"
 }
 
 // Capability configuration
 type CapabilityConfig struct {
-	Mode            string                `json:"mode" yaml:"mode"` // "drop_all", "allow_list", "deny_list"
-	AllowedCaps     []string              `json:"allowed_caps" yaml:"allowed_caps"`
-	DeniedCaps      []string              `json:"denied_caps" yaml:"denied_caps"`
-	AmbientCaps     []string              `json:"ambient_caps" yaml:"ambient_caps"`
-	BoundingSet     []string              `json:"bounding_set" yaml:"bounding_set"`
-	NoNewPrivs      bool                  `json:"no_new_privs" yaml:"no_new_privs"`
+	Mode        string   `json:"mode" yaml:"mode"` // "drop_all", "allow_list", "deny_list"
+	AllowedCaps []string `json:"allowed_caps" yaml:"allowed_caps"`
+	DeniedCaps  []string `json:"denied_caps" yaml:"denied_caps"`
+	AmbientCaps []string `json:"ambient_caps" yaml:"ambient_caps"`
+	BoundingSet []string `json:"bounding_set" yaml:"bounding_set"`
+	NoNewPrivs  bool     `json:"no_new_privs" yaml:"no_new_privs"`
 }
 
 // Profile configuration
 type ProfileConfig struct {
-	ProfilesPath        string            `json:"profiles_path" yaml:"profiles_path"`
-	CacheSize           int               `json:"cache_size" yaml:"cache_size"`
-	CacheTTL            time.Duration     `json:"cache_ttl" yaml:"cache_ttl"`
-	EnableMetrics       bool              `json:"enable_metrics" yaml:"enable_metrics"`
-	EnableAudit         bool              `json:"enable_audit" yaml:"enable_audit"`
-	DefaultProfile      string            `json:"default_profile" yaml:"default_profile"`
-	EnforcementMode     string            `json:"enforcement_mode" yaml:"enforcement_mode"`
+	ProfilesPath    string        `json:"profiles_path" yaml:"profiles_path"`
+	CacheSize       int           `json:"cache_size" yaml:"cache_size"`
+	CacheTTL        time.Duration `json:"cache_ttl" yaml:"cache_ttl"`
+	EnableMetrics   bool          `json:"enable_metrics" yaml:"enable_metrics"`
+	EnableAudit     bool          `json:"enable_audit" yaml:"enable_audit"`
+	DefaultProfile  string        `json:"default_profile" yaml:"default_profile"`
+	EnforcementMode string        `json:"enforcement_mode" yaml:"enforcement_mode"`
 }
 
 // NewAdvancedSecurityProfilesV3 creates enhanced security profile manager
@@ -166,7 +166,7 @@ func NewAdvancedSecurityProfilesV3(config *ProfileConfig) (*AdvancedSecurityProf
 	// Initialize capability manager and enforcer (cross-platform no-ops)
 	asp.capManager = capabilities.NewManager(nil)
 	asp.capEnforcer = capabilities.NewDropper()
-	
+
 	// Initialize other components
 	asp.profileCache = NewProfileCache(config.CacheSize, config.CacheTTL)
 	asp.enforcement = NewRuntimeEnforcement()
@@ -207,7 +207,7 @@ func (asp *AdvancedSecurityProfilesV3) LoadProfile(name string) (*SecurityProfil
 
 	// Cache and store
 	asp.profileCache.Set(name, profile)
-	
+
 	asp.mu.Lock()
 	asp.profiles[name] = profile
 	asp.mu.Unlock()
@@ -247,14 +247,10 @@ func (asp *AdvancedSecurityProfilesV3) ApplyProfile(ctx context.Context, contain
 	return nil
 }
 
-// applySeccompProfile compiles and applies seccomp BPF program
-func (asp *AdvancedSecurityProfilesV3) applySeccompProfile(ctx context.Context, containerID string, config *SeccompConfigV3) error {
-	// Seccomp is handled by the seccomp manager, not BPF compiler directly
-	return nil
-}
-
 // applyCapabilityProfile applies capability restrictions
-func (asp *AdvancedSecurityProfilesV3) applyCapabilityProfile(ctx context.Context, containerID string, config *CapabilityConfig) error {
+// Note: Parameters are currently unused as this is a placeholder implementation
+// TODO: Implement capability profile application
+func (asp *AdvancedSecurityProfilesV3) applyCapabilityProfile(_ context.Context, _ string, _ *CapabilityConfig) error {
 	// Use the capability enforcer to apply restrictions
 	// Note: In a real implementation, this would convert the config to the appropriate format
 	// for the capability enforcer, but for now we'll just return nil
@@ -264,12 +260,12 @@ func (asp *AdvancedSecurityProfilesV3) applyCapabilityProfile(ctx context.Contex
 // loadBuiltinProfiles loads built-in security profiles
 func (asp *AdvancedSecurityProfilesV3) loadBuiltinProfiles() error {
 	profiles := map[string]*SecurityProfileV3{
-		"strict": asp.createStrictProfile(),
-		"standard": asp.createStandardProfile(),
+		"strict":      asp.createStrictProfile(),
+		"standard":    asp.createStandardProfile(),
 		"development": asp.createDevelopmentProfile(),
-		"python-ai": asp.createPythonAIProfile(),
-		"node-dev": asp.createNodeDevProfile(),
-		"go-dev": asp.createGoDevProfile(),
+		"python-ai":   asp.createPythonAIProfile(),
+		"node-dev":    asp.createNodeDevProfile(),
+		"go-dev":      asp.createGoDevProfile(),
 	}
 
 	for name, profile := range profiles {
@@ -303,9 +299,9 @@ func (asp *AdvancedSecurityProfilesV3) createStrictProfile() *SecurityProfileV3 
 			MetricsEnabled: true,
 		},
 		Capabilities: &CapabilityConfig{
-			Mode:           "drop_all",
-			AllowedCaps:    []string{},
-			NoNewPrivs:     true,
+			Mode:        "drop_all",
+			AllowedCaps: []string{},
+			NoNewPrivs:  true,
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -362,9 +358,9 @@ func (asp *AdvancedSecurityProfilesV3) createPythonAIProfile() *SecurityProfileV
 			MetricsEnabled: true,
 		},
 		Capabilities: &CapabilityConfig{
-			Mode:           "allow_list",
-			AllowedCaps:    []string{"CAP_NET_BIND_SERVICE"},
-			NoNewPrivs:     true,
+			Mode:        "allow_list",
+			AllowedCaps: []string{"CAP_NET_BIND_SERVICE"},
+			NoNewPrivs:  true,
 		},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -416,8 +412,10 @@ func (asp *AdvancedSecurityProfilesV3) createGoDevProfile() *SecurityProfileV3 {
 	}
 }
 
-func (asp *AdvancedSecurityProfilesV3) loadProfileFromFile(path string) (*SecurityProfileV3, error) {
+func (asp *AdvancedSecurityProfilesV3) loadProfileFromFile(_ string) (*SecurityProfileV3, error) {
 	// Load profile from YAML/JSON file
+	// Note: Parameter is currently unused as this is a placeholder implementation
+	// TODO: Implement profile loading from file
 	return &SecurityProfileV3{}, nil
 }
 
@@ -449,11 +447,11 @@ type MonitoringConfig struct{}
 type PerformanceConfig struct{}
 
 func NewProfileCache(size int, ttl time.Duration) *ProfileCache { return &ProfileCache{} }
-func NewRuntimeEnforcement() *RuntimeEnforcement { return &RuntimeEnforcement{} }
-func NewViolationTracker() *ViolationTracker { return &ViolationTracker{} }
-func NewAuditLogger(enabled bool) *AuditLogger { return &AuditLogger{} }
+func NewRuntimeEnforcement() *RuntimeEnforcement                { return &RuntimeEnforcement{} }
+func NewViolationTracker() *ViolationTracker                    { return &ViolationTracker{} }
+func NewAuditLogger(enabled bool) *AuditLogger                  { return &AuditLogger{} }
 
-func (pc *ProfileCache) Get(name string) *SecurityProfileV3 { return nil }
+func (pc *ProfileCache) Get(name string) *SecurityProfileV3          { return nil }
 func (pc *ProfileCache) Set(name string, profile *SecurityProfileV3) {}
 
 func (al *AuditLogger) LogProfileApplication(containerID, profileName, enforcementID string) {}

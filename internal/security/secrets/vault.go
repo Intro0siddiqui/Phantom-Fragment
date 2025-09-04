@@ -56,7 +56,7 @@ type Vault struct {
 	// Enhanced security features
 	masterSalt   []byte
 	keyVersion   int
-	auditLogger  AuditLogger
+	_auditLogger AuditLogger
 	accessPolicy AccessPolicy
 
 	// Key rotation and backup

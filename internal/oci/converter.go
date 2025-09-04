@@ -12,7 +12,7 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	"github.com/opencontainers/image-spec/specs-go"
-	"github.com/opencontainers/image-spec/specs-go/v1"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // Converter handles OCI image conversion
@@ -35,7 +35,7 @@ func (c *Converter) ConvertToOCI(sandboxID string) error {
 	layout := v1.ImageLayout{
 		Version: "1.0.0",
 	}
-	
+
 	layoutPath := filepath.Join(c.imageDir, "oci-layout")
 	if err := c.writeJSON(layoutPath, layout); err != nil {
 		return fmt.Errorf("failed to write image layout: %w", err)
@@ -90,9 +90,9 @@ func (c *Converter) ConvertToOCI(sandboxID string) error {
 		},
 		History: []v1.History{
 			{
-				Created:    func() *time.Time { t := time.Now(); return &t }(),
-				CreatedBy:  "ai-sandbox",
-				Comment:    "Generated from sandbox environment",
+				Created:   func() *time.Time { t := time.Now(); return &t }(),
+				CreatedBy: "phantom",
+				Comment:   "Generated from sandbox environment",
 			},
 		},
 	}
@@ -239,7 +239,7 @@ func (c *Converter) ConvertFromOCI(imagePath, sandboxID string) error {
 // extractLayer extracts layer from OCI image
 func (c *Converter) extractLayer(imagePath, digest, sandboxID string) error {
 	layerPath := filepath.Join(imagePath, "blobs", "sha256", digest)
-	
+
 	file, err := os.Open(layerPath)
 	if err != nil {
 		return fmt.Errorf("failed to open layer: %w", err)
@@ -253,7 +253,7 @@ func (c *Converter) extractLayer(imagePath, digest, sandboxID string) error {
 	defer gzipReader.Close()
 
 	tarReader := tar.NewReader(gzipReader)
-	
+
 	sandboxDir := filepath.Join(c.configDir, "sandboxes", sandboxID)
 	if err := os.MkdirAll(sandboxDir, 0755); err != nil {
 		return fmt.Errorf("failed to create sandbox directory: %w", err)
@@ -269,7 +269,7 @@ func (c *Converter) extractLayer(imagePath, digest, sandboxID string) error {
 		}
 
 		targetPath := filepath.Join(sandboxDir, header.Name)
-		
+
 		// Ensure directory exists
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 			return fmt.Errorf("failed to create directory: %w", err)

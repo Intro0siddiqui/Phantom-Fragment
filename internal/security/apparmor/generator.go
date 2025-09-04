@@ -67,8 +67,8 @@ func (g *ProfileGenerator) GenerateProfiles() error {
 // generateStrictProfile creates maximum security profile
 func (g *ProfileGenerator) generateStrictProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-strict",
-		Description: "Maximum security profile for AI sandbox - minimal system access",
+		Name:        "phantom-strict",
+		Description: "Maximum security profile for Phantom sandbox - minimal system access",
 		Includes:    []string{"tunables/global"},
 		Variables: map[string]string{
 			"HOME": "/tmp",
@@ -96,7 +96,7 @@ func (g *ProfileGenerator) generateStrictProfile() *Profile {
 // generateDevProfile creates development-friendly profile
 func (g *ProfileGenerator) generateDevProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-dev",
+		Name:        "phantom-dev",
 		Description: "Development profile with relaxed restrictions for debugging",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -124,7 +124,7 @@ func (g *ProfileGenerator) generateDevProfile() *Profile {
 // generatePythonProfile creates Python-specific profile
 func (g *ProfileGenerator) generatePythonProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-python",
+		Name:        "phantom-python",
 		Description: "Python runtime profile with pip and virtualenv support",
 		Includes:    []string{"tunables/global", "abstractions/base", "abstractions/python"},
 		Variables: map[string]string{
@@ -148,7 +148,7 @@ func (g *ProfileGenerator) generatePythonProfile() *Profile {
 // generateNodejsProfile creates Node.js-specific profile
 func (g *ProfileGenerator) generateNodejsProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-nodejs",
+		Name:        "phantom-nodejs",
 		Description: "Node.js runtime profile with npm support",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -172,7 +172,7 @@ func (g *ProfileGenerator) generateNodejsProfile() *Profile {
 // generateGoProfile creates Go-specific profile
 func (g *ProfileGenerator) generateGoProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-go",
+		Name:        "phantom-go",
 		Description: "Go runtime profile with build and module support",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -195,7 +195,7 @@ func (g *ProfileGenerator) generateGoProfile() *Profile {
 // generateRustProfile creates Rust-specific profile
 func (g *ProfileGenerator) generateRustProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-rust",
+		Name:        "phantom-rust",
 		Description: "Rust runtime profile with cargo support",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -217,7 +217,7 @@ func (g *ProfileGenerator) generateRustProfile() *Profile {
 // generateJavaProfile creates Java-specific profile
 func (g *ProfileGenerator) generateJavaProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-java",
+		Name:        "phantom-java",
 		Description: "Java runtime profile with JVM and Maven support",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -240,7 +240,7 @@ func (g *ProfileGenerator) generateJavaProfile() *Profile {
 // generateContainerProfile creates container runtime profile
 func (g *ProfileGenerator) generateContainerProfile() *Profile {
 	return &Profile{
-		Name:        "aisbx-container",
+		Name:        "phantom-container",
 		Description: "Container runtime profile with Docker/Podman support",
 		Includes:    []string{"tunables/global", "abstractions/base"},
 		Variables: map[string]string{
@@ -264,7 +264,7 @@ func (g *ProfileGenerator) generateContainerProfile() *Profile {
 // saveProfile writes AppArmor profile to disk
 func (g *ProfileGenerator) saveProfile(name string, profile *Profile) error {
 	filename := filepath.Join(g.profilesDir, name)
-	
+
 	file, err := os.Create(filename)
 	if err != nil {
 		return err
@@ -298,12 +298,12 @@ profile {{.Name}} flags=(attach_disconnected,mediate_deleted) {
 func LoadProfile(name string) (string, error) {
 	profilesDir := filepath.Join(config.GetConfigDir(), "apparmor")
 	filename := filepath.Join(profilesDir, name)
-	
+
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return "", err
 	}
-	
+
 	return string(data), nil
 }
 

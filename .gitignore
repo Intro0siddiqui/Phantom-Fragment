@@ -4,12 +4,12 @@ bin/
 *.log
 
 # Specific binaries
-/aisbx
-/aisbx.exe
-/aisbx-mcp
-/aisbx-mcp.exe
-/aisbx-supervisor
-/aisbx-supervisor.exe
+/phantom
+/phantom.exe
+/phantom-mcp
+/phantom-mcp.exe
+/phantom-supervisor
+/phantom-supervisor.exe
 
 # Distributions
 build/

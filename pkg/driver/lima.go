@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	limaInstanceName = "ai-sandbox"
+	limaInstanceName = "phantom"
 )
 
 // LimaDriver implements the SandboxDriver interface using Lima (Linux virtual machines on macOS and Windows).

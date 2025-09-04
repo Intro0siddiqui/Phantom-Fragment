@@ -9,8 +9,6 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 // BPF constants - fallback values if unix package is missing them
@@ -19,14 +17,14 @@ const (
 	fallbackBPF_PROG_ATTACH   = 8
 	fallbackBPF_LSM_FILE_OPEN = 1
 	fallbackSYS_BPF           = 321
-	
+
 	// Additional BPF LSM hook constants
-	fallbackBPF_LSM_FILE_PERMISSION      = 2
-	fallbackBPF_LSM_SOCKET_CREATE        = 3
-	fallbackBPF_LSM_TASK_ALLOC           = 4
-	fallbackBPF_LSM_BPRM_CHECK_SECURITY  = 5
-	fallbackBPF_LSM_MMAP_FILE            = 6
-	fallbackBPF_LSM_PTRACE_ACCESS_CHECK  = 7
+	fallbackBPF_LSM_FILE_PERMISSION     = 2
+	fallbackBPF_LSM_SOCKET_CREATE       = 3
+	fallbackBPF_LSM_TASK_ALLOC          = 4
+	fallbackBPF_LSM_BPRM_CHECK_SECURITY = 5
+	fallbackBPF_LSM_MMAP_FILE           = 6
+	fallbackBPF_LSM_PTRACE_ACCESS_CHECK = 7
 )
 
 // Fallback BPF types for cross-platform compatibility
@@ -38,10 +36,10 @@ type BpfInstruction struct {
 }
 
 type BpfAttrProgramAttach struct {
-	TargetFd     uint32
-	AttachBpfFd  uint32
-	AttachType   uint32
-	AttachFlags  uint32
+	TargetFd    uint32
+	AttachBpfFd uint32
+	AttachType  uint32
+	AttachFlags uint32
 }
 
 // Cross-platform BPF functions
@@ -62,75 +60,75 @@ func Syscall(trap, a1, a2, a3 uintptr) (r1, r2 uintptr, err syscall.Errno) {
 // BPF-LSM Security V3 with kernel-level access control
 type BPFLSMSecurityV3 struct {
 	// BPF program management
-	programs        map[string]*BPFProgram
-	lsmHooks        map[string]*LSMHook
-	
+	programs map[string]*BPFProgram
+	lsmHooks map[string]*LSMHook
+
 	// Policy enforcement
-	policyCompiler  *BPFPolicyCompiler
-	policyCache     *PolicyCache
-	enforcer        *KernelEnforcer
-	
+	policyCompiler *BPFPolicyCompiler
+	policyCache    *PolicyCache
+	enforcer       *KernelEnforcer
+
 	// Performance monitoring
-	metrics         *SecurityMetrics
-	fastPath        *FastPathOptimizer
-	
+	metrics  *SecurityMetrics
+	fastPath *FastPathOptimizer
+
 	// Configuration
-	config          *BPFLSMConfig
-	
+	config *BPFLSMConfig
+
 	// Synchronization
-	mu              sync.RWMutex
-	shutdown        chan struct{}
+	mu       sync.RWMutex
+	shutdown chan struct{}
 }
 
 // BPF-LSM Configuration
 type BPFLSMConfig struct {
-	EnableBPFLSM        bool
-	EnableFastPath      bool
-	EnableJITCompile    bool
-	MaxPrograms         int
-	CacheSize           int
-	MetricsInterval     time.Duration
-	SecurityLevel       string
+	EnableBPFLSM     bool
+	EnableFastPath   bool
+	EnableJITCompile bool
+	MaxPrograms      int
+	CacheSize        int
+	MetricsInterval  time.Duration
+	SecurityLevel    string
 }
 
 // BPF Program representation
 type BPFProgram struct {
-	ID              int
-	Name            string
-	Type            int32
-	Instructions    []BPFInstruction
-	LoadedAt        time.Time
-	UsageCount      int64
+	ID               int
+	Name             string
+	Type             int32
+	Instructions     []BPFInstruction
+	LoadedAt         time.Time
+	UsageCount       int64
 	PerformanceStats *ProgramStats
 }
 
 // BPF Instruction
 type BPFInstruction struct {
-	Code    uint16
-	JT      uint8
-	JF      uint8
-	K       uint32
+	Code uint16
+	JT   uint8
+	JF   uint8
+	K    uint32
 }
 
 // LSM Hook representation
 type LSMHook struct {
-	Name            string
-	HookPoint       string
-	Program         *BPFProgram
-	Priority        int
-	Enabled         bool
+	Name      string
+	HookPoint string
+	Program   *BPFProgram
+	Priority  int
+	Enabled   bool
 }
 
 // Security metrics
 type SecurityMetrics struct {
-	EnforcementLatency  *LatencyHistogram
-	ViolationCount      int64
-	AllowedOperations   int64
-	DeniedOperations    int64
-	FastPathHits        int64
-	SlowPathHits        int64
-	
-	mu                  sync.Mutex
+	EnforcementLatency *LatencyHistogram
+	ViolationCount     int64
+	AllowedOperations  int64
+	DeniedOperations   int64
+	FastPathHits       int64
+	SlowPathHits       int64
+
+	mu sync.Mutex
 }
 
 // NewBPFLSMSecurityV3 creates enhanced BPF-LSM security system
@@ -153,20 +151,20 @@ func NewBPFLSMSecurityV3(config *BPFLSMConfig) (*BPFLSMSecurityV3, error) {
 	}
 
 	bls := &BPFLSMSecurityV3{
-		programs:   make(map[string]*BPFProgram),
-		lsmHooks:   make(map[string]*LSMHook),
-		config:     config,
-		shutdown:   make(chan struct{}),
+		programs: make(map[string]*BPFProgram),
+		lsmHooks: make(map[string]*LSMHook),
+		config:   config,
+		shutdown: make(chan struct{}),
 	}
 
 	// Initialize components
 	var err error
-	
+
 	bls.policyCompiler, err = NewBPFPolicyCompiler()
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize policy compiler: %w", err)
 	}
-	
+
 	bls.policyCache = NewPolicyCache(config.CacheSize)
 	bls.enforcer = NewKernelEnforcer()
 	bls.metrics = NewSecurityMetrics()
@@ -242,7 +240,7 @@ func (bls *BPFLSMSecurityV3) loadBPFProgram(hookName string, program *BPFProgram
 	}
 
 	// Attach to LSM hook
-	if err := bls.attachToLSMHook(hookName, progFD, containerID); err != nil {
+	if err := bls.attachToLSMHook(hookName, progFD); err != nil {
 		Close(progFD)
 		return fmt.Errorf("failed to attach to LSM hook: %w", err)
 	}
@@ -250,7 +248,7 @@ func (bls *BPFLSMSecurityV3) loadBPFProgram(hookName string, program *BPFProgram
 	// Store program info
 	program.ID = progFD
 	program.LoadedAt = time.Now()
-	
+
 	bls.mu.Lock()
 	bls.programs[fmt.Sprintf("%s_%s", hookName, containerID)] = program
 	bls.mu.Unlock()
@@ -259,18 +257,18 @@ func (bls *BPFLSMSecurityV3) loadBPFProgram(hookName string, program *BPFProgram
 }
 
 // attachToLSMHook attaches BPF program to specific LSM hook
-func (bls *BPFLSMSecurityV3) attachToLSMHook(hookName string, progFD int, containerID string) error {
+func (bls *BPFLSMSecurityV3) attachToLSMHook(hookName string, progFD int) error {
 	// Use bpf() syscall to attach program to LSM hook
 	// This is a simplified version - actual implementation would use proper BPF attach types
-	
+
 	attr := &BpfAttrProgramAttach{
 		AttachBpfFd: uint32(progFD),
 		AttachType:  bls.getAttachTypeForHook(hookName),
 	}
-	
-	_, _, errno := Syscall(fallbackSYS_BPF, fallbackBPF_PROG_ATTACH, 
+
+	_, _, errno := Syscall(fallbackSYS_BPF, fallbackBPF_PROG_ATTACH,
 		uintptr(unsafe.Pointer(attr)), unsafe.Sizeof(*attr))
-	
+
 	if errno != 0 {
 		return fmt.Errorf("failed to attach BPF program: %v", errno)
 	}
@@ -281,7 +279,7 @@ func (bls *BPFLSMSecurityV3) attachToLSMHook(hookName string, progFD int, contai
 // EnforceFileAccess enforces file access through BPF-LSM
 func (bls *BPFLSMSecurityV3) EnforceFileAccess(containerID string, path string, mode int) error {
 	start := time.Now()
-	
+
 	// Check fast path first
 	if bls.config.EnableFastPath {
 		if allowed := bls.fastPath.CheckFileAccess(containerID, path, mode); allowed {
@@ -336,7 +334,7 @@ func (bls *BPFLSMSecurityV3) loadCoreLSMHooks() error {
 			Priority:  1,
 			Enabled:   true,
 		}
-		
+
 		bls.lsmHooks[hookName] = hook
 	}
 
@@ -354,11 +352,11 @@ func (bls *BPFLSMSecurityV3) getAttachTypeForHook(hookName string) uint32 {
 		"mmap_file":           fallbackBPF_LSM_MMAP_FILE,
 		"ptrace_access_check": fallbackBPF_LSM_PTRACE_ACCESS_CHECK,
 	}
-	
+
 	if attachType, exists := hookTypes[hookName]; exists {
 		return attachType
 	}
-	
+
 	return 0 // Default/unknown
 }
 
@@ -420,7 +418,7 @@ func (bpc *BPFPolicyCompiler) CompilePolicy(yamlPolicy string) (*CompiledPolicy,
 	// Parse YAML policy
 	// Generate BPF instructions
 	// Return compiled policy
-	
+
 	policy := &CompiledPolicy{
 		Programs: make(map[string]*BPFProgram),
 		Metadata: make(map[string]interface{}),
@@ -437,7 +435,7 @@ func (bpc *BPFPolicyCompiler) CompilePolicy(yamlPolicy string) (*CompiledPolicy,
 			{Code: 0x06, JT: 0, JF: 0, K: 0}, // RET_DENY
 		},
 	}
-	
+
 	policy.Programs["file_open"] = fileAccessProgram
 
 	return policy, nil
@@ -451,8 +449,8 @@ type LatencyHistogram struct{}
 type PolicyTemplate struct{}
 type ProgramStats struct{}
 
-func NewPolicyCache(size int) *PolicyCache { return &PolicyCache{} }
-func NewKernelEnforcer() *KernelEnforcer { return &KernelEnforcer{} }
+func NewPolicyCache(size int) *PolicyCache     { return &PolicyCache{} }
+func NewKernelEnforcer() *KernelEnforcer       { return &KernelEnforcer{} }
 func NewFastPathOptimizer() *FastPathOptimizer { return &FastPathOptimizer{} }
 func NewSecurityMetrics() *SecurityMetrics {
 	return &SecurityMetrics{
@@ -460,7 +458,7 @@ func NewSecurityMetrics() *SecurityMetrics {
 	}
 }
 
-func (pc *PolicyCache) Get(key string) *CompiledPolicy { return nil }
+func (pc *PolicyCache) Get(key string) *CompiledPolicy         { return nil }
 func (pc *PolicyCache) Set(key string, policy *CompiledPolicy) {}
 
 func (fpo *FastPathOptimizer) CheckFileAccess(containerID, path string, mode int) bool {

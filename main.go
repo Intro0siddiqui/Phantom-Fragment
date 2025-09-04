@@ -11,15 +11,15 @@ import (
 
 	"github.com/phantom-fragment/phantom-fragment/internal/metrics"
 	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
+	"github.com/phantom-fragment/phantom-fragment/pkg/rootfs"
 	"github.com/phantom-fragment/phantom-fragment/pkg/types"
 )
 
-var rootfs []byte
-
-var containers = make(map[string]types.Container)
-var sandboxDriver driver.SandboxDriver
-var metricsCollector *metrics.Collector
-var metricsServer *metrics.Server
+var (
+	containers    = make(map[string]types.Container)
+	sandboxDriver driver.SandboxDriver
+	metricsServer *metrics.Server
+)
 
 const (
 	// ErrorCodeContainerNotFound is a custom error code for when a container is not found.
@@ -90,14 +90,14 @@ func main() {
 	fmt.Fprintf(os.Stderr, "Starting Phantom Fragment v2.0...\n")
 
 	// Initialize metrics
-	metricsCollector = metrics.NewCollector()
 	metricsServer = metrics.NewServer(":9090")
 	if err := metricsServer.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start metrics server: %v\n", err)
 	}
 
 	// Ensure rootfs is extracted on first run
-	if err := ensureRootfs(); err != nil {
+	// This function extracts the embedded rootfs if it doesn't exist
+	if err := rootfs.EnsureRootfs(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error extracting rootfs: %v\n", err)
 		os.Exit(1)
 	}
@@ -128,11 +128,11 @@ func (h *handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2
 	fmt.Fprintf(os.Stderr, "Received request: %s\n", req.Method)
 	switch req.Method {
 	case "create":
-		return h.handleCreate(ctx, conn, req)
+		return h.handleCreate(ctx, req)
 	case "exec":
-		return h.handleExec(ctx, conn, req)
+		return h.handleExec(ctx, req)
 	case "destroy":
-		return h.handleDestroy(ctx, conn, req)
+		return h.handleDestroy(ctx, req)
 	default:
 		return nil, &jsonrpc2.Error{
 			Code:    jsonrpc2.CodeMethodNotFound,
@@ -141,7 +141,7 @@ func (h *handler) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2
 	}
 }
 
-func (h *handler) handleCreate(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
+func (h *handler) handleCreate(ctx context.Context, req *jsonrpc2.Request) (interface{}, error) {
 	var params CreateParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		return nil, &jsonrpc2.Error{
@@ -168,7 +168,7 @@ func (h *handler) handleCreate(ctx context.Context, conn *jsonrpc2.Conn, req *js
 	return &CreateResult{ContainerID: containerID}, nil
 }
 
-func (h *handler) handleExec(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
+func (h *handler) handleExec(ctx context.Context, req *jsonrpc2.Request) (interface{}, error) {
 	var params ExecParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		return nil, &jsonrpc2.Error{
@@ -204,7 +204,7 @@ func (h *handler) handleExec(ctx context.Context, conn *jsonrpc2.Conn, req *json
 	return &ExecResult{ExitCode: exitCode, Stdout: stdout, Stderr: stderr}, nil
 }
 
-func (h *handler) handleDestroy(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
+func (h *handler) handleDestroy(ctx context.Context, req *jsonrpc2.Request) (interface{}, error) {
 	var params DestroyParams
 	if err := json.Unmarshal(*req.Params, &params); err != nil {
 		return nil, &jsonrpc2.Error{

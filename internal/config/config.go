@@ -193,25 +193,25 @@ func (c *Config) SaveProfile(path string) error {
 // GetConfigDir returns the configuration directory path
 func GetConfigDir() string {
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".aisbx")
+		return filepath.Join(homeDir, ".phantom")
 	}
-	return ".aisbx"
+	return ".phantom"
 }
 
 // GetDataDir returns the data directory path
 func GetDataDir() string {
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".local", "share", "aisbx")
+		return filepath.Join(homeDir, ".local", "share", "phantom")
 	}
-	return ".aisbx-data"
+	return ".phantom-data"
 }
 
 // GetCacheDir returns the cache directory path
 func GetCacheDir() string {
 	if homeDir, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(homeDir, ".cache", "aisbx")
+		return filepath.Join(homeDir, ".cache", "phantom")
 	}
-	return ".aisbx-cache"
+	return ".phantom-cache"
 }
 
 // Initialize sets up the configuration directory and files

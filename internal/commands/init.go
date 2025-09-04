@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"github.com/phantom-fragment/phantom-fragment/internal/config"
 	"github.com/phantom-fragment/phantom-fragment/internal/rootfs"
+	"github.com/spf13/cobra"
 )
 
 // NewInitCommand creates the init command
@@ -18,27 +18,27 @@ func NewInitCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init [flags]",
-		Short: "Initialize AI Sandbox with rootfs",
-		Long: `Initialize AI Sandbox by setting up the root filesystem and configuration.
+		Short: "Initialize Phantom with rootfs",
+		Long: `Initialize Phantom by setting up the root filesystem and configuration.
 
 This command extracts the Alpine Linux rootfs to your cache directory and creates
 initial configuration files. It can also download rootfs tarballs if needed.
 
 Examples:
-  aisbx init                          # Use default Alpine rootfs
-  aisbx init --rootfs ubuntu.tar.gz  # Use custom rootfs
-  aisbx init --force                 # Re-extract even if exists`,
+   phantom init                          # Use default Alpine rootfs
+   phantom init --rootfs ubuntu.tar.gz  # Use custom rootfs
+   phantom init --force                 # Re-extract even if exists`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Initialize configuration
 			cfg := config.DefaultConfig()
-			
+
 			// Determine cache directory
 			if cacheDir == "" {
 				userCacheDir, err := os.UserCacheDir()
 				if err != nil {
 					return fmt.Errorf("failed to get cache directory: %w", err)
 				}
-				cacheDir = filepath.Join(userCacheDir, "ai-sandbox")
+				cacheDir = filepath.Join(userCacheDir, "phantom")
 			}
 
 			// Ensure cache directory exists
@@ -48,12 +48,12 @@ Examples:
 
 			// Initialize rootfs
 			manager := rootfs.NewManager(cacheDir)
-			
+
 			if rootfsPath == "" {
 				rootfsPath = "alpine-minirootfs.tar.gz"
 			}
 
-			fmt.Printf("Initializing AI Sandbox...\n")
+			fmt.Printf("Initializing Phantom...\n")
 			fmt.Printf("Cache directory: %s\n", cacheDir)
 			fmt.Printf("Rootfs source: %s\n", rootfsPath)
 
@@ -67,7 +67,7 @@ Examples:
 				return fmt.Errorf("failed to create default profile: %w", err)
 			}
 
-			fmt.Printf("✓ AI Sandbox initialized successfully!\n")
+			fmt.Printf("✓ Phantom initialized successfully!\n")
 			fmt.Printf("✓ Rootfs extracted to: %s\n", filepath.Join(cacheDir, "images"))
 			fmt.Printf("✓ Default profile created: %s\n", profilePath)
 

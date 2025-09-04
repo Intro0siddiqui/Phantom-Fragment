@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/phantom-fragment/phantom-fragment/internal/config"
 	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
 	"github.com/phantom-fragment/phantom-fragment/pkg/types"
+	"github.com/spf13/cobra"
 )
 
 // NewCreateCommand creates the create command
@@ -32,9 +32,9 @@ destroyed with 'destroy'. Useful for long-running services or development
 environments.
 
 Examples:
-  aisbx create --profile python-dev                  # Create with profile
-  aisbx create --image alpine --workdir /app         # Custom image and workdir
-  aisbx create --bind ./data:/data --bind /tmp:/tmp  # Mount volumes`,
+  phantom create --profile python-dev                  # Create with profile
+  phantom create --image alpine --workdir /app         # Custom image and workdir
+  phantom create --bind ./data:/data --bind /tmp:/tmp  # Mount volumes`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load configuration
 			cfg := config.DefaultConfig()
@@ -127,7 +127,7 @@ func saveContainerMetadata(containerID string, container types.Container) error 
 		return err
 	}
 
-	containersDir := filepath.Join(cacheDir, "ai-sandbox", "containers")
+	containersDir := filepath.Join(cacheDir, "phantom", "containers")
 	if err := os.MkdirAll(containersDir, 0755); err != nil {
 		return err
 	}

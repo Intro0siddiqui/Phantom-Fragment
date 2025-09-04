@@ -85,21 +85,6 @@ type ContainerExecution struct {
 
 // Execution decision engine
 type ExecutionDecisionEngine struct {
-	// Decision factors
-	riskThresholds      map[ExecutionMode]float64
-	performanceTargets  map[ExecutionMode]*PerformanceTarget
-	
-	// ML models for prediction
-	riskPredictor       *RiskPredictionModel
-	performancePredictor *PerformancePredictionModel
-	
-	// Decision history
-	decisions           []*ExecutionDecision
-	
-	// Configuration
-	config              *DecisionConfig
-	
-	mu                  sync.RWMutex
 }
 
 // Execution decision

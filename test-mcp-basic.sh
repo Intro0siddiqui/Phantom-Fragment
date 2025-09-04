@@ -5,17 +5,17 @@
 
 set -e
 
-echo "🧪 Testing AI Sandbox MCP Server..."
+echo "🧪 Testing Phantom Fragment MCP Server..."
 
 # Build the MCP server
 echo "🏗️  Building MCP server..."
-go build -o bin/aisbx-mcp ./cmd/aisbx-mcp
+go build -o bin/phantom-mcp ./cmd/phantom-mcp
 
 echo "✅ Build successful!"
 
 # Test 1: HTTP server startup
 echo "🌐 Testing HTTP server startup..."
-timeout 5 ./bin/aisbx-mcp --transport http --port 8081 &
+timeout 5 ./bin/phantom-mcp --transport http --port 8081 &
 HTTP_PID=$!
 sleep 2
 
@@ -49,7 +49,7 @@ echo "📨 Testing STDIO server..."
 echo "ℹ️  Starting server with test input..."
 
 # Send the test request to STDIO server
-timeout 3 bash -c 'echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}" | ./bin/aisbx-mcp --transport stdio' > test_output.json 2>/dev/null || true
+timeout 3 bash -c 'echo "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}" | ./bin/phantom-mcp --transport stdio' > test_output.json 2>/dev/null || true
 
 if [ -f test_output.json ] && [ -s test_output.json ]; then
     echo "✅ STDIO server generated output:"
@@ -65,7 +65,7 @@ echo ""
 echo "🎉 MCP Server Basic Tests Complete!"
 echo ""
 echo "📋 Manual verification steps:"
-echo "1. Start HTTP server: ./bin/aisbx-mcp --transport http"
+echo "1. Start HTTP server: ./bin/phantom-mcp --transport=http --port=8080"
 echo "2. Test with curl: curl -X POST http://localhost:8080/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}'"
-echo "3. Start STDIO server: ./bin/aisbx-mcp --transport stdio"
-echo "4. Test with echo: echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | ./bin/aisbx-mcp --transport stdio"
+echo "3. Start STDIO server: ./bin/phantom-mcp --transport=stdio"
+echo "4. Test with echo: echo '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}' | ./bin/phantom-mcp --transport=stdio"

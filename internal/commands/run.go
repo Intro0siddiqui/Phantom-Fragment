@@ -6,10 +6,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/spf13/cobra"
 	"github.com/phantom-fragment/phantom-fragment/internal/config"
 	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
 	"github.com/phantom-fragment/phantom-fragment/pkg/types"
+	"github.com/spf13/cobra"
 )
 
 // NewRunCommand creates the run command
@@ -29,10 +29,10 @@ cleans up automatically. It supports resource limits, network policies, and
 mount configurations defined in the profile.
 
 Examples:
-  aisbx run python script.py                    # Run with default profile
-  aisbx run --profile python-dev python app.py  # Run with custom profile
-  aisbx run --timeout 60 echo "hello world"     # Run with timeout
-  aisbx run --interactive bash                  # Interactive shell`,
+  phantom run python script.py                    # Run with default profile
+  phantom run --profile python-dev python app.py  # Run with custom profile
+  phantom run --timeout 60 echo "hello world"     # Run with timeout
+  phantom run --interactive bash                  # Interactive shell`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Load configuration

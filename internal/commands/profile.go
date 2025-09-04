@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"text/tabwriter"
 
-	"github.com/spf13/cobra"
 	"github.com/phantom-fragment/phantom-fragment/internal/config"
+	"github.com/spf13/cobra"
 )
 
 // NewProfileCommand creates the profile command
@@ -21,9 +21,9 @@ Profiles define resource limits, security settings, network policies,
 and mount configurations for sandbox containers.
 
 Examples:
-  aisbx profile list          # List available profiles
-  aisbx profile show default  # Show profile details
-  aisbx profile create myapp  # Create new profile`,
+  phantom profile list          # List available profiles
+  phantom profile show default  # Show profile details
+  phantom profile create myapp  # Create new profile`,
 	}
 
 	cmd.AddCommand(newProfileListCommand())
@@ -118,8 +118,8 @@ This command creates a new YAML profile file that can be customized
 for specific use cases.
 
 Examples:
-  aisbx profile create myapp          # Create from scratch
-  aisbx profile create myapp --from default  # Copy from existing`,
+  phantom profile create myapp          # Create from scratch
+  phantom profile create myapp --from default  # Copy from existing`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			profileName := args[0]
@@ -146,7 +146,7 @@ Examples:
 				return fmt.Errorf("failed to get cache directory: %w", err)
 			}
 
-			profileDir := filepath.Join(cacheDir, "ai-sandbox", "profiles")
+			profileDir := filepath.Join(cacheDir, "phantom", "profiles")
 			if err := os.MkdirAll(profileDir, 0755); err != nil {
 				return fmt.Errorf("failed to create profile directory: %w", err)
 			}

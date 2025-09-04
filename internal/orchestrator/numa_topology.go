@@ -7,46 +7,43 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 )
 
 // NUMA topology manager for optimal container placement
 type NUMATopologyManager struct {
-	topology        *NUMATopology
-	cpuInfo         *CPUInfo
-	memoryInfo      *MemoryInfo
-	
+	topology   *NUMATopology
+	cpuInfo    *CPUInfo
+	memoryInfo *MemoryInfo
+
 	// Performance tracking
 	nodePerformance map[int]*NodePerformanceHistory
-	
+
 	// Dynamic optimization
-	rebalancer      *NUMARebalancer
-	optimizer       *PlacementOptimizer
-	
+	rebalancer *NUMARebalancer
+	optimizer  *PlacementOptimizer
+
 	// Configuration
-	config          *NUMAConfig
-	
-	mu              sync.RWMutex
+	config *NUMAConfig
 }
 
 // CPU information for NUMA awareness
 type CPUInfo struct {
-	CPUCount        int
-	CoresPerSocket  int
-	ThreadsPerCore  int
-	SocketCount     int
-	CPUToNode       map[int]int
-	NodeToCPUs      map[int][]int
-	CPUFrequency    map[int]int64  // CPU ID -> frequency in Hz
-	CPUCapacity     map[int]float64 // CPU ID -> capacity (0.0-1.0)
+	CPUCount       int
+	CoresPerSocket int
+	ThreadsPerCore int
+	SocketCount    int
+	CPUToNode      map[int]int
+	NodeToCPUs     map[int][]int
+	CPUFrequency   map[int]int64   // CPU ID -> frequency in Hz
+	CPUCapacity    map[int]float64 // CPU ID -> capacity (0.0-1.0)
 }
 
 // Memory information per NUMA node
 type MemoryInfo struct {
-	NodeMemory      map[int]*NodeMemoryInfo
-	TotalMemory     int64
-	HugePages       *HugePagesInfo
+	NodeMemory  map[int]*NodeMemoryInfo
+	TotalMemory int64
+	HugePages   *HugePagesInfo
 }
 
 type NodeMemoryInfo struct {
@@ -60,33 +57,33 @@ type NodeMemoryInfo struct {
 }
 
 type HugePagesInfo struct {
-	HugePageSize    int64
-	TotalHugePages  int
-	FreeHugePages   int
-	NodeHugePages   map[int]int
+	HugePageSize   int64
+	TotalHugePages int
+	FreeHugePages  int
+	NodeHugePages  map[int]int
 }
 
 // Node performance history for placement optimization
 type NodePerformanceHistory struct {
-	NodeID           int
-	CPUUtilization   []float64  // Historical CPU utilization
-	MemoryUtilization []float64 // Historical memory utilization
-	IOUtilization    []float64  // Historical I/O utilization
-	SpawnLatency     []time.Duration // Historical spawn latencies
-	ContainerCount   []int      // Historical container counts
-	
+	NodeID            int
+	CPUUtilization    []float64       // Historical CPU utilization
+	MemoryUtilization []float64       // Historical memory utilization
+	IOUtilization     []float64       // Historical I/O utilization
+	SpawnLatency      []time.Duration // Historical spawn latencies
+	ContainerCount    []int           // Historical container counts
+
 	// Performance metrics
-	AvgCPUUtil       float64
-	AvgMemoryUtil    float64
-	AvgIOUtil        float64
-	AvgSpawnLatency  time.Duration
-	
+	AvgCPUUtil      float64
+	AvgMemoryUtil   float64
+	AvgIOUtil       float64
+	AvgSpawnLatency time.Duration
+
 	// Trend analysis
 	CPUTrend         TrendDirection
 	MemoryTrend      TrendDirection
 	PerformanceTrend TrendDirection
-	
-	LastUpdate       time.Time
+
+	LastUpdate time.Time
 }
 
 type TrendDirection int
@@ -100,21 +97,21 @@ const (
 
 // NUMA configuration
 type NUMAConfig struct {
-	EnableBalancing     bool
-	BalancingInterval   time.Duration
-	RebalanceThreshold  float64
-	PreferLocalMemory   bool
-	EnableCPUAffinity   bool
-	EnableMemoryPolicy  bool
-	
+	EnableBalancing    bool
+	BalancingInterval  time.Duration
+	RebalanceThreshold float64
+	PreferLocalMemory  bool
+	EnableCPUAffinity  bool
+	EnableMemoryPolicy bool
+
 	// Performance tuning
-	MaxContainersPerNode int
-	CPUUtilizationTarget float64
+	MaxContainersPerNode    int
+	CPUUtilizationTarget    float64
 	MemoryUtilizationTarget float64
-	
+
 	// History tracking
-	HistorySize         int
-	MetricsInterval     time.Duration
+	HistorySize     int
+	MetricsInterval time.Duration
 }
 
 // NewNUMATopologyManager creates a new NUMA topology manager
@@ -141,7 +138,7 @@ func NewNUMATopologyManager(config *NUMAConfig) (*NUMATopologyManager, error) {
 	}
 
 	// Discover NUMA topology
-	var err error
+	var err error // Declare err here for shadowing
 	manager.topology, err = manager.discoverNUMATopology()
 	if err != nil {
 		return nil, fmt.Errorf("NUMA topology discovery failed: %w", err)
@@ -228,9 +225,10 @@ func (nm *NUMATopologyManager) discoverNUMATopology() (*NUMATopology, error) {
 	topology.nodeCount = len(topology.nodes)
 
 	// Discover memory distances
-	topology.memoryDistances, err = nm.discoverMemoryDistances(topology.nodeCount)
-	if err != nil {
-		fmt.Printf("Warning: failed to discover memory distances: %v\n", err)
+	var err2 error // Use a new variable to avoid shadowing
+	topology.memoryDistances, err2 = nm.discoverMemoryDistances(topology.nodeCount)
+	if err2 != nil {
+		fmt.Printf("Warning: failed to discover memory distances: %v\n", err2)
 	}
 
 	return topology, nil
@@ -239,7 +237,7 @@ func (nm *NUMATopologyManager) discoverNUMATopology() (*NUMATopology, error) {
 // discoverNUMANode discovers information about a specific NUMA node
 func (nm *NUMATopologyManager) discoverNUMANode(nodeID int) (*NUMANode, error) {
 	nodePath := fmt.Sprintf("/sys/devices/system/node/node%d", nodeID)
-	
+
 	node := &NUMANode{
 		ID:          nodeID,
 		CPUs:        make([]int, 0),
@@ -279,7 +277,7 @@ func (nm *NUMATopologyManager) discoverNUMANode(nodeID int) (*NUMANode, error) {
 // parseCPUList parses CPU list format (e.g., "0-3,8-11")
 func (nm *NUMATopologyManager) parseCPUList(cpulist string) ([]int, error) {
 	var cpus []int
-	
+
 	parts := strings.Split(cpulist, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
@@ -323,7 +321,7 @@ func (nm *NUMATopologyManager) parseCPUList(cpulist string) ([]int, error) {
 // parseNodeMemInfo parses NUMA node memory information
 func (nm *NUMATopologyManager) parseNodeMemInfo(meminfo string) (int64, error) {
 	scanner := bufio.NewScanner(strings.NewReader(meminfo))
-	
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		if strings.HasPrefix(line, "Node ") && strings.Contains(line, "MemTotal:") {
@@ -387,7 +385,6 @@ func (nm *NUMATopologyManager) discoverCPUInfo() (*CPUInfo, error) {
 		return nil, fmt.Errorf("failed to read /proc/cpuinfo: %w", err)
 	}
 
-	// Parse CPU information
 	err = nm.parseCPUInfo(string(cpuinfoData), cpuInfo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse CPU info: %w", err)
@@ -407,9 +404,9 @@ func (nm *NUMATopologyManager) discoverCPUInfo() (*CPUInfo, error) {
 // parseCPUInfo parses /proc/cpuinfo
 func (nm *NUMATopologyManager) parseCPUInfo(cpuinfo string, info *CPUInfo) error {
 	scanner := bufio.NewScanner(strings.NewReader(cpuinfo))
-	
+
 	cpuID := -1
-	
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -508,9 +505,9 @@ func (nm *NUMATopologyManager) discoverNodeMemoryInfo(nodeID int) (*NodeMemoryIn
 			continue
 		}
 
-		key := parts[2] // e.g., "MemTotal:"
+		key := parts[2]      // e.g., "MemTotal:"
 		valueStr := parts[3] // e.g., "16777216"
-		
+
 		value, err := strconv.ParseInt(valueStr, 10, 64)
 		if err != nil {
 			continue
@@ -584,13 +581,13 @@ func (nm *NUMATopologyManager) discoverHugePagesInfo() (*HugePagesInfo, error) {
 func (nm *NUMATopologyManager) initializePerformanceTracking() {
 	for _, node := range nm.topology.nodes {
 		nm.nodePerformance[node.ID] = &NodePerformanceHistory{
-			NodeID:           node.ID,
-			CPUUtilization:   make([]float64, 0, nm.config.HistorySize),
+			NodeID:            node.ID,
+			CPUUtilization:    make([]float64, 0, nm.config.HistorySize),
 			MemoryUtilization: make([]float64, 0, nm.config.HistorySize),
-			IOUtilization:    make([]float64, 0, nm.config.HistorySize),
-			SpawnLatency:     make([]time.Duration, 0, nm.config.HistorySize),
-			ContainerCount:   make([]int, 0, nm.config.HistorySize),
-			LastUpdate:       time.Now(),
+			IOUtilization:     make([]float64, 0, nm.config.HistorySize),
+			SpawnLatency:      make([]time.Duration, 0, nm.config.HistorySize),
+			ContainerCount:    make([]int, 0, nm.config.HistorySize),
+			LastUpdate:        time.Now(),
 		}
 	}
 }

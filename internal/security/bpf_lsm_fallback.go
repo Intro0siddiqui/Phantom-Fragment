@@ -5,7 +5,6 @@ package security
 
 import (
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -13,24 +12,23 @@ import (
 type BPFLSMSecurityV3 struct {
 	// Cross-platform fallback
 	fallbackEnforcer *FallbackEnforcer
-	
+
 	// Configuration
-	config          *BPFLSMConfig
-	
+	config *BPFLSMConfig
+
 	// Synchronization
-	mu              sync.RWMutex
-	shutdown        chan struct{}
+	shutdown chan struct{}
 }
 
 // BPF-LSM Configuration
 type BPFLSMConfig struct {
-	EnableBPFLSM        bool
-	EnableFastPath      bool
-	EnableJITCompile    bool
-	MaxPrograms         int
-	CacheSize           int
-	MetricsInterval     time.Duration
-	SecurityLevel       string
+	EnableBPFLSM     bool
+	EnableFastPath   bool
+	EnableJITCompile bool
+	MaxPrograms      int
+	CacheSize        int
+	MetricsInterval  time.Duration
+	SecurityLevel    string
 }
 
 // NewBPFLSMSecurityV3 creates enhanced BPF-LSM security system

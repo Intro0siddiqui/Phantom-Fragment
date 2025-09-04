@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/phantom-fragment/phantom-fragment/internal/config"
 	"github.com/phantom-fragment/phantom-fragment/internal/mcp/server"
 	"github.com/phantom-fragment/phantom-fragment/internal/mcp/types"
@@ -24,6 +22,8 @@ import (
 	"github.com/phantom-fragment/phantom-fragment/internal/security/secrets"
 	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
 	pkgtypes "github.com/phantom-fragment/phantom-fragment/pkg/types"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // RateLimiter interface for rate limiting functionality
@@ -198,81 +198,81 @@ func newMetrics() *Metrics {
 	return &Metrics{
 		requestsTotal: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_requests_total",
+				Name: "phantom_requests_total",
 				Help: "Total number of requests",
 			},
 		),
 		requestsDuration: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
-				Name:    "aisbx_request_duration_seconds",
+				Name:    "phantom_request_duration_seconds",
 				Help:    "Request duration in seconds",
 				Buckets: prometheus.DefBuckets,
 			},
 		),
 		activeConnections: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "aisbx_active_connections",
+				Name: "phantom_active_connections",
 				Help: "Number of active connections",
 			},
 		),
 		errorCount: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_errors_total",
+				Name: "phantom_errors_total",
 				Help: "Total number of errors",
 			},
 		),
 		sandboxStarts: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_sandbox_starts_total",
+				Name: "phantom_sandbox_starts_total",
 				Help: "Total number of sandbox starts",
 			},
 		),
 		sandboxStops: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_sandbox_stops_total",
+				Name: "phantom_sandbox_stops_total",
 				Help: "Total number of sandbox stops",
 			},
 		),
 		sandboxDuration: prometheus.NewHistogram(
 			prometheus.HistogramOpts{
-				Name:    "aisbx_sandbox_duration_seconds",
+				Name:    "phantom_sandbox_duration_seconds",
 				Help:    "Sandbox execution duration",
 				Buckets: prometheus.DefBuckets,
 			},
 		),
 		cpuUsage: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "aisbx_cpu_usage_percent",
+				Name: "phantom_cpu_usage_percent",
 				Help: "CPU usage percentage",
 			},
 		),
 		memoryUsage: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "aisbx_memory_usage_bytes",
+				Name: "phantom_memory_usage_bytes",
 				Help: "Memory usage in bytes",
 			},
 		),
 		diskUsage: prometheus.NewGauge(
 			prometheus.GaugeOpts{
-				Name: "aisbx_disk_usage_bytes",
+				Name: "phantom_disk_usage_bytes",
 				Help: "Disk usage in bytes",
 			},
 		),
 		authFailures: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_auth_failures_total",
+				Name: "phantom_auth_failures_total",
 				Help: "Total number of authentication failures",
 			},
 		),
 		rateLimitHits: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_rate_limit_hits_total",
+				Name: "phantom_rate_limit_hits_total",
 				Help: "Total number of rate limit hits",
 			},
 		),
 		securityViolations: prometheus.NewCounter(
 			prometheus.CounterOpts{
-				Name: "aisbx_security_violations_total",
+				Name: "phantom_security_violations_total",
 				Help: "Total number of security violations",
 			},
 		),
@@ -479,9 +479,9 @@ func (s *Service) initializeSecurity() error {
 // registerMCPTools registers secure MCP tools
 func (s *Service) registerMCPTools() {
 	// Register sandbox execution tools with validation
-	s.mcpServer.RegisterTool("aisbx-run", s.createSecureTool("run"))
-	s.mcpServer.RegisterTool("aisbx-build", s.createSecureTool("build"))
-	s.mcpServer.RegisterTool("aisbx-profile-list", s.createSecureTool("profile-list"))
+	s.mcpServer.RegisterTool("phantom-run", s.createSecureTool("run"))
+	s.mcpServer.RegisterTool("phantom-build", s.createSecureTool("build"))
+	s.mcpServer.RegisterTool("phantom-profile-list", s.createSecureTool("profile-list"))
 }
 
 // createSecureTool creates a secure tool handler with validation

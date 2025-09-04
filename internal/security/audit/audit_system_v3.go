@@ -3,7 +3,6 @@ package audit
 import (
 	"context"
 	"fmt"
-	"sync"
 	"time"
 )
 
@@ -26,7 +25,6 @@ type SecurityAuditSystemV3 struct {
 	config          *AuditConfig
 	
 	// Synchronization
-	mu              sync.RWMutex
 	shutdown        chan struct{}
 }
 
@@ -126,21 +124,7 @@ const (
 
 // Violation detector with pattern recognition
 type ViolationDetector struct {
-	// Detection rules
-	rules           map[string]*DetectionRule
-	patterns        map[string]*ThreatPattern
-	
-	// Machine learning components
-	anomalyDetector *AnomalyDetector
-	behaviorModel   *BehaviorModel
-	
-	// State tracking
-	containerStates map[string]*ContainerSecurityState
-	
-	// Configuration
-	config          *DetectionConfig
-	
-	mu              sync.RWMutex
+
 }
 
 // Detection rule
@@ -227,22 +211,6 @@ type ContainerSecurityState struct {
 
 // Alert manager
 type AlertManager struct {
-	// Alert channels
-	channels        map[string]AlertChannel
-	
-	// Alert rules
-	alertRules      map[string]*AlertRule
-	
-	// Rate limiting
-	rateLimiter     *AlertRateLimiter
-	
-	// Alert history
-	alertHistory    *AlertHistory
-	
-	// Configuration
-	config          *AlertConfig
-	
-	mu              sync.RWMutex
 }
 
 // Alert rule

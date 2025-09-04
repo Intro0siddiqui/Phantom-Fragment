@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/spf13/cobra"
 	"github.com/phantom-fragment/phantom-fragment/pkg/driver"
+	"github.com/spf13/cobra"
 )
 
 // NewDestroyCommand creates the destroy command
@@ -24,9 +24,9 @@ This command stops and removes containers created with 'create'. It can
 also clean up containers by ID or destroy all containers when using --all.
 
 Examples:
-  aisbx destroy abc123               # Destroy specific container
-  aisbx destroy --all               # Destroy all containers
-  aisbx destroy --force abc123      # Force destroy even if busy`,
+  phantom destroy abc123               # Destroy specific container
+  phantom destroy --all               # Destroy all containers
+  phantom destroy --force abc123      # Force destroy even if busy`,
 		Args: func(cmd *cobra.Command, args []string) error {
 			if all {
 				return nil
@@ -105,7 +105,7 @@ func cleanupContainerMetadata(containerID string) error {
 		return err
 	}
 
-	containersDir := filepath.Join(cacheDir, "ai-sandbox", "containers")
+	containersDir := filepath.Join(cacheDir, "phantom", "containers")
 	metadataFile := filepath.Join(containersDir, containerID+".json")
 
 	if _, err := os.Stat(metadataFile); err == nil {

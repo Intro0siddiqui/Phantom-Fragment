@@ -17,44 +17,44 @@ var ErrCapabilityNotSupported = fmt.Errorf("capability operations not supported 
 
 // Capability constants - fallback values if unix package is missing them
 const (
-	fallbackCAP_CHOWN              = 0
-	fallbackCAP_DAC_OVERRIDE       = 1
-	fallbackCAP_DAC_READ_SEARCH    = 2
-	fallbackCAP_FOWNER             = 3
-	fallbackCAP_FSETID             = 4
-	fallbackCAP_KILL               = 5
-	fallbackCAP_SETGID             = 6
-	fallbackCAP_SETUID             = 7
-	fallbackCAP_SETPCAP            = 8
-	fallbackCAP_LINUX_IMMUTABLE    = 9
-	fallbackCAP_NET_BIND_SERVICE   = 10
-	fallbackCAP_NET_BROADCAST      = 11
-	fallbackCAP_NET_ADMIN          = 12
-	fallbackCAP_NET_RAW            = 13
-	fallbackCAP_IPC_LOCK           = 14
-	fallbackCAP_IPC_OWNER          = 15
-	fallbackCAP_SYS_MODULE         = 16
-	fallbackCAP_SYS_RAWIO          = 17
-	fallbackCAP_SYS_CHROOT         = 18
-	fallbackCAP_SYS_PTRACE         = 19
-	fallbackCAP_SYS_PACCT          = 20
-	fallbackCAP_SYS_ADMIN          = 21
-	fallbackCAP_SYS_BOOT           = 22
-	fallbackCAP_SYS_NICE           = 23
-	fallbackCAP_SYS_RESOURCE       = 24
-	fallbackCAP_SYS_TIME           = 25
-	fallbackCAP_SYS_TTY_CONFIG     = 26
-	fallbackCAP_MKNOD              = 27
-	fallbackCAP_LEASE              = 28
-	fallbackCAP_AUDIT_WRITE        = 29
-	fallbackCAP_AUDIT_CONTROL      = 30
-	fallbackCAP_SETFCAP            = 31
+	fallbackCAP_CHOWN            = 0
+	fallbackCAP_DAC_OVERRIDE     = 1
+	fallbackCAP_DAC_READ_SEARCH  = 2
+	fallbackCAP_FOWNER           = 3
+	fallbackCAP_FSETID           = 4
+	fallbackCAP_KILL             = 5
+	fallbackCAP_SETGID           = 6
+	fallbackCAP_SETUID           = 7
+	fallbackCAP_SETPCAP          = 8
+	fallbackCAP_LINUX_IMMUTABLE  = 9
+	fallbackCAP_NET_BIND_SERVICE = 10
+	fallbackCAP_NET_BROADCAST    = 11
+	fallbackCAP_NET_ADMIN        = 12
+	fallbackCAP_NET_RAW          = 13
+	fallbackCAP_IPC_LOCK         = 14
+	fallbackCAP_IPC_OWNER        = 15
+	fallbackCAP_SYS_MODULE       = 16
+	fallbackCAP_SYS_RAWIO        = 17
+	fallbackCAP_SYS_CHROOT       = 18
+	fallbackCAP_SYS_PTRACE       = 19
+	fallbackCAP_SYS_PACCT        = 20
+	fallbackCAP_SYS_ADMIN        = 21
+	fallbackCAP_SYS_BOOT         = 22
+	fallbackCAP_SYS_NICE         = 23
+	fallbackCAP_SYS_RESOURCE     = 24
+	fallbackCAP_SYS_TIME         = 25
+	fallbackCAP_SYS_TTY_CONFIG   = 26
+	fallbackCAP_MKNOD            = 27
+	fallbackCAP_LEASE            = 28
+	fallbackCAP_AUDIT_WRITE      = 29
+	fallbackCAP_AUDIT_CONTROL    = 30
+	fallbackCAP_SETFCAP          = 31
 
 	// Prctl constants
-	fallbackPR_CAPBSET_DROP        = 24
-	fallbackPR_CAP_AMBIENT         = 47
-	fallbackPR_CAP_AMBIENT_RAISE   = 2
-	fallbackPR_SET_NO_NEW_PRIVS    = 38
+	fallbackPR_CAPBSET_DROP      = 24
+	fallbackPR_CAP_AMBIENT       = 47
+	fallbackPR_CAP_AMBIENT_RAISE = 2
+	fallbackPR_SET_NO_NEW_PRIVS  = 38
 )
 
 // Helper functions to get capability constants with fallback
@@ -134,32 +134,32 @@ type CapabilityManager struct {
 	// Capability definitions
 	capabilities    map[string]*Capability
 	capabilityNames map[int]*Capability
-	
+
 	// Active restrictions
 	activeRestrictions map[string]*CapabilityRestriction
-	
+
 	// Monitoring
 	usageTracker    *CapabilityUsageTracker
 	violationLogger *ViolationLogger
-	
+
 	// Configuration
-	config          *CapabilityConfig
-	
+	config *CapabilityConfig
+
 	// Synchronization
-	mu              sync.RWMutex
+	mu sync.RWMutex
 }
 
 // Enhanced Capability definition
 type Capability struct {
-	Name            string
-	Number          int
-	Description     string
-	RiskLevel       RiskLevel
-	Dependencies    []string
-	ConflictsWith   []string
-	RequiredKernel  string
-	DefaultAllowed  bool
-	Category        CapabilityCategory
+	Name           string
+	Number         int
+	Description    string
+	RiskLevel      RiskLevel
+	Dependencies   []string
+	ConflictsWith  []string
+	RequiredKernel string
+	DefaultAllowed bool
+	Category       CapabilityCategory
 }
 
 // Risk levels for capabilities
@@ -186,14 +186,14 @@ const (
 
 // Capability restriction configuration
 type CapabilityRestriction struct {
-	ContainerID     string
-	AllowedCaps     map[string]bool
-	DeniedCaps      map[string]bool
-	AmbientCaps     map[string]bool
-	BoundingSet     map[string]bool
-	NoNewPrivs      bool
-	AppliedAt       time.Time
-	ExpiresAt       *time.Time
+	ContainerID string
+	AllowedCaps map[string]bool
+	DeniedCaps  map[string]bool
+	AmbientCaps map[string]bool
+	BoundingSet map[string]bool
+	NoNewPrivs  bool
+	AppliedAt   time.Time
+	ExpiresAt   *time.Time
 }
 
 // Capability configuration
@@ -204,53 +204,53 @@ type CapabilityConfig struct {
 	MetricsInterval     time.Duration
 	StrictMode          bool
 	// Configuration fields for capability restrictions
-	Mode                string
-	AllowedCaps         []string
-	DeniedCaps          []string
-	AmbientCaps         []string
-	BoundingSet         []string
-	NoNewPrivs          bool
+	Mode        string
+	AllowedCaps []string
+	DeniedCaps  []string
+	AmbientCaps []string
+	BoundingSet []string
+	NoNewPrivs  bool
 }
 
 // Usage tracking
 type CapabilityUsageTracker struct {
-	usage           map[string]*CapabilityUsage
-	mu              sync.RWMutex
+	usage map[string]*CapabilityUsage
+	mu    sync.RWMutex
 }
 
 // Usage statistics
 type CapabilityUsage struct {
-	CapabilityName  string
-	ContainerID     string
-	UsageCount      int64
-	LastUsed        time.Time
-	FirstUsed       time.Time
-	ViolationCount  int64
+	CapabilityName string
+	ContainerID    string
+	UsageCount     int64
+	LastUsed       time.Time
+	FirstUsed      time.Time
+	ViolationCount int64
 }
 
 // Capability enforcer
 type CapabilityEnforcer struct {
-	manager         *CapabilityManager
-	activeProfiles  map[string]*EnforcedProfile
-	mu              sync.RWMutex
+	manager        *CapabilityManager
+	activeProfiles map[string]*EnforcedProfile
+	mu             sync.RWMutex
 }
 
 // Enforced profile
 type EnforcedProfile struct {
-	ContainerID     string
-	Restrictions    *CapabilityRestriction
-	EnforcedAt      time.Time
-	Violations      []CapabilityViolation
+	ContainerID  string
+	Restrictions *CapabilityRestriction
+	EnforcedAt   time.Time
+	Violations   []CapabilityViolation
 }
 
 // Capability violation
 type CapabilityViolation struct {
-	Timestamp       time.Time
-	ContainerID     string
-	CapabilityName  string
-	Operation       string
-	Denied          bool
-	Reason          string
+	Timestamp      time.Time
+	ContainerID    string
+	CapabilityName string
+	Operation      string
+	Denied         bool
+	Reason         string
 }
 
 // NewCapabilityManager creates enhanced capability manager
@@ -594,7 +594,7 @@ func (ce *CapabilityEnforcer) ApplyCapabilityRestrictions(containerID string, co
 	}
 
 	// Apply restrictions to process
-	if err := ce.applyToProcess(containerID, restrictions); err != nil {
+	if err := ce.applyToProcess(restrictions); err != nil {
 		return fmt.Errorf("failed to apply capability restrictions: %w", err)
 	}
 
@@ -619,7 +619,7 @@ func (ce *CapabilityEnforcer) ApplyCapabilityRestrictions(containerID string, co
 }
 
 // applyToProcess applies capability restrictions to the actual process
-func (ce *CapabilityEnforcer) applyToProcess(containerID string, restrictions *CapabilityRestriction) error {
+func (ce *CapabilityEnforcer) applyToProcess(restrictions *CapabilityRestriction) error {
 	// Apply bounding set restrictions
 	for capName, allowed := range restrictions.BoundingSet {
 		cap := ce.manager.capabilities[capName]
@@ -662,7 +662,7 @@ func (ce *CapabilityEnforcer) applyToProcess(containerID string, restrictions *C
 func (cm *CapabilityManager) IsValidCapability(name string) bool {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	
+
 	_, exists := cm.capabilities[name]
 	return exists
 }
@@ -671,12 +671,12 @@ func (cm *CapabilityManager) IsValidCapability(name string) bool {
 func (cm *CapabilityManager) GetCapabilityByName(name string) (*Capability, error) {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	
+
 	cap, exists := cm.capabilities[name]
 	if !exists {
 		return nil, fmt.Errorf("capability %s not found", name)
 	}
-	
+
 	return cap, nil
 }
 
@@ -684,17 +684,17 @@ func (cm *CapabilityManager) GetCapabilityByName(name string) (*Capability, erro
 func (cm *CapabilityManager) ListCapabilities() []*Capability {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	
+
 	caps := make([]*Capability, 0, len(cm.capabilities))
 	for _, cap := range cm.capabilities {
 		caps = append(caps, cap)
 	}
-	
+
 	// Sort by name
 	sort.Slice(caps, func(i, j int) bool {
 		return caps[i].Name < caps[j].Name
 	})
-	
+
 	return caps
 }
 
@@ -702,25 +702,18 @@ func (cm *CapabilityManager) ListCapabilities() []*Capability {
 func (cm *CapabilityManager) GetCapabilitiesByRisk(maxRisk RiskLevel) []*Capability {
 	cm.mu.RLock()
 	defer cm.mu.RUnlock()
-	
+
 	var filtered []*Capability
 	for _, cap := range cm.capabilities {
 		if cap.RiskLevel <= maxRisk {
 			filtered = append(filtered, cap)
 		}
 	}
-	
+
 	return filtered
 }
 
 // Helper methods for capability manipulation
-func (ce *CapabilityEnforcer) getCurrentCapabilities() (map[string]bool, error) {
-	// Get current process capabilities
-	caps := make(map[string]bool)
-	// Implementation would use libcap or direct syscalls
-	return caps, nil
-}
-
 func (ce *CapabilityEnforcer) dropFromBoundingSet(capNumber int) error {
 	// Drop capability from bounding set
 	return unix.Prctl(fallbackPR_CAPBSET_DROP, uintptr(capNumber), 0, 0, 0)
@@ -774,7 +767,6 @@ func (cc CapabilityCategory) String() string {
 
 // Placeholder types and constructors
 type ViolationLogger struct{}
-
 
 func NewCapabilityUsageTracker() *CapabilityUsageTracker {
 	return &CapabilityUsageTracker{

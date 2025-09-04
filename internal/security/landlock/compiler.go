@@ -6,10 +6,9 @@ package landlock
 import (
 	"fmt"
 	"os"
+	"sync"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/unix"
 )
 
 // Landlock system call numbers (Linux 5.13+)
@@ -21,9 +20,7 @@ const (
 
 // Fallback constants for missing unix values
 const (
-	fallbackAT_FDCWD    = -100
-	fallbackO_PATH      = 0x200000
-	fallbackO_CLOEXEC   = 0x80000
+	fallbackAT_FDCWD = -100
 )
 
 // Landlock access rights
@@ -47,6 +44,8 @@ const (
 type PolicyCompiler struct {
 	supportedVersion int
 	capabilities     uint64
+	compiledRules    map[string]*CompiledRules // Cache for compiled rules
+	mu               sync.RWMutex
 }
 
 // CompiledRules represents pre-compiled Landlock rules
@@ -57,7 +56,7 @@ type CompiledRules struct {
 }
 
 type CompiledRule struct {
-	Path        string
+	Path         string
 	AccessRights uint64
 }
 
@@ -72,13 +71,22 @@ func NewPolicyCompiler() (*PolicyCompiler, error) {
 	pc := &PolicyCompiler{
 		supportedVersion: version,
 		capabilities:     LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR,
+		compiledRules:    make(map[string]*CompiledRules),
 	}
 
 	return pc, nil
 }
 
-// CompileRules compiles a set of filesystem access rules
-func (pc *PolicyCompiler) CompileRules(rules []FilesystemRule) (*CompiledRules, error) {
+// CompileRules compiles a set of filesystem access rules and caches them by profile
+func (pc *PolicyCompiler) CompileRules(profile string, rules []FilesystemRule) (*CompiledRules, error) {
+	// Check cache first
+	pc.mu.RLock()
+	if cached, exists := pc.compiledRules[profile]; exists {
+		pc.mu.RUnlock()
+		return cached, nil
+	}
+	pc.mu.RUnlock()
+
 	// Create Landlock ruleset
 	rulesetAttr := struct {
 		handledAccessFS uint64
@@ -90,7 +98,6 @@ func (pc *PolicyCompiler) CompileRules(rules []FilesystemRule) (*CompiledRules, 
 		uintptr(SYS_LANDLOCK_CREATE_RULESET),
 		uintptr(unsafe.Pointer(&rulesetAttr)),
 		unsafe.Sizeof(rulesetAttr),
-		0,
 		0,
 	)
 
@@ -106,7 +113,7 @@ func (pc *PolicyCompiler) CompileRules(rules []FilesystemRule) (*CompiledRules, 
 	// Add rules to the ruleset
 	for _, rule := range rules {
 		accessRights := pc.convertAccessRights(rule.Access)
-		
+
 		pathAttr := struct {
 			allowedAccess uint64
 			parentFD      int32
@@ -128,9 +135,7 @@ func (pc *PolicyCompiler) CompileRules(rules []FilesystemRule) (*CompiledRules, 
 			uintptr(rulesetFD),
 			uintptr(1), // LANDLOCK_RULE_PATH_BENEATH
 			uintptr(unsafe.Pointer(&pathAttr)),
-			0,
 			uintptr(pathFD),
-			0,
 			0,
 			0,
 		)
@@ -143,10 +148,15 @@ func (pc *PolicyCompiler) CompileRules(rules []FilesystemRule) (*CompiledRules, 
 		}
 
 		compiled.Rules = append(compiled.Rules, CompiledRule{
-			Path:        rule.Path,
+			Path:         rule.Path,
 			AccessRights: accessRights,
 		})
 	}
+
+	// Cache the compiled rules
+	pc.mu.Lock()
+	pc.compiledRules[profile] = compiled
+	pc.mu.Unlock()
 
 	return compiled, nil
 }
@@ -157,8 +167,20 @@ func (cr *CompiledRules) ApplyToPID(pid int) error {
 		return fmt.Errorf("rules already applied")
 	}
 
-	// For applying to a different PID, we would need pidfd_open
-	// For now, we'll just mark as applied and handle during process setup
+	// In a real scenario, we would use pidfd_getfd to get a file descriptor
+	// for the process and then use that FD with LANDLOCK_RESTRICT_SELF.
+	// For this simulation, we'll assume the rules are applied out-of-band
+	// (e.g., by the process itself after it's spawned and before it executes
+	// untrusted code).
+	//
+	// A proper implementation would involve:
+	// 1. Getting a pidfd for the target process.
+	// 2. Using `syscall.Syscall6(SYS_PIDFD_GETFD, uintptr(pidfd), uintptr(target_fd), 0, 0, 0, 0)`
+	//    to get a file descriptor for the target process's namespace.
+	// 3. Then using `syscall.Syscall(SYS_LANDLOCK_RESTRICT_SELF, uintptr(cr.RulesetFD), 0, 0)`
+	//    within the context of that process (e.g., via ptrace or a dedicated agent).
+	//
+	// For now, we just mark it as applied for internal logic.
 	cr.Applied = true
 	return nil
 }
@@ -172,7 +194,6 @@ func (cr *CompiledRules) ApplyToSelf() error {
 	_, _, errno := syscall.Syscall(
 		uintptr(SYS_LANDLOCK_RESTRICT_SELF),
 		uintptr(cr.RulesetFD),
-		0,
 		0,
 		0,
 	)
@@ -229,7 +250,6 @@ func getLandlockVersion() (int, error) {
 		uintptr(unsafe.Pointer(&rulesetAttr)),
 		unsafe.Sizeof(rulesetAttr),
 		0,
-		0,
 	)
 
 	if errno != 0 {
@@ -250,7 +270,7 @@ func (cr *CompiledRules) Cleanup() error {
 
 // GetCompiledRules returns cached compiled rules for a profile
 func (pc *PolicyCompiler) GetCompiledRules(profile string) *CompiledRules {
-	// This would typically load from a cache
-	// For now, return nil to indicate rules need to be compiled
-	return nil
+	pc.mu.RLock()
+	defer pc.mu.RUnlock()
+	return pc.compiledRules[profile]
 }

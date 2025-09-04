@@ -237,7 +237,7 @@ func (apc *AOTPolicyCompiler) CompilePolicy(yamlContent string) (*CompiledPolicy
 			}
 		}
 
-		compiled.LandlockRules, err = apc.landlockGenerator.CompileRules(landlockRules)
+		compiled.LandlockRules, err = apc.landlockGenerator.CompileRules(policyDSL.Profile, landlockRules)
 		if err != nil {
 			return nil, fmt.Errorf("landlock rules compilation failed: %w", err)
 		}

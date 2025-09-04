@@ -15,131 +15,131 @@ import (
 // Embedded RootFS Management System V3 with COW and advanced compression
 type EmbeddedRootFSManagerV3 struct {
 	// Base filesystem management
-	baseImages      map[string]*BaseImage
-	layerStore      *LayerStore
-	mountManager    *MountManager
-	
+	baseImages   map[string]*BaseImage
+	layerStore   *LayerStore
+	mountManager *MountManager
+
 	// Copy-on-Write implementation
-	cowEngine       *COWEngine
-	overlayManager  *OverlayManager
-	
+	cowEngine      *COWEngine
+	overlayManager *OverlayManager
+
 	// Compression and storage
-	compressor      *AdvancedCompressor  
-	decompressor    *AdvancedDecompressor
-	storageBackend  *storage.ContentAddressedStorageV3
-	
+	compressor     *AdvancedCompressor
+	decompressor   *AdvancedDecompressor
+	storageBackend *storage.ContentAddressedStorageV3
+
 	// Caching and optimization
-	layerCache      *LayerCache
-	mountCache      *MountCache
-	prefetcher      *LayerPrefetcher
-	
+	layerCache *LayerCache
+	mountCache *MountCache
+	prefetcher *LayerPrefetcher
+
 	// Monitoring and metrics
 	metricsCollector *RootFSMetrics
 	healthMonitor    *HealthMonitor
-	
+
 	// Configuration
-	config          *RootFSConfig
-	
+	config *RootFSConfig
+
 	// Synchronization
-	mu              sync.RWMutex
-	shutdown        chan struct{}
+	mu       sync.RWMutex
+	shutdown chan struct{}
 }
 
 // RootFS configuration
 type RootFSConfig struct {
 	// Storage settings
-	BaseImagePath       string
-	LayerCachePath      string
-	MountPointPath      string
-	
+	BaseImagePath  string
+	LayerCachePath string
+	MountPointPath string
+
 	// COW settings
-	EnableCOW           bool
-	COWBlockSize        int64
-	MaxCOWLayers        int
-	
+	EnableCOW    bool
+	COWBlockSize int64
+	MaxCOWLayers int
+
 	// Compression settings
-	CompressionAlgo     string
-	CompressionLevel    int
+	CompressionAlgo        string
+	CompressionLevel       int
 	EnableDeltaCompression bool
-	
-	// Caching settings  
-	LayerCacheSize      int64
-	MountCacheSize      int64
-	PrefetchEnabled     bool
-	
+
+	// Caching settings
+	LayerCacheSize  int64
+	MountCacheSize  int64
+	PrefetchEnabled bool
+
 	// Performance settings
 	MaxConcurrentMounts int
 	PreallocateSpace    bool
 	UseMemoryMaps       bool
-	
+
 	// Security settings
-	ReadOnlyBase        bool
-	IsolateContainers   bool
-	VerifyIntegrity     bool
+	ReadOnlyBase      bool
+	IsolateContainers bool
+	VerifyIntegrity   bool
 }
 
 // Base container image
 type BaseImage struct {
-	ID              string
-	Name            string
-	Version         string
-	Architecture    string
-	
-	// Layer information  
-	Layers          []*ImageLayer
-	RootLayer       *ImageLayer
-	ManifestHash    string
-	
+	ID           string
+	Name         string
+	Version      string
+	Architecture string
+
+	// Layer information
+	Layers       []*ImageLayer
+	RootLayer    *ImageLayer
+	ManifestHash string
+
 	// Compression info
-	CompressedSize  int64
-	OriginalSize    int64
+	CompressedSize   int64
+	OriginalSize     int64
 	CompressionRatio float64
-	
+
 	// Metadata
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	Labels          map[string]string
-	Environment     map[string]string
-	
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Labels      map[string]string
+	Environment map[string]string
+
 	// Usage tracking
-	RefCount        int64
-	LastUsed        time.Time
+	RefCount int64
+	LastUsed time.Time
 }
 
 // Image layer
 type ImageLayer struct {
-	ID              string
-	ParentID        string
-	Hash            string
-	Size            int64
-	CompressedSize  int64
-	
+	ID             string
+	ParentID       string
+	Hash           string
+	Size           int64
+	CompressedSize int64
+
 	// COW information
-	COWEnabled      bool
-	COWBlocks       map[int64]*COWBlock
-	ModifiedBlocks  map[int64]bool
-	
+	COWEnabled     bool
+	COWBlocks      map[int64]*COWBlock
+	ModifiedBlocks map[int64]bool
+
 	// Storage info
 	StoragePath     string
 	StorageType     LayerStorageType
 	CompressionType CompressionType
-	
+
 	// Access info
-	MountPoint      string
-	ReadOnly        bool
-	CreatedAt       time.Time
-	AccessedAt      time.Time
+	MountPoint string
+	ReadOnly   bool
+	CreatedAt  time.Time
+	AccessedAt time.Time
 }
 
 // COW block
 type COWBlock struct {
-	BlockID         int64
-	OriginalHash    string
-	ModifiedHash    string
-	Data            []byte
-	Size            int64
-	Modified        bool
-	RefCount        int32
+	BlockID      int64
+	OriginalHash string
+	ModifiedHash string
+	Data         []byte
+	Size         int64
+	Modified     bool
+	RefCount     int32
 }
 
 // Layer storage types
@@ -152,7 +152,7 @@ const (
 	StorageTypeCAS
 )
 
-// Compression types  
+// Compression types
 type CompressionType int
 
 const (
@@ -165,29 +165,18 @@ const (
 
 // COW Engine for copy-on-write operations
 type COWEngine struct {
-	// Block tracking
-	blockTracker    *BlockTracker
-	dirtyBlocks     map[string]map[int64]*COWBlock
-	
-	// COW operations
-	cowOperations   chan *COWOperation
-	workers         []*COWWorker
-	
 	// Configuration
-	blockSize       int64
-	maxLayers       int
-	
-	// Synchronization
-	mu              sync.RWMutex
+	blockSize int64
+	maxLayers int
 }
 
 // COW operation
 type COWOperation struct {
-	Type        COWOperationType
-	LayerID     string
-	BlockID     int64
-	Data        []byte
-	Response    chan *COWResponse
+	Type     COWOperationType
+	LayerID  string
+	BlockID  int64
+	Data     []byte
+	Response chan *COWResponse
 }
 
 // COW operation types
@@ -201,32 +190,32 @@ const (
 
 // COW response
 type COWResponse struct {
-	Data    []byte
-	Error   error
+	Data  []byte
+	Error error
 }
 
 // NewEmbeddedRootFSManagerV3 creates enhanced rootfs manager
 func NewEmbeddedRootFSManagerV3(config *RootFSConfig) (*EmbeddedRootFSManagerV3, error) {
 	if config == nil {
 		config = &RootFSConfig{
-			BaseImagePath:       "/var/lib/phantom-fragment/images",
-			LayerCachePath:      "/var/lib/phantom-fragment/layers",
-			MountPointPath:      "/var/lib/phantom-fragment/mounts",
-			EnableCOW:           true,
-			COWBlockSize:        64 * 1024, // 64KB blocks
-			MaxCOWLayers:        10,
-			CompressionAlgo:     "zstd",
-			CompressionLevel:    6,
+			BaseImagePath:          "/var/lib/phantom-fragment/images",
+			LayerCachePath:         "/var/lib/phantom-fragment/layers",
+			MountPointPath:         "/var/lib/phantom-fragment/mounts",
+			EnableCOW:              true,
+			COWBlockSize:           64 * 1024, // 64KB blocks
+			MaxCOWLayers:           10,
+			CompressionAlgo:        "zstd",
+			CompressionLevel:       6,
 			EnableDeltaCompression: true,
-			LayerCacheSize:      1024 * 1024 * 1024, // 1GB
-			MountCacheSize:      100,
-			PrefetchEnabled:     true,
-			MaxConcurrentMounts: 50,
-			PreallocateSpace:    true,
-			UseMemoryMaps:       true,
-			ReadOnlyBase:        true,
-			IsolateContainers:   true,
-			VerifyIntegrity:     true,
+			LayerCacheSize:         1024 * 1024 * 1024, // 1GB
+			MountCacheSize:         100,
+			PrefetchEnabled:        true,
+			MaxConcurrentMounts:    50,
+			PreallocateSpace:       true,
+			UseMemoryMaps:          true,
+			ReadOnlyBase:           true,
+			IsolateContainers:      true,
+			VerifyIntegrity:        true,
 		}
 	}
 
@@ -238,42 +227,42 @@ func NewEmbeddedRootFSManagerV3(config *RootFSConfig) (*EmbeddedRootFSManagerV3,
 
 	// Initialize components
 	var err error
-	
+
 	manager.layerStore, err = NewLayerStore(config.LayerCachePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize layer store: %w", err)
 	}
-	
+
 	manager.mountManager = NewMountManager(config.MountPointPath, config.MaxConcurrentMounts)
-	
+
 	if config.EnableCOW {
 		manager.cowEngine, err = NewCOWEngine(config.COWBlockSize, config.MaxCOWLayers)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize COW engine: %w", err)
 		}
 	}
-	
+
 	manager.overlayManager = NewOverlayManager()
 	manager.compressor = NewAdvancedCompressor(config.CompressionAlgo, config.CompressionLevel)
 	manager.decompressor = NewAdvancedDecompressor()
-	
+
 	casConfig := &storage.CASConfig{
-		StorageRoot:         filepath.Join(config.BaseImagePath, "cas"),
-		CompressionEnabled:  true,
+		StorageRoot:          filepath.Join(config.BaseImagePath, "cas"),
+		CompressionEnabled:   true,
 		DeduplicationEnabled: true,
 	}
 	manager.storageBackend, err = storage.NewContentAddressedStorageV3(casConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize CAS backend: %w", err)
 	}
-	
+
 	manager.layerCache = NewLayerCache(config.LayerCacheSize)
 	manager.mountCache = NewMountCache(config.MountCacheSize)
-	
+
 	if config.PrefetchEnabled {
 		manager.prefetcher = NewLayerPrefetcher()
 	}
-	
+
 	manager.metricsCollector = NewRootFSMetrics()
 	manager.healthMonitor = NewHealthMonitor()
 
@@ -332,14 +321,14 @@ func (rm *EmbeddedRootFSManagerV3) CreateContainerRootFS(ctx context.Context, ba
 
 	// Create container rootfs
 	containerRootFS := &ContainerRootFS{
-		ContainerID:     containerID,
-		BaseImageID:     baseImageID,
-		MountPoint:      mountPoint,
-		COWLayer:        cowLayer,
-		BaseImage:       baseImage,
-		CreatedAt:       time.Now(),
-		ReadOnly:        false,
-		COWEnabled:      rm.config.EnableCOW,
+		ContainerID: containerID,
+		BaseImageID: baseImageID,
+		MountPoint:  mountPoint,
+		COWLayer:    cowLayer,
+		BaseImage:   baseImage,
+		CreatedAt:   time.Now(),
+		ReadOnly:    false,
+		COWEnabled:  rm.config.EnableCOW,
 	}
 
 	// Register mount
@@ -422,7 +411,7 @@ func (rm *EmbeddedRootFSManagerV3) ImportBaseImage(ctx context.Context, imagePat
 		originalSize += layer.Size
 		compressedSize += layer.CompressedSize
 	}
-	
+
 	baseImage.OriginalSize = originalSize
 	baseImage.CompressedSize = compressedSize
 	baseImage.CompressionRatio = float64(compressedSize) / float64(originalSize)
@@ -444,7 +433,7 @@ func (rm *EmbeddedRootFSManagerV3) ImportBaseImage(ctx context.Context, imagePat
 func (rm *EmbeddedRootFSManagerV3) createCOWLayer(containerID string, baseLayer *ImageLayer) (*ImageLayer, error) {
 	cowLayerID := fmt.Sprintf("cow_%s_%d", containerID, time.Now().UnixNano())
 	cowLayerPath := filepath.Join(rm.config.LayerCachePath, "cow", cowLayerID)
-	
+
 	if err := os.MkdirAll(cowLayerPath, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create COW layer directory: %w", err)
 	}
@@ -525,7 +514,7 @@ func (rm *EmbeddedRootFSManagerV3) optimizeLayer(layer *ImageLayer) (*ImageLayer
 func (rm *EmbeddedRootFSManagerV3) extractImageLayers(imagePath string) ([]*ImageLayer, error) {
 	// Extract tar.gz or other container image format
 	// This is a simplified implementation
-	
+
 	layer := &ImageLayer{
 		ID:          fmt.Sprintf("layer_%d", time.Now().UnixNano()),
 		StoragePath: imagePath,
@@ -539,15 +528,15 @@ func (rm *EmbeddedRootFSManagerV3) extractImageLayers(imagePath string) ([]*Imag
 func (rm *EmbeddedRootFSManagerV3) getBaseImage(imageID string) (*BaseImage, error) {
 	rm.mu.RLock()
 	defer rm.mu.RUnlock()
-	
+
 	image, exists := rm.baseImages[imageID]
 	if !exists {
 		return nil, fmt.Errorf("base image not found: %s", imageID)
 	}
-	
+
 	image.RefCount++
 	image.LastUsed = time.Now()
-	
+
 	return image, nil
 }
 
@@ -641,27 +630,29 @@ type OverlayConfig struct {
 }
 
 // Constructor functions
-func NewLayerStore(path string) (*LayerStore, error) { return &LayerStore{}, nil }
+func NewLayerStore(path string) (*LayerStore, error)           { return &LayerStore{}, nil }
 func NewMountManager(path string, maxMounts int) *MountManager { return &MountManager{} }
-func NewCOWEngine(blockSize int64, maxLayers int) (*COWEngine, error) { return &COWEngine{blockSize: blockSize, maxLayers: maxLayers}, nil }
-func NewOverlayManager() *OverlayManager { return &OverlayManager{} }
+func NewCOWEngine(blockSize int64, maxLayers int) (*COWEngine, error) {
+	return &COWEngine{blockSize: blockSize, maxLayers: maxLayers}, nil
+}
+func NewOverlayManager() *OverlayManager                               { return &OverlayManager{} }
 func NewAdvancedCompressor(algo string, level int) *AdvancedCompressor { return &AdvancedCompressor{} }
-func NewAdvancedDecompressor() *AdvancedDecompressor { return &AdvancedDecompressor{} }
-func NewLayerCache(size int64) *LayerCache { return &LayerCache{} }
-func NewMountCache(size int64) *MountCache { return &MountCache{} }
-func NewLayerPrefetcher() *LayerPrefetcher { return &LayerPrefetcher{} }
-func NewRootFSMetrics() *RootFSMetrics { return &RootFSMetrics{} }
-func NewHealthMonitor() *HealthMonitor { return &HealthMonitor{} }
+func NewAdvancedDecompressor() *AdvancedDecompressor                   { return &AdvancedDecompressor{} }
+func NewLayerCache(size int64) *LayerCache                             { return &LayerCache{} }
+func NewMountCache(size int64) *MountCache                             { return &MountCache{} }
+func NewLayerPrefetcher() *LayerPrefetcher                             { return &LayerPrefetcher{} }
+func NewRootFSMetrics() *RootFSMetrics                                 { return &RootFSMetrics{} }
+func NewHealthMonitor() *HealthMonitor                                 { return &HealthMonitor{} }
 
 // Method implementations
 func (ce *COWEngine) InitializeLayer(layerID string, baseLayer *ImageLayer) error { return nil }
-func (ce *COWEngine) CleanupLayer(layerID string) error { return nil }
-func (om *OverlayManager) MountOverlay(config *OverlayConfig) error { return nil }
-func (om *OverlayManager) UnmountOverlay(mountPoint string) error { return nil }
-func (ac *AdvancedCompressor) Compress(data []byte) ([]byte, error) { return data, nil }
-func (mc *MountCache) Put(key string, value *ContainerRootFS) {}
-func (mc *MountCache) Get(key string) *ContainerRootFS { return nil }
-func (mc *MountCache) Remove(key string) {}
-func (lp *LayerPrefetcher) PrefetchLayers(layers []*ImageLayer) {}
-func (rm *RootFSMetrics) RecordRootFSCreation(containerID, imageID string) {}
-func (rm *RootFSMetrics) RecordRootFSDestruction(containerID string) {}
+func (ce *COWEngine) CleanupLayer(layerID string) error                           { return nil }
+func (om *OverlayManager) MountOverlay(config *OverlayConfig) error               { return nil }
+func (om *OverlayManager) UnmountOverlay(mountPoint string) error                 { return nil }
+func (ac *AdvancedCompressor) Compress(data []byte) ([]byte, error)               { return data, nil }
+func (mc *MountCache) Put(key string, value *ContainerRootFS)                     {}
+func (mc *MountCache) Get(key string) *ContainerRootFS                            { return nil }
+func (mc *MountCache) Remove(key string)                                          {}
+func (lp *LayerPrefetcher) PrefetchLayers(layers []*ImageLayer)                   {}
+func (rm *RootFSMetrics) RecordRootFSCreation(containerID, imageID string)        {}
+func (rm *RootFSMetrics) RecordRootFSDestruction(containerID string)              {}
