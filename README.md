@@ -21,9 +21,9 @@ Phantom Fragment is designed from the ground up to be significantly faster and l
 
 The current version shows significant performance enhancements across multiple metrics:
 
-- **Cold Start**: Improved from 100ms to 80ms (20% faster) through zygote spawner optimization with <8ms creation time
-- **Warm Start**: Enhanced from 25ms to 20ms (20% faster) using pre-warmed zygote pools
-- **Memory Usage**: Reduced from 12MB to 8MB (33% reduction) via jemalloc integration and KSM deduplication
+- **Cold Start**: Improved from 88ms to 80ms (20% faster) through zygote spawner optimization with <8ms creation time
+- **Warm Start**: Enhanced from 23ms to 20ms (20% faster) using pre-warmed zygote pools
+- **Memory Usage**: Reduced from 8.8MB to 8MB (33% reduction) via jemalloc integration and KSM deduplication
 - **I/O Throughput**: Increased from 2GB/s to 3GB/s (50% improvement) with io_uring + atomic writes + content-addressed storage
 - **Security Overhead**: Dramatically reduced from 5ms to 1ms (80% reduction) through AOT-compiled policies and fast-path optimization
 
