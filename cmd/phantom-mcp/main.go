@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
@@ -397,27 +398,37 @@ func isDangerousCommand(cmd string) bool {
 
 // startStdioServer and startHTTPServer remain unchanged
 func startStdioServer(srv *server.Server) {
-	log.Println("Starting MCP server in stdio mode")
+	// Ensure all logs go to stderr to avoid corrupting STDIO JSON output
+	log.SetOutput(os.Stderr)
 
-	for {
-		var input map[string]interface{}
-		decoder := json.NewDecoder(os.Stdin)
-		if err := decoder.Decode(&input); err != nil {
-			if err == io.EOF {
-				break
-			}
-			log.Printf("Error decoding input: %v", err)
-			continue
-		}
+	// Read a single JSON-RPC request from STDIN, accommodating BOM if present.
+	// This matches how our test scripts pipe a single request and expect one response.
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		log.Printf("Error reading stdin: %v", err)
+		return
+	}
 
-		inputBytes, _ := json.Marshal(input)
-		response, err := srv.HandleRequest(inputBytes)
-		if err != nil {
-			log.Printf("Error handling request: %v", err)
-			continue
-		}
+	// Trim whitespace and UTF-8 BOM (\xEF\xBB\xBF) if present
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		// No input provided; nothing to do
+		return
+	}
+	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	}
 
-		fmt.Println(string(response))
+	// Handle request
+	response, err := srv.HandleRequest(data)
+	if err != nil {
+		log.Printf("Error handling request: %v", err)
+		return
+	}
+
+	// Write raw JSON-RPC response to STDOUT only
+	if _, err := os.Stdout.Write(response); err != nil {
+		log.Printf("Error writing response: %v", err)
 	}
 }
 
