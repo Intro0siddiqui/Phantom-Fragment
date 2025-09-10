@@ -197,21 +197,21 @@ Instead of a monolithic daemon, Phantom Fragment is composed of independent yet 
 ```mermaid
 graph TB
     subgraph "Performance Fragments"
-        ZY[Zygote Spawner<br/>– <80ms startup]
-        IO[I/O Fast Path<br/>– io_uring + Atomic Writes]
-        MEM[Memory Discipline<br/>– Zero churn]
+        ZY[Zygote Spawner (<80ms)]
+        IO[I/O Fast Path (io_uring, Atomic Writes)]
+        MEM[Memory Discipline (Zero churn)]
     end
 
     subgraph "Security Fragments"
-        SEC[Line Rate Security<br/>– BPF-LSM + Landlock]
-        NET[Network Minimalist<br/>– eBPF/XDP + QUIC]
-        POL[Policy DSL<br/>– AOT compiled]
+        SEC[Line Rate Security (BPF-LSM, Landlock)]
+        NET[Network Minimalist (eBPF/XDP, QUIC)]
+        POL[Policy DSL (AOT compiled)]
     end
 
     subgraph "Orchestration Fragments"
-        ORCH[Graph Orchestrator<br/>– PSI/NUMA + ML Prediction]
-        MODE[Adaptive Modes<br/>– Direct/Sandbox/Hardened/Wasm]
-        FRAG[Fragment Store<br/>– CAS + deltas]
+        ORCH[Graph Orchestrator (PSI/NUMA, ML)]
+        MODE[Adaptive Modes (Direct/Sandbox/Hardened/Wasm)]
+        FRAG[Fragment Store (CAS, deltas)]
     end
 
     ZY --> ORCH
