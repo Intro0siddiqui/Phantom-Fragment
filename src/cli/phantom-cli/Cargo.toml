@@ -64,6 +64,7 @@ memory-rs = { path = "../../memory/discipline/memory-rs" }
 network-rs = { path = "../../core/network-rs" }
 landlock-rs = { path = "../../security/landlock-rs" }
 cgroups-rs = { path = "../../security/cgroups-rs" }
+seccomp-rs = { path = "../../security/seccomp-rs" }
 storage-rs = { path = "../../storage/storage-rs" }
 image-puller = { path = "../../storage/image-puller" }
 image-store-rs = { path = "../../storage/image-store-rs" }

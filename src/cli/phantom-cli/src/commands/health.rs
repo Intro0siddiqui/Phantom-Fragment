@@ -10,9 +10,20 @@ pub struct HealthArgs {}
 
 use crate::commands::CommandContext;
 
-/// Check if a command/tool is available in PATH
-fn command_exists(cmd: &str) -> bool {
-    which::which(cmd).is_ok()
+/// Check if a command/tool is available in PATH or a specific directory
+fn command_exists(cmd: &str, extra_dir: Option<&Path>) -> bool {
+    if which::which(cmd).is_ok() {
+        return true;
+    }
+
+    if let Some(dir) = extra_dir {
+        let path = dir.join(cmd);
+        if path.exists() {
+            return true;
+        }
+    }
+
+    false
 }
 
 /// Get kernel version as string
@@ -74,27 +85,40 @@ fn check_landlock_status() -> (&'static str, String) {
     ("Unavailable", kernel)
 }
 
-/// Check if seccomp is available
-fn check_seccomp_status() -> &'static str {
-    // Check /proc/self/status for Seccomp field
-    if let Ok(content) = fs::read_to_string("/proc/self/status") {
+/// Check if seccomp is available in the kernel and current process status
+fn check_seccomp_status() -> (&'static str, &'static str) {
+    let kernel_supported = seccomp_rs::is_supported();
+
+    // Check /proc/self/status for Seccomp field for current process status
+    let process_status = if let Ok(content) = fs::read_to_string("/proc/self/status") {
+        let mut status = "Disabled";
         for line in content.lines() {
             if line.starts_with("Seccomp:") {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if parts.len() >= 2 {
                     match parts[1] {
-                        "0" => return "Disabled",
-                        "1" | "2" => return "Enabled",
-                        _ => return "Unknown",
+                        "0" => status = "Disabled",
+                        "1" | "2" => status = "Enabled",
+                        _ => status = "Unknown",
                     }
                 }
             }
         }
+        status
+    } else {
+        "Unknown"
+    };
+
+    match (kernel_supported, process_status) {
+        (true, "Enabled") => ("Enabled (available)", "✓"),
+        (true, "Disabled") => ("Available (not active for CLI)", "✓"),
+        (true, status) => (status, "✓"),
+        (false, _) => ("Unavailable (kernel support missing)", "✗"),
     }
-    "Unavailable"
 }
 
-pub fn exec(_ctx: CommandContext, _args: HealthArgs) -> Result<()> {
+pub fn exec(ctx: CommandContext, _args: HealthArgs) -> Result<()> {
+    let CommandContext { paths, .. } = ctx;
     print_header("System Health");
     print_divider_full();
 
@@ -110,11 +134,11 @@ pub fn exec(_ctx: CommandContext, _args: HealthArgs) -> Result<()> {
     println!("  {} eBPF: {}", ebpf_icon.green(), ebpf_status);
 
     // Seccomp status
-    let seccomp_status = check_seccomp_status();
-    let seccomp_icon = if seccomp_status == "Enabled" {
-        "✓".green()
+    let (seccomp_status, seccomp_icon_raw) = check_seccomp_status();
+    let seccomp_icon = if seccomp_icon_raw == "✓" {
+        seccomp_icon_raw.green()
     } else {
-        "⚠".yellow()
+        seccomp_icon_raw.red()
     };
     println!("  {} Seccomp: {}", seccomp_icon, seccomp_status);
 
@@ -142,7 +166,7 @@ pub fn exec(_ctx: CommandContext, _args: HealthArgs) -> Result<()> {
     println!("  {} Cgroups: {}", cgroups_icon, cgroups);
 
     // Bubblewrap status
-    let bwrap = if command_exists("bwrap") {
+    let bwrap = if command_exists("bwrap", None) {
         ("Available", "✓".green())
     } else {
         ("Unavailable", "✗".red())
@@ -150,8 +174,9 @@ pub fn exec(_ctx: CommandContext, _args: HealthArgs) -> Result<()> {
     println!("  {} Bubblewrap: {}", bwrap.1, bwrap.0);
 
     // Proot status (fallback)
-    let proot = if command_exists("proot") {
-        if !command_exists("bwrap") {
+    let bin_dir = paths.bin();
+    let proot = if command_exists("proot", Some(&bin_dir)) {
+        if !command_exists("bwrap", None) {
             ("Available (fallback)", "⚠".yellow())
         } else {
             ("Available", "✓".green())

@@ -213,7 +213,7 @@ async fn run_cli() -> anyhow::Result<()> {
     match cli.command {
         Commands::Create(args) => {
             let ctx = CommandContext::new(&app_config, &mut registry);
-            commands::create::exec(ctx, args)?;
+            commands::create::exec(ctx, args).await?;
         }
         Commands::Run(args) => {
             let ctx = CommandContext::new(&app_config, &mut registry);

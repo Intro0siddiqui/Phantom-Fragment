@@ -44,6 +44,10 @@ impl PhantomPaths {
     pub fn fragment_pools(&self) -> PathBuf {
         self.base.join("fragment-pools")
     }
+
+    pub fn bin(&self) -> PathBuf {
+        self.base.join("bin")
+    }
 }
 
 impl Default for PhantomPaths {

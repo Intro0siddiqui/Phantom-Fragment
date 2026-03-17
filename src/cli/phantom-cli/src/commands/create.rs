@@ -101,7 +101,7 @@ pub struct CreateArgs {
     pub network: Option<String>,
 }
 
-pub fn exec(ctx: CommandContext, args: CreateArgs) -> anyhow::Result<()> {
+pub async fn exec(ctx: CommandContext<'_>, args: CreateArgs) -> anyhow::Result<()> {
     let CommandContext {
         config,
         paths,
@@ -176,9 +176,8 @@ pub fn exec(ctx: CommandContext, args: CreateArgs) -> anyhow::Result<()> {
             println!("{} PID {}", "✓ Spawned:".green().bold(), pid);
 
             // Validate the spawned PID with retry logic before registering
-            let validation_result = tokio::runtime::Runtime::new()
-                .unwrap()
-                .block_on(validate_spawned_pid_with_retry(pid));
+            // Using await directly here since exec is now async
+            let validation_result = validate_spawned_pid_with_retry(pid).await;
 
             if !validation_result {
                 // Validation failed - clean up the orphaned process

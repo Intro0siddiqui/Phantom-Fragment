@@ -9,6 +9,22 @@ pub enum SeccompError {
     UnknownProfile(String),
 }
 
+pub fn is_supported() -> bool {
+    // Check if seccomp is supported by the kernel
+    // We can use prctl with PR_GET_SECCOMP (21) which returns 0 if seccomp is supported
+    // but not enabled for the current process, or 1/2 if enabled.
+    // If it returns -1 with EINVAL, it's not supported.
+    unsafe {
+        let ret = libc::prctl(21, 0, 0, 0, 0);
+        if ret < 0 {
+            let err = *libc::__errno_location();
+            err != libc::EINVAL
+        } else {
+            true
+        }
+    }
+}
+
 pub fn apply_profile(name: &str) -> Result<(), SeccompError> {
     if name == "allow_all" {
         return Ok(());
