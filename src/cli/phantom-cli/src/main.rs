@@ -42,7 +42,7 @@ fn init_logging() {
 
 #[derive(Parser)]
 #[command(name = "phantom")]
-#[command(version = "3.1.0")]
+#[command(version = "1.0.0")]
 #[command(about = "Phantom Fragment Runtime", long_about = None)]
 struct Cli {
     /// Internal: Run as warm daemon (hidden)
@@ -154,7 +154,6 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    eprintln!("DEBUG: main() started");
     // Initialize structured logging with tracing
     init_logging();
 

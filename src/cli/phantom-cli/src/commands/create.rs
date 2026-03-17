@@ -143,7 +143,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: CreateArgs) -> anyhow::Result<(
     let needs_network = req_components.components.contains(&Component::TcpStack);
     let needs_file_io = req_components.components.contains(&Component::FileIo);
 
-    let engine = AdaptiveEngine::new();
+    let engine = AdaptiveEngine::new()?;
     let (mode, _risk, _perf, hardware) = if let Some(custom_profile) = config.get_profile(&profile)
     {
         (

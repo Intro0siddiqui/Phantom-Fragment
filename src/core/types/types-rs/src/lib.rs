@@ -1,16 +1,29 @@
-#![crate_type = "staticlib"]
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 //! Types used across the Phantom Fragment system
 //!
 //! This crate contains shared data structures and type definitions
 //! that are used by multiple components in the system.
 
+#[cfg(not(feature = "std"))]
 extern crate alloc;
+
+#[cfg(not(feature = "std"))]
 use alloc::boxed::Box;
+#[cfg(not(feature = "std"))]
 use alloc::ffi::CString;
+#[cfg(not(feature = "std"))]
 use alloc::string::String;
+#[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
+
+#[cfg(feature = "std")]
+use std::ffi::CString;
+#[cfg(feature = "std")]
+use std::string::String;
+#[cfg(feature = "std")]
+use std::vec::Vec;
+
 use core::ffi::{c_char, CStr};
 use core::ptr;
 use serde::{Deserialize, Serialize};
@@ -26,30 +39,23 @@ pub struct CContainer {
     env_len: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum PhantomError {
-    Io(alloc::boxed::Box<dyn core::fmt::Debug + Send + Sync>),
-    Serialization(alloc::boxed::Box<dyn core::fmt::Debug + Send + Sync>),
-    InvalidInput(alloc::string::String),
+    #[error("IO error: {0:?}")]
+    Io(Box<dyn core::fmt::Debug + Send + Sync>),
+    #[error("Serialization error: {0:?}")]
+    Serialization(Box<dyn core::fmt::Debug + Send + Sync>),
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+    #[error("Out of memory")]
     OutOfMemory,
-    FragmentNotFound(alloc::string::String),
-    Internal(alloc::string::String),
+    #[error("Fragment not found: {0}")]
+    FragmentNotFound(String),
+    #[error("Internal error: {0}")]
+    Internal(String),
     /// Permission denied - elevated privileges required (e.g., for BPF-LSM)
+    #[error("Permission denied - sudo required")]
     NeedSudo,
-}
-
-impl core::fmt::Display for PhantomError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            PhantomError::Io(e) => write!(f, "IO error: {:?}", e),
-            PhantomError::Serialization(e) => write!(f, "Serialization error: {:?}", e),
-            PhantomError::InvalidInput(s) => write!(f, "Invalid input: {}", s),
-            PhantomError::OutOfMemory => write!(f, "Out of memory"),
-            PhantomError::FragmentNotFound(s) => write!(f, "Fragment not found: {}", s),
-            PhantomError::Internal(s) => write!(f, "Internal error: {}", s),
-            PhantomError::NeedSudo => write!(f, "Permission denied - sudo required"),
-        }
-    }
 }
 
 #[repr(C)]

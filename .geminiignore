@@ -1,0 +1,12 @@
+target/
+node_modules/
+.git/
+docs/
+roadmap/
+Cargo.lock
+# Large binary files
+*.o
+*.a
+*.so
+*.bin
+*.log

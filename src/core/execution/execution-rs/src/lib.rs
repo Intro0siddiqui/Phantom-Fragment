@@ -73,14 +73,14 @@ pub struct AdaptiveEngine {
     zygote_pool: Arc<Mutex<Option<ZygotePool>>>,
     /// Track PIDs spawned via zygote for proper release
     zygote_pids: Arc<Mutex<HashSet<i32>>>,
+    /// Track cgroup names for cleanup (PID -> cgroup_name)
+    cgroup_names: Arc<Mutex<std::collections::HashMap<i32, String>>>,
 }
 
 impl AdaptiveEngine {
-    pub fn new() -> Self {
-        eprintln!("DEBUG: AdaptiveEngine::new() called");
+    pub fn new() -> Result<Self, PhantomError> {
         // Permissive mode should never fail - it gracefully handles initialization errors
         Self::with_security_mode(SecurityMode::Permissive)
-            .expect("Failed to initialize AdaptiveEngine in Permissive mode")
     }
 
     /// Create a new AdaptiveEngine with specified security mode
@@ -140,6 +140,7 @@ impl AdaptiveEngine {
             default_mode: ExecutionMode::Sandbox,
             zygote_pool: Arc::new(Mutex::new(pool)),
             zygote_pids: Arc::new(Mutex::new(HashSet::new())),
+            cgroup_names: Arc::new(Mutex::new(std::collections::HashMap::new())),
         })
     }
 
@@ -202,6 +203,17 @@ impl AdaptiveEngine {
                     if let Some(ref mut pool) = *guard {
                         pool.release(pid);
                     }
+                }
+            }
+        }
+
+        // Clean up cgroup if one was created for this process
+        if let Ok(mut cgroups) = self.cgroup_names.lock() {
+            if let Some(cgroup_name) = cgroups.remove(&pid) {
+                log::debug!("Cleaning up cgroup {} for PID {}", cgroup_name, pid);
+                let manager = CgroupManager::new(&cgroup_name);
+                if let Err(e) = manager.destroy() {
+                    log::warn!("Failed to clean up cgroup {}: {:?}", cgroup_name, e);
                 }
             }
         }
@@ -581,6 +593,11 @@ impl AdaptiveEngine {
             return Ok(());
         }
 
+        // Store cgroup name for cleanup in wait_child
+        if let Ok(mut cgroups) = self.cgroup_names.lock() {
+            cgroups.insert(child_pid as i32, cgroup_name.clone());
+        }
+
         let memory_mb = if profile.memory_mb > 0 {
             profile.memory_mb as u64
         } else {
@@ -733,7 +750,7 @@ impl AdaptiveEngine {
 
 impl Default for AdaptiveEngine {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("Failed to initialize AdaptiveEngine with default settings")
     }
 }
 
@@ -743,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_high_risk_selection() {
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().unwrap();
         let risk = RiskProfile {
             untrusted_source: true,
             ..Default::default()
@@ -755,7 +772,7 @@ mod tests {
 
     #[test]
     fn test_performance_selection() {
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().unwrap();
         let risk = RiskProfile::default();
         let perf = PerformanceProfile {
             latency_sensitive: true,
@@ -767,7 +784,7 @@ mod tests {
 
     #[test]
     fn test_default_selection() {
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().unwrap();
         let risk = RiskProfile {
             network_access: true,
             ..Default::default()

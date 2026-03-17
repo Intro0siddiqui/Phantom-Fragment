@@ -587,7 +587,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
 
         use execution_rs::{AdaptiveEngine, PerformanceProfile, RiskProfile};
         use security_rs::SecurityManager;
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new()?;
 
         let (mode, hardware) = if let Some(custom_profile) = app_config.get_profile(&profile_name) {
             let hw = custom_profile.to_hardware_profile();

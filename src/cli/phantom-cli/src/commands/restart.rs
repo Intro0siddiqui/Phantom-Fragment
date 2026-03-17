@@ -61,12 +61,12 @@ pub fn exec(ctx: CommandContext<'_>, args: RestartArgs) -> anyhow::Result<()> {
     } else {
         let risk = RiskProfile::default();
         let perf = PerformanceProfile::default();
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new()?;
         (engine.select_mode(&risk, &perf), None)
     };
 
     let init_command = "sleep 999999999";
-    match AdaptiveEngine::new().spawn(exec_mode, init_command, hardware.as_ref(), None) {
+    match AdaptiveEngine::new()?.spawn(exec_mode, init_command, hardware.as_ref(), None) {
         Ok(new_pid) => {
             println!("{} New PID {}", "✓ Spawned:".green().bold(), new_pid);
 

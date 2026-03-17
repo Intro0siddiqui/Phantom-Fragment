@@ -26,7 +26,7 @@ else
 fi
 
 BINARY_NAME="${BINARY_NAME:-phantom}"  # Default binary name
-VERSION="${VERSION:-3.1.0}"
+VERSION="${VERSION:-1.0.0}"
 
 # Architecture detection
 detect_arch() {
