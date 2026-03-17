@@ -1,0 +1,16 @@
+[package]
+name = "network-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+nix = { version = "0.27", features = ["sched", "mount"] }
+futures = "0.3"
+rtnetlink = "0.13"
+netlink-packet-route = "0.17"
+tokio = { version = "1", features = ["full"] }
+serde = { workspace = true }
+ipnetwork = "0.20"
+thiserror = { workspace = true }

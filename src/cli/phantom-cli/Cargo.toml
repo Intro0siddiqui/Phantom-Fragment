@@ -1,0 +1,76 @@
+[package]
+name = "phantom"
+version = "3.1.0"
+edition = "2021"
+
+[build-dependencies]
+cc = "1.0"
+
+[package.metadata.cargo-build]
+rustc-link-search = ["../../include/zig-security/zig-out/lib"]
+rustc-link-lib = ["static=phantom-security"]
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
+tokio = { version = "1.32", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["io-util"] }
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.10"
+colored = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+reqwest = { version = "0.11", features = ["json"] }
+nix = { version = "0.27", features = ["user", "signal", "process", "socket", "dir", "env", "fs"] }
+which = "6.0"
+fs2 = "0.4"
+ctrlc = { version = "3.4", features = ["termination"] }
+libc = "0.2"
+base64 = "0.21"
+
+# Tracing and structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# HTTP server for metrics
+hyper = { version = "0.14", features = ["server", "tcp"] }
+
+# Debug library
+debug-rs = { path = "../../monitoring/debug/debug-rs", package = "phantom-debug" }
+
+# Password security
+rpassword = "7.0"
+argon2 = "0.5"
+zeroize = "1.7"
+keyring = "2.3"
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+
+
+# Internal dependencies
+task-analyzer-rs = { path = "../../core/task-analyzer-rs" }
+execution-rs = { path = "../../core/execution/execution-rs" }
+health-rs = { path = "../../monitoring/health/health-rs" }
+metrics-rs = { path = "../../monitoring/metrics/metrics-rs" }
+policy-dsl-rs = { path = "../../security/policy-dsl-rs" }
+security-rs = { path = "../../security/orchestration/security-rs" }
+bpf-lsm-rs = { path = "../../security/bpf-lsm/bpf-lsm-rs", features = ["interactive"] }
+zygote-rs = { path = "../../core/zygote-rs" }
+types-rs = { path = "../../core/types/types-rs" }
+memory-rs = { path = "../../memory/discipline/memory-rs" }
+network-rs = { path = "../../core/network-rs" }
+landlock-rs = { path = "../../security/landlock-rs" }
+cgroups-rs = { path = "../../security/cgroups-rs" }
+storage-rs = { path = "../../storage/storage-rs" }
+image-puller = { path = "../../storage/image-puller" }
+image-store-rs = { path = "../../storage/image-store-rs" }
+oci-registry-rs = { path = "../../storage/oci-registry-rs" }
+security-scanner = { path = "../../storage/security-scanner" }
+phantom-build = { path = "../../tools/phantom-build" }
+phantom-migrate = { path = "../../tools/phantom-migrate" }
+
+[dev-dependencies]
+tempfile = "3.8"

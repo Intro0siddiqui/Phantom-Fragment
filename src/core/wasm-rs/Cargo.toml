@@ -1,0 +1,10 @@
+[package]
+name = "wasm-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+wasmtime = { version = "28.0", features = ["runtime", "cranelift"] }
+wasi-common = "28.0"
+anyhow = "1.0"
+log = "0.4"

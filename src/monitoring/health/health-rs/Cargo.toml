@@ -1,0 +1,11 @@
+[package]
+name = "health-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+types-rs = { path = "../../../core/types/types-rs" }
+log = "0.4"
+
+[dev-dependencies]

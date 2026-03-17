@@ -1,0 +1,16 @@
+[package]
+name = "types-rs"
+version = "3.1.0"
+edition = "2021"
+
+[features]
+default = ["std"]
+std = []
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+libc = { workspace = true }
+
+[build-dependencies]
+cbindgen = { workspace = true }

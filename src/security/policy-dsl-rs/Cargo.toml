@@ -1,0 +1,10 @@
+[package]
+name = "policy-dsl-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+serde_yaml = "0.9"
+libseccomp = "0.4"
+types-rs = { path = "../../core/types/types-rs" }

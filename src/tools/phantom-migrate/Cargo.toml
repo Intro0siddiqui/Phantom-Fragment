@@ -1,0 +1,38 @@
+[package]
+name = "phantom-migrate"
+version = "3.1.0"
+edition = "2021"
+
+[lib]
+name = "phantom_migrate"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phantom-migrate"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+
+# For file conversion
+regex = "1.10"
+
+# Our parser
+phantom-build = { path = "../phantom-build" }
+
+# For container import
+tar = "0.4"
+
+# For batch conversion
+walkdir = "2.4"
+
+# For finding external tools
+which = "6.0"
+
+# For mount operations (fallback extraction method)
+nix = { version = "0.27", features = ["mount", "user"] }

@@ -1,0 +1,57 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Zig build artifacts
+.zig-cache/
+**/zig-cache/
+**/zig-out/
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test artifacts
+**/*test*
+!**/*test*.rs
+!**/*test*.zig
+*.test
+
+# Temporary files
+*.tmp
+*.log
+*.out
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Environment files
+.env
+.env.local
+
+# Temporary test executables
+**/test_numa*
+**/test_zygote*
+**/test_wasm*
+!**/test_*.rs
+!**/test_*.zig
+
+# Agent configuration file
+AGENTS.md
+
+# Release binary (build from source)
+phantom
+phantom.exe

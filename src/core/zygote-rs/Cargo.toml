@@ -1,0 +1,13 @@
+[package]
+name = "zygote-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+nix = { version = "0.27", features = ["process", "sched", "signal"] }
+log = "0.4"
+types-rs = { path = "../types/types-rs" }
+
+[build-dependencies]
+cc = "1.0"

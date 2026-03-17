@@ -1,0 +1,15 @@
+[package]
+name = "seccomp-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+libc = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+libseccomp = "0.4"
+log = "0.4"
+
+# [build-dependencies]
+# cc = "1.0"
+# pkg-config = "0.3"

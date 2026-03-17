@@ -1,0 +1,18 @@
+[package]
+name = "memory-rs"
+version = "3.1.0"
+edition = "2021"
+
+[build-dependencies]
+cc = "1.0"
+pkg-config = "0.3"
+
+[features]
+default = ["numa"]
+numa = []
+
+[dependencies]
+parking_lot = "0.12"
+types-rs = { path = "../../../core/types/types-rs" }
+libc = "0.2"
+

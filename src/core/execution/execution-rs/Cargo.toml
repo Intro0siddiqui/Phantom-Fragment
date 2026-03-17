@@ -1,0 +1,28 @@
+[package]
+name = "execution-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+types-rs = { path = "../../types/types-rs" }
+security-rs = { path = "../../../security/orchestration/security-rs" }
+policy-dsl-rs = { path = "../../../security/policy-dsl-rs" }
+zygote-rs = { path = "../../zygote-rs" }
+bpf-lsm-rs = { path = "../../../security/bpf-lsm/bpf-lsm-rs", features = ["interactive"] }
+cgroups-rs = { path = "../../../security/cgroups-rs" }
+seccomp-rs = { path = "../../../security/seccomp-rs" }
+landlock-rs = { path = "../../../security/landlock-rs" }
+capabilities-rs = { path = "../../../security/capabilities-rs" }
+network-rs = { path = "../../network-rs" }
+memory-rs = { path = "../../../memory/discipline/memory-rs" }
+nix = { version = "0.27", features = ["process", "fs"] }
+libc = "0.2"
+log = "0.4"
+wasm-rs = { path = "../../wasm-rs" }
+
+[features]
+default = ["numa"]
+numa = []
+
+[dev-dependencies]

@@ -1,0 +1,28 @@
+[package]
+name = "oci-registry-rs"
+version = "3.1.0"
+edition = "2021"
+description = "OCI Registry client for Phantom Fragment - pull and push container images"
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+futures = "0.3"
+base64 = "0.21"
+sha2 = "0.10"
+log = "0.4"
+thiserror = "1.0"
+home = "0.5"
+which = "4.4"
+indicatif = "0.17"
+chrono = { version = "0.4", features = ["serde"] }
+types-rs = { path = "../../core/types/types-rs" }
+
+# Password security
+argon2 = "0.5"
+zeroize = "1.7"
+keyring = "2.3"
+aes-gcm = "0.10"
+rand = "0.8"

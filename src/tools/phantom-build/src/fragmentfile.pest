@@ -1,0 +1,51 @@
+// Fragmentfile grammar (Dockerfile-compatible)
+
+WHITESPACE = _{ " " | "\t" | "\\" ~ NEWLINE }
+NEWLINE = _{ "\n" | "\r\n" }
+COMMENT = _{ "#" ~ (!NEWLINE ~ ANY)* ~ NEWLINE? }
+
+// Identifiers and strings
+identifier = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_" | "-" | ".")* }
+string_content = @{ (!("\"" | "\\") ~ ANY)* }
+quoted_string = ${ "\"" ~ string_content ~ "\"" }
+unquoted_string = @{ (!WHITESPACE ~ !NEWLINE ~ ANY)+ }
+value = { quoted_string | unquoted_string }
+
+// Instructions
+from_instruction = { "FROM" ~ value ~ ("AS" ~ identifier)? }
+run_mount = @{ "--mount=" ~ (!WHITESPACE ~ ANY)+ }
+run_instruction = { "RUN" ~ run_mount* ~ value+ }
+// Path can include slashes, dots, dashes, etc (for COPY paths)
+path = @{ (ASCII_ALPHANUMERIC | "/" | "." | "-" | "_" | ":" | "*")+ }
+copy_from = { "--from=" ~ identifier }
+copy_instruction = { "COPY" ~ copy_from? ~ path+ }
+add_instruction = { "ADD" ~ value ~ value }
+workdir_instruction = { "WORKDIR" ~ value }
+env_instruction = { "ENV" ~ identifier ~ "=" ~ value }
+port = @{ ASCII_DIGIT+ }
+expose_instruction = { "EXPOSE" ~ port }
+cmd_instruction = { "CMD" ~ value+ }
+entrypoint_instruction = { "ENTRYPOINT" ~ value+ }
+user_instruction = { "USER" ~ value }
+label_instruction = { "LABEL" ~ identifier ~ "=" ~ value }
+arg_instruction = { "ARG" ~ identifier ~ ("=" ~ value)? }
+volume_instruction = { "VOLUME" ~ value+ }
+
+instruction = {
+    from_instruction
+    | run_instruction
+    | copy_instruction
+    | add_instruction  
+    | workdir_instruction
+    | env_instruction
+    | expose_instruction
+    | cmd_instruction
+    | entrypoint_instruction
+    | user_instruction
+    | label_instruction
+    | arg_instruction
+    | volume_instruction
+}
+
+// Explicitly handle whitespace in repetition to avoid infinite loops
+fragmentfile = { SOI ~ (instruction | COMMENT | NEWLINE | WHITESPACE)* ~ EOI }

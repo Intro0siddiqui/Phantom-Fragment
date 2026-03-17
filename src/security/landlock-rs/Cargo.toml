@@ -1,0 +1,14 @@
+[package]
+name = "landlock-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+types-rs = { path = "../../core/types/types-rs" }
+log = { workspace = true }
+landlock = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+parking_lot = { workspace = true }
+
+# Removed build-dependencies as we are moving to pure Rust

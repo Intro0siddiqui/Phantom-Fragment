@@ -1,0 +1,26 @@
+[package]
+name = "phantom-mcp"
+version = "3.1.0"
+edition = "2021"
+
+[lib]
+name = "phantom_mcp"
+path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "1.35", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+async-trait = "0.1"
+schemars = "1.0"
+rmcp = { git = "https://github.com/modelcontextprotocol/rust-sdk", features = ["server", "transport-io", "macros"] }
+
+# Internal dependencies
+types-rs = { path = "../core/types/types-rs" }
+config-rs = { path = "../core/config-rs" }
+metrics-rs = { path = "../monitoring/metrics/metrics-rs" }
+network-rs = { path = "../core/network-rs" }

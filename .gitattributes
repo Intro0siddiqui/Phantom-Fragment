@@ -1,0 +1,26 @@
+# Line ending consistency
+* text=auto eol=lf
+
+# Ensure shell scripts use LF
+*.sh text eol=lf
+
+# Ensure Rust source files use LF
+*.rs text eol=lf
+
+# Ensure TOML files use LF
+*.toml text eol=lf
+
+# Ensure Markdown files use LF
+*.md text eol=lf
+
+# Binary files
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.so binary
+*.dll binary
+*.dylib binary
+*.exe binary

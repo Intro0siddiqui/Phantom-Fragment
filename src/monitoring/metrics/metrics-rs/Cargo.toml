@@ -1,0 +1,18 @@
+[package]
+name = "metrics-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { workspace = true }
+types-rs = { path = "../../../core/types/types-rs" }
+prometheus = "0.13"
+lazy_static = "1.4"
+log = "0.4"
+actix-web = { version = "4", optional = true }
+tokio = { workspace = true }
+
+[features]
+server = ["dep:actix-web"]
+
+[dev-dependencies]

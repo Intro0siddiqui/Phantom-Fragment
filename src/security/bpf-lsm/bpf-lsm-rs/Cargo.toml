@@ -1,0 +1,28 @@
+[package]
+name = "bpf-lsm-rs"
+version = "3.1.0"
+edition = "2021"
+
+[dependencies]
+types-rs = { path = "../../../core/types/types-rs" }
+policy-dsl-rs = { path = "../../policy-dsl-rs" }
+thiserror = "1.0"
+log = "0.4"
+anyhow = "1.0"
+caps = "0.5"
+parking_lot = { workspace = true }
+libc = "0.2"
+colored = { version = "2.0", optional = true }
+
+# Aya for actual BPF loading
+aya = { version = "0.12", features = ["async_tokio"] }
+
+[build-dependencies]
+# Build script to compile BPF C code
+
+[features]
+default = ["interactive"]
+# BPF-LSM feature for conditional compilation
+bpf-lsm = []
+# Interactive prompts (requires colored)
+interactive = ["colored"]

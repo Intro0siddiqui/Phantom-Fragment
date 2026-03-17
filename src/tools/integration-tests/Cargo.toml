@@ -1,0 +1,38 @@
+[package]
+name = "integration-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+types-rs = { path = "../../core/types/types-rs" }
+policy-dsl-rs = { path = "../../security/policy-dsl-rs" }
+task-analyzer-rs = { path = "../../core/task-analyzer-rs" }
+execution-rs = { path = "../../core/execution/execution-rs" }
+storage-rs = { path = "../../storage/storage-rs" }
+health-rs = { path = "../../monitoring/health/health-rs" }
+metrics-rs = { path = "../../monitoring/metrics/metrics-rs" }
+memory-rs = { path = "../../memory/discipline/memory-rs" }
+landlock-rs = { path = "../../security/landlock-rs" }
+network-rs = { path = "../../core/network-rs" }
+seccomp-rs = { path = "../../security/seccomp-rs" }
+capabilities-rs = { path = "../../security/capabilities-rs" }
+bpf-lsm-rs = { path = "../../security/bpf-lsm/bpf-lsm-rs" }
+phantom-migrate = { path = "../phantom-migrate" }
+tokio = { workspace = true }
+tempfile = "3.8"
+assert_cmd = "2.0"
+predicates = "3.0"
+reqwest = { version = "0.11", features = ["blocking"] }
+tar = "0.4"
+flate2 = "1.0"
+sha2 = "0.10"
+hex = "0.4"
+nix = { workspace = true }
+libc = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+glob = "0.3"
+num_cpus = { workspace = true }
+
+

@@ -1,0 +1,41 @@
+# Phantom Fragment Configuration
+# This file defines the custom execution bounds for our fragments.
+
+# 1. The "Sandbox" Fragment (DEFAULT)
+# Standard namespace isolation with network access for general container workloads
+[profiles.sandbox]
+isolation = "sandbox"
+network = true
+file_write = true
+memory_mb = 512
+
+# 2. The "Network Ghost" Fragment
+# A process that can interact completely with the host filesystem and CPU,
+# but has a completely severed network stack. Perfect for running untrusted data-processing scripts.
+[profiles.network_ghost]
+isolation = "direct"
+network = false
+file_write = true
+memory_mb = 1024
+cpu_affinity = []
+# no seccomp_rules for now
+
+# 2. The "Vault" Fragment
+# Maximum paranoia. No network, no file writes (except for a specific landlock path if supported), 
+# restricted CPU, and a strict seccomp profile to prevent unusual syscalls.
+[profiles.vault]
+isolation = "hardened"
+network = false
+file_write = false
+memory_mb = 256
+cpu_count = 1
+
+# 3. The "Bare Metal Worker" Fragment
+# Pinned to specific cores with maximum resources, but uses basic namespace isolation.
+# Note: "namespace" is an alias for "sandbox" mode
+[profiles.metal_worker]
+isolation = "namespace"
+network = true
+file_write = true
+memory_mb = 4096
+cpu_affinity = [0, 1]

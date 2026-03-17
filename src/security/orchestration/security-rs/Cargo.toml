@@ -1,0 +1,21 @@
+[package]
+name = "security-rs"
+version = "3.1.0"
+edition = "2021"
+
+[features]
+default = ["bpf-lsm"]
+bpf-lsm = ["dep:aya", "dep:bpf-lsm-rs"]
+
+[dependencies]
+anyhow = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+libc = { workspace = true }
+nix = { workspace = true }
+types-rs = { path = "../../../core/types/types-rs" }
+tokio = { workspace = true }
+aya = { version = "0.12", optional = true }
+bpf-lsm-rs = { path = "../../bpf-lsm/bpf-lsm-rs", optional = true }
+libseccomp = "0.4.0"
+cgroups-rs = { path = "../../cgroups-rs" }

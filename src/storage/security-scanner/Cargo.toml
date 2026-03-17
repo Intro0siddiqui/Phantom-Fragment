@@ -1,0 +1,24 @@
+[package]
+name = "security-scanner"
+version = "3.1.0"
+edition = "2021"
+description = "Vulnerability scanner for container images"
+
+[dependencies]
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+reqwest = { version = "0.11", features = ["json"] }
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1.0"
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+image-store-rs = { path = "../image-store-rs" }
+oci-registry-rs = { path = "../oci-registry-rs" }
+
+[dev-dependencies]
+tempfile = "3.8"

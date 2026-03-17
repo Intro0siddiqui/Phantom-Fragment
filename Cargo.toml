@@ -1,0 +1,96 @@
+[workspace]
+resolver = "2"
+
+members = [
+    # CLI
+    "src/cli/phantom-cli",
+    
+    # Core
+    "src/core/execution/execution-rs",
+    "src/core/types/types-rs",
+    "src/core/wasm-rs",
+
+    "src/core/zygote-rs",
+    "src/core/task-analyzer-rs",
+    "src/core/config-rs",
+    "src/core/network-rs",
+    "src/core/compression-rs",
+    
+    # Security
+    "src/security/bpf-lsm/bpf-lsm-rs",
+    "src/security/orchestration/security-rs",
+    "src/security/policy-dsl-rs",
+    "src/security/seccomp-rs",
+    "src/security/capabilities-rs",
+    "src/security/cgroups-rs",
+    "src/security/landlock-rs",
+    
+    # Memory
+    "src/memory/discipline/memory-rs",
+    
+    # Storage
+    "src/storage/image-store-rs",
+    "src/storage/oci-registry-rs",
+    "src/storage/image-puller",
+    "src/storage/storage-rs",
+    "src/storage/security-scanner",
+    
+    # Monitoring
+    "src/monitoring/metrics/metrics-rs",
+    "src/monitoring/health/health-rs",
+    "src/monitoring/debug/debug-rs",
+    
+    # Tools
+    "src/tools/integration-tests",
+    "src/tools/phantom-build",
+    "src/tools/phantom-migrate",
+    
+    # MCP
+    "src/mcp",
+]
+
+
+[workspace.dependencies]
+# Common dependencies
+anyhow = "1.0"
+thiserror = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+log = "0.4"
+env_logger = "0.11"
+
+# Tracing and structured logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# System interaction
+nix = { version = "0.27", features = ["process", "sched", "mount"] }
+libc = "0.2"
+
+# File locking for atomic operations
+fs2 = "0.4"
+
+# Performance
+parking_lot = "0.12"
+crossbeam = "0.8"
+libloading = "0.8"
+num_cpus = "1.16"
+
+# Build tools
+cbindgen = "0.26"
+
+# HTTP server for metrics
+hyper = { version = "0.14", features = ["server", "tcp"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 0
+debug = 0
+split-debuginfo = "unpacked"
+incremental = true

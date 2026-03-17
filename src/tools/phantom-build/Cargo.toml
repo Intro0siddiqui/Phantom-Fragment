@@ -1,0 +1,41 @@
+[package]
+name = "phantom-build"
+version = "3.1.0"
+edition = "2021"
+
+[lib]
+name = "phantom_build"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phantom-build"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+env_logger = "0.10"
+
+# For Fragmentfile parsing
+pest = "2.7"
+pest_derive = "2.7"
+
+# Hashing for layer caching
+sha2 = "0.10"
+hex = "0.4"
+
+# Progress tracking
+indicatif = "0.17"
+
+# Async for parallel builds
+tokio = { version = "1.35", features = ["full"] }
+
+# HTTP client for ADD instruction (URL downloads)
+reqwest = { version = "0.11", features = ["blocking"] }
+
+# Our crates
+image-store-rs = { path = "../../storage/image-store-rs" }
+types-rs = { path = "../../core/types/types-rs" }
