@@ -11,7 +11,7 @@ use rmcp::handler::server::wrapper::Parameters;
 
 /// Allowlist of permitted commands for security
 /// Only these commands can be executed via MCP to prevent command injection
-const ALLOWED_COMMANDS: &[&str] = &[
+pub(crate) const ALLOWED_COMMANDS: &[&str] = &[
     "echo", "cat", "ls", "pwd", "whoami", "id", "uname",
     "date", "hostname", "env", "printenv", "true", "false",
     "sleep", "head", "tail", "wc", "sort", "uniq", "grep",
@@ -29,14 +29,14 @@ const ALLOWED_COMMANDS: &[&str] = &[
 ];
 
 /// Validate command against allowlist
-fn is_command_allowed(cmd: &str) -> bool {
+pub(crate) fn is_command_allowed(cmd: &str) -> bool {
     // Extract base command (first word)
     let base_cmd = cmd.split_whitespace().next().unwrap_or("");
     ALLOWED_COMMANDS.contains(&base_cmd)
 }
 
 /// Sanitize command arguments to prevent injection
-fn sanitize_command(cmd: &str) -> Result<String> {
+pub(crate) fn sanitize_command(cmd: &str) -> Result<String> {
     // Reject commands with shell metacharacters that could enable injection
     let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r'];
     for ch in dangerous_chars {
@@ -258,3 +258,4 @@ pub async fn run_server() -> Result<()> {
     server.waiting().await?;
     Ok(())
 }
+

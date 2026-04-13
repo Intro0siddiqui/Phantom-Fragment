@@ -9,7 +9,7 @@ mod tests {
 
     #[test]
     fn test_execution_mode_selection() {
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().expect("Failed to create AdaptiveEngine");
 
         // Test different risk profiles
         let low_risk = RiskProfile {
@@ -108,7 +108,7 @@ int main() {
     fn test_multi_fragment_isolation() {
         println!("=== Testing Multi-Fragment Isolation ===");
 
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().expect("Failed to create AdaptiveEngine");
 
         let risk = RiskProfile::default();
         let perf = PerformanceProfile::default();

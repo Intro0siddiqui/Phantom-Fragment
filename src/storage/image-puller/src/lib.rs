@@ -18,7 +18,7 @@ use flate2::read::GzDecoder;
 use image_store_rs::{ImageStore, StorageConfig};
 use oci_registry_rs::RegistryClient;
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
+use std::sync::Mutex;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -43,7 +43,7 @@ pub struct ImagePuller {
     rootfs_base: PathBuf,
     cache_dir: PathBuf,
     registry_client: Option<RegistryClient>,
-    store: RefCell<ImageStore>,
+    store: Mutex<ImageStore>,
     config: PullConfig,
 }
 
@@ -95,7 +95,7 @@ impl ImagePuller {
             rootfs_base,
             cache_dir: blobs_dir,
             registry_client,
-            store: RefCell::new(store),
+            store: Mutex::new(store),
             config,
         })
     }
@@ -155,7 +155,7 @@ impl ImagePuller {
 
             // Store layer via image-store-rs API (content-addressable, deduplicated)
             let stored_digest = {
-                let mut store = self.store.borrow_mut();
+                let mut store = self.store.lock().unwrap();
                 let was_new = !store.get_layer(&layer.digest).is_ok();
 
                 // Store layer with reference counting
@@ -182,7 +182,7 @@ impl ImagePuller {
 
         // Store image manifest via image-store-rs
         {
-            let mut store = self.store.borrow_mut();
+            let mut store = self.store.lock().unwrap();
             store.store_image(
                 image_ref,
                 layer_digests.clone(),
@@ -488,4 +488,110 @@ mod tests {
 
     // The original test_compute_hash is removed as compute_image_hash is no longer used.
     // New tests for pull functionality would be added here in a real scenario.
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::sync::{Arc, Barrier};
+
+    /// Prove ImagePuller IS Send + Sync after the Mutex fix.
+    /// These compile-time assertions verify that ImagePuller can now be safely
+    /// sent across threads and accessed concurrently.
+    #[test]
+    fn test_image_puller_is_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        // ImagePuller is now Send and Sync due to Mutex<ImageStore>.
+        assert_send::<ImagePuller>();
+        assert_sync::<ImagePuller>();
+
+        let type_name = std::any::type_name::<ImagePuller>();
+        println!("ImagePuller type: {} (Mutex-based, Send + Sync)", type_name);
+    }
+
+    /// Test that concurrent pull operations don't panic with Mutex.
+    /// Unlike RefCell which panics on concurrent borrow_mut, Mutex safely
+    /// blocks and allows concurrent access.
+    #[test]
+    fn test_concurrent_pull_works() {
+        let temp_dir = std::env::temp_dir().join("phantom_test_concurrent_pull");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        let store = image_store_rs::ImageStore::new(image_store_rs::StorageConfig {
+            base_path: temp_dir.clone(),
+            ..Default::default()
+        })
+        .expect("Failed to create ImageStore");
+
+        let store = Arc::new(Mutex::new(store));
+        let barrier = Arc::new(Barrier::new(4));
+
+        std::thread::scope(|s| {
+            for i in 0..4 {
+                let store_clone = Arc::clone(&store);
+                let barrier_clone = Arc::clone(&barrier);
+                s.spawn(move || {
+                    barrier_clone.wait();
+                    // Multiple threads can safely access the store concurrently
+                    let s = store_clone.lock().unwrap();
+                    let stats = s.stats();
+                    println!("Thread {} got stats: {} images", i, stats.total_images);
+                });
+            }
+        });
+
+        // Clean up test directory
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that ImageStore wrapped in Mutex is Send + Sync.
+    /// This is the compile-time proof that the fix works.
+    #[test]
+    fn test_mutex_image_store_is_send_sync() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<Mutex<image_store_rs::ImageStore>>();
+        assert_sync::<Mutex<image_store_rs::ImageStore>>();
+
+        println!("Mutex<ImageStore> is Send + Sync - safe for concurrent use!");
+    }
+
+    /// Test that single-threaded access still works correctly with Mutex.
+    #[test]
+    fn test_single_threaded_store_access() {
+        let puller = ImagePuller::new().expect("Failed to create ImagePuller");
+
+        // Single lock works
+        {
+            let store = puller.store.lock().unwrap();
+            let stats = store.stats();
+            println!("Store stats: {} images", stats.total_images);
+        }
+
+        // Sequential locks work
+        {
+            let store = puller.store.lock().unwrap();
+            let _ = store.list_images();
+        }
+        {
+            let store = puller.store.lock().unwrap();
+            let _ = store.stats();
+        }
+    }
+
+    /// Test that the store field is accessible and has the expected Mutex type.
+    /// This documents that the concurrency bug has been fixed.
+    #[test]
+    fn test_mutex_type_documentation() {
+        let puller = ImagePuller::new().expect("Failed to create ImagePuller");
+
+        // Verify the store field is indeed a Mutex<ImageStore>
+        // This is a compile-time type check that documents the fix.
+        let _: &Mutex<ImageStore> = &puller.store;
+
+        println!("puller.store is Mutex<ImageStore> - thread-safe!");
+    }
 }

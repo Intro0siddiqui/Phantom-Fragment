@@ -251,7 +251,7 @@ impl BuildExecutor {
     }
 
     /// Calculate cache key for instruction
-    fn calculate_cache_key(&self, instruction: &Instruction) -> String {
+    pub fn calculate_cache_key(&self, instruction: &Instruction) -> String {
         let mut hasher = Sha256::new();
         hasher.update(format!("{:?}", instruction).as_bytes());
         // Include workdir and env in cache key
@@ -459,7 +459,7 @@ impl BuildExecutor {
     }
 
     /// Execute COPY instruction
-    async fn execute_copy(
+    pub async fn execute_copy(
         &mut self,
         from_stage: Option<&str>,
         source: &str,
@@ -737,7 +737,7 @@ impl BuildExecutor {
     }
 
     /// Substitute variables in text (${VAR} and $VAR)
-    fn substitute_vars(&self, text: &str) -> String {
+    pub fn substitute_vars(&self, text: &str) -> String {
         let mut result = text.to_string();
 
         // Substitute ARG variables
@@ -848,7 +848,7 @@ impl BuildExecutor {
 }
 
 /// Helper function to copy directory recursively
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
+pub fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
 
     for entry in std::fs::read_dir(src)? {
@@ -873,7 +873,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             if let Ok(link_target) = std::fs::read_link(&src_path) {
                 if let Err(e) = std::os::unix::fs::symlink(&link_target, &dst_path) {
                     log::warn!(
-                        "      ⚠ Failed to create symlink {}: {}",
+                        "      Failed to create symlink {}: {}",
                         dst_path.display(),
                         e
                     );
@@ -882,7 +882,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         } else {
             // Use copy, but handle errors gracefully for special files
             if let Err(e) = std::fs::copy(&src_path, &dst_path) {
-                log::warn!("      ⚠ Failed to copy {}: {}", src_path.display(), e);
+                log::warn!("      Failed to copy {}: {}", src_path.display(), e);
             }
         }
     }
@@ -890,49 +890,3 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::parser::Instruction;
-
-    #[test]
-    fn test_cache_key_generation() {
-        let ctx = BuildContext::new(".");
-        let executor = BuildExecutor::new(ctx);
-
-        let inst1 = Instruction::Run {
-            command: vec!["echo".to_string(), "hello".to_string()],
-            mounts: vec![],
-        };
-
-        let inst2 = Instruction::Run {
-            command: vec!["echo".to_string(), "world".to_string()],
-            mounts: vec![],
-        };
-
-        let key1 = executor.calculate_cache_key(&inst1);
-        let key2 = executor.calculate_cache_key(&inst2);
-
-        // Different commands = different cache keys
-        assert_ne!(key1, key2);
-        assert!(key1.starts_with("sha256:"));
-    }
-
-    #[test]
-    fn test_build_context_creation() {
-        let ctx = BuildContext::new("/tmp/test");
-        assert_eq!(ctx.context_path, PathBuf::from("/tmp/test"));
-        assert!(ctx.enable_cache);
-        assert_eq!(ctx.workdir, PathBuf::from("/"));
-    }
-
-    #[test]
-    fn test_workdir_setting() {
-        let ctx = BuildContext::new(".");
-        let mut executor = BuildExecutor::new(ctx);
-
-        // Simulate setting workdir
-        executor.context.workdir = PathBuf::from("/app");
-        assert_eq!(executor.context.workdir, PathBuf::from("/app"));
-    }
-}

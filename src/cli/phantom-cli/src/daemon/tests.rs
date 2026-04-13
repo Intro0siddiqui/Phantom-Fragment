@@ -7,6 +7,11 @@
 //! Note: Some tests require root privileges or specific capabilities and
 //! are marked with #[ignore]. Run with `cargo test -- --ignored` to execute them.
 
+mod supervisor;
+mod warm;
+mod registry;
+mod permission;
+
 #[cfg(test)]
 mod tests {
     use crate::daemon::warm::{
@@ -14,8 +19,8 @@ mod tests {
         MessageType, WarmDaemon,
     };
     use execution_rs::HardwareProfile;
-    use parking_lot::Mutex;
     use std::collections::HashMap;
+    use std::sync::Mutex;
     use std::fs;
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
@@ -488,7 +493,7 @@ mod tests {
         // Number of concurrent clients
         let num_clients = 10;
         let barrier = Arc::new(Barrier::new(num_clients));
-        let results: Arc<Mutex<Vec<(usize, i32, Option<String)>>> =
+        let results: Arc<Mutex<Vec<(usize, i32, Option<String>)>>> =
             Arc::new(Mutex::new(Vec::new()));
 
         // Spawn concurrent clients

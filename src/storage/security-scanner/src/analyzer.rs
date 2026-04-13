@@ -96,7 +96,8 @@ pub struct OsInfo {
 
 /// Image analyzer
 pub struct ImageAnalyzer {
-    rootfs_path: PathBuf,
+    /// Root filesystem path being analyzed
+    pub rootfs_path: PathBuf,
 }
 
 impl ImageAnalyzer {
@@ -501,16 +502,3 @@ impl ImageAnalyzer {
 // Extension trait for permissions
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_analyzer_creation() {
-        let temp_dir = TempDir::new().unwrap();
-        let analyzer = ImageAnalyzer::new(temp_dir.path());
-        assert_eq!(analyzer.rootfs_path, temp_dir.path());
-    }
-}

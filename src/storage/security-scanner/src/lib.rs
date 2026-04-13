@@ -16,7 +16,7 @@ mod reporter;
 mod scanner;
 mod vulnerability_db;
 
-pub use analyzer::{ConfigIssue, ImageAnalysis, PackageInfo};
+pub use analyzer::{ConfigIssue, ImageAnalysis, ImageAnalyzer, PackageInfo};
 pub use reporter::{ReportFormat, ScanReport};
 pub use scanner::{
     PackageSummary, RiskLevel, ScanConfig, ScanDepth, ScanResult, SecurityScanner,

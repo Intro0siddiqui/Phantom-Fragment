@@ -503,3 +503,63 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 | Cold start (Sandbox) | <25ms | ~45ms | Default mode |
 | Cold start (Hardened) | <60ms | ~45ms+ | Maximum security |
 | Zygote spawn | <1ms | <1ms | ✅ Achieved in benchmarks |
+
+---
+
+## MANDATORY RULES
+
+### Rule 1: NEVER edit source files directly — ALWAYS use sub-agents
+
+**You (the main assistant) must NEVER directly read/write/edit code files.** All code changes MUST be done through `agent` tool sub-agent launches with detailed prompts. You only:
+1. Launch sub-agents with clear instructions
+2. Verify results with shell commands (`cargo test`, `cargo check`)
+3. Report outcomes
+
+The ONLY exception: writing/reading this AGENTS.md file and configuration files when explicitly requested.
+
+### Rule 2: Separate test files — NO inline `#[cfg(test)]`
+
+**All tests live in separate `tests/` directories.** Never place `#[cfg(test)]` modules inside `src/` files.
+
+#### Directory Structure
+```
+crate/
+├── Cargo.toml
+├── src/
+│   └── lib.rs          ← Production code ONLY. No test modules.
+└── tests/
+    ├── mod.rs          ← Module declarations
+    ├── unit.rs         ← Unit tests
+    └── integration.rs  ← Integration tests (if needed)
+```
+
+#### Cargo.toml
+```toml
+[dev-dependencies]
+crate-name = { path = "." }
+tempfile = "3"
+```
+
+#### Test File Structure
+Each `tests/*.rs` file starts with `use crate_name::*;` and contains `#[test]` functions. No `#[cfg(test)]` wrapper needed — integration tests are always separate.
+
+Split tests by logical category:
+- `tests/compression.rs` — compression roundtrip tests
+- `tests/manager.rs` — struct lifecycle tests
+- `tests/ffi.rs` — FFI boundary tests
+- `tests/errors.rs` — error type tests
+- `tests/parser.rs` — parsing tests
+- `tests/executor.rs` — execution tests
+
+#### What stays in src/
+**Nothing test-related.** Remove all `#[cfg(test)]` blocks, test helper functions only used by tests, and test-only enums/structs.
+
+#### Verification
+After extraction, run: `cargo test --package <crate-name>` — must pass same as before.
+
+### Rule 3: Precision over approximation
+
+- Never say "likely" or "probably" — verify with tool output
+- State exact file paths, line numbers, error codes
+- Quote exact error messages when debugging
+- Count exact test pass/fail/ignore numbers

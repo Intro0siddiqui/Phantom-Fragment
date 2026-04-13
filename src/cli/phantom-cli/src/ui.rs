@@ -60,7 +60,7 @@ mod tests {
 
     #[test]
     fn test_error() {
-        error("Something went wrong");
+        error_bold("Something went wrong");
     }
 
     #[test]
