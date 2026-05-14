@@ -39,10 +39,7 @@ impl NetworkNamespace {
     /// Bring up the loopback interface in the current network namespace.
     /// Uses a blocking runtime since this is called from synchronous contexts.
     fn bring_up_loopback() -> Result<()> {
-        let rt = tokio::runtime::Runtime::new()
-            .map_err(|e| anyhow!("Failed to create tokio runtime: {}", e))?;
-
-        rt.block_on(async {
+        let fut = async {
             let (connection, handle, _) = new_connection()?;
             tokio::spawn(connection);
 
@@ -65,7 +62,19 @@ impl NetworkNamespace {
                 }
             }
             Err(anyhow!("Loopback interface not found"))
-        })
+        };
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            // If already in a tokio runtime, we can't use block_on directly if we're
+            // in an async context. However, since this is called from synchronous
+            // NetworkNamespace::new, we might be on a blocking thread.
+            handle.block_on(fut)
+        } else {
+            // No runtime, create a temporary one
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| anyhow!("Failed to create tokio runtime: {}", e))?;
+            rt.block_on(fut)
+        }
     }
 }
 

@@ -225,8 +225,6 @@ impl ZygoteCommand {
 pub struct ZygotePool {
     /// Track zygote PIDs that are currently in use
     zygote_pids: Vec<i32>,
-    /// Map grandchild PID -> zygote PID for release tracking
-    grandchild_to_zygote: HashMap<i32, i32>,
 }
 
 impl ZygotePool {
@@ -245,7 +243,6 @@ impl ZygotePool {
 
         Ok(Self {
             zygote_pids: Vec::with_capacity(actual_size),
-            grandchild_to_zygote: HashMap::new(),
         })
     }
 
@@ -296,20 +293,19 @@ impl ZygotePool {
         Ok(result)
     }
 
-    /// Execute a command via the zygote pool and return the exit status.
+    /// Execute a command via the zygote pool and return the child PID.
     ///
-    /// This spawns a zygote, sends the command, waits for completion,
-    /// and returns the exit status.
-    ///
-    /// After this returns, call `release(zygote_pid)` to return the
-    /// zygote to the pool for reuse.
+    /// This spawns a zygote, sends the command, and returns the child PID.
+    /// The zygote itself stays alive and is automatically released back to the pool.
     pub fn execute(&mut self, command: ZygoteCommand) -> Result<i32, PhantomError> {
         let zygote_pid = self.spawn()?;
-        let exit_status = self.send_command(zygote_pid, &command)?;
-        // Track mapping so release() can find the zygote PID
-        // Use exit_status as key (it's unique per call in tests)
-        self.grandchild_to_zygote.insert(exit_status, zygote_pid);
-        Ok(exit_status)
+        let result = self.send_command(zygote_pid, &command);
+
+        // Since send_command is synchronous and zygote remains alive,
+        // we release the zygote slot immediately after completion.
+        self.release(zygote_pid);
+
+        result
     }
 
     pub fn wait(&mut self, pid: i32) -> Result<i32, PhantomError> {
@@ -335,20 +331,14 @@ impl ZygotePool {
 
     /// Release a zygote back to the pool for reuse.
     ///
-    /// After calling `execute()`, use the returned exit status to release
-    /// the zygote back to the pool.
-    ///
     /// The zygote remains alive with its socket connection open, ready
     /// to handle the next command. This enables true zygote recycling.
-    pub fn release(&mut self, exit_status: i32) {
-        // Look up the zygote PID from the exit status key
-        if let Some(zygote_pid) = self.grandchild_to_zygote.remove(&exit_status) {
-            // Remove from zygote_pids tracking
-            self.zygote_pids.retain(|&p| p != zygote_pid);
-            // Return zygote to pool
-            unsafe {
-                phantom_zygote_pool_put(zygote_pid);
-            }
+    pub fn release(&mut self, zygote_pid: i32) {
+        // Remove from zygote_pids tracking
+        self.zygote_pids.retain(|&p| p != zygote_pid);
+        // Return zygote to pool
+        unsafe {
+            phantom_zygote_pool_put(zygote_pid);
         }
     }
 
@@ -562,14 +552,10 @@ mod stress_tests {
 
     /// Run a command via zygote and return the exit status.
     ///
-    /// This is a helper for tests that executes a command and properly
-    /// releases the zygote.
+    /// This is a helper for tests that executes a command.
     fn run_command_and_wait(pool: &mut ZygotePool, cmd: ZygoteCommand) -> Result<i32, String> {
-        let exit_status = pool
-            .execute(cmd)
-            .map_err(|e| format!("Execute failed: {:?}", e))?;
-        pool.release(exit_status);
-        Ok(exit_status)
+        pool.execute(cmd)
+            .map_err(|e| format!("Execute failed: {:?}", e))
     }
 
     #[test]

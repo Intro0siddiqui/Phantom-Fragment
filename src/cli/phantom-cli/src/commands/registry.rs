@@ -576,9 +576,9 @@ fn save_registry_credentials(name: &str, username: &str, password: &str) -> Resu
                 }
             }
         }
-        Err(_) => {
-            // Fallback: derive key from password hash (less secure but works without keyring)
-            password_hash.clone()
+        Err(e) => {
+            // Return error if keyring is unavailable to avoid insecure circular encryption
+            return Err(anyhow::anyhow!("System keyring unavailable and no secure fallback: {}", e));
         }
     };
 
