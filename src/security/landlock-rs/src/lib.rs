@@ -81,8 +81,14 @@ impl LandlockContext {
 
             // We need to open the path to get a file descriptor.
             // Landlock requires an open file descriptor to identify the object.
-            let file = std::fs::File::open(path_obj)
-                .map_err(|e| format!("Failed to open path {}: {}", path, e))?;
+            let file = match std::fs::File::open(path_obj) {
+                Ok(f) => f,
+                Err(e) => {
+                    // Put the ruleset back before returning error
+                    *ruleset_guard = Some(ruleset);
+                    return Err(format!("Failed to open path {}: {}", path, e));
+                }
+            };
 
             // PathBeneath::new takes (fd, access_mask)
             let rule = landlock::PathBeneath::new(file, access);
@@ -92,15 +98,12 @@ impl LandlockContext {
                     Ok(())
                 }
                 Err(e) => {
-                    // If it fails, we lost the ruleset ownership?
-                    // The crate documentation says: "Returns the ruleset with the new rule added."
-                    // If it errors, it likely returns the error and consumes the ruleset?
-                    // Actually, usually builders return Result<Self, Error>.
-                    // If it returns Error, we might lose the ruleset if it consumes self.
-                    // But for Landlock, if adding a rule fails (e.g. path not found), we might want to continue.
-                    // If the crate consumes self on error, that's tough.
-                    // Let's assume standard builder: on error, it might return the error.
-                    // Checking crate source would be ideal, but let's assume we fail hard for now if we lose it.
+                    // In some builder patterns, if add_rule fails, the original ruleset
+                    // might be lost if it was consumed. However, Landlock's Result usually
+                    // doesn't return the original object on error.
+                    // Given we can't easily recover the original ruleset if consumed,
+                    // we log the fatal loss of context.
+                    log::error!("CRITICAL: Ruleset lost due to add_rule failure for {}", path);
                     Err(format!("Failed to add rule for {}: {}", path, e))
                 }
             }

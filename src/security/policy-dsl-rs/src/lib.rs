@@ -171,10 +171,31 @@ impl PolicyCompiler {
             })?;
         }
 
-        let bpf = ctx
-            .export_bpf_mem()
-            .map_err(|e| PhantomError::Internal(format!("Failed to export BPF: {}", e)))?;
+        // Workaround for missing export_bpf_mem in some libseccomp versions
+        use std::io::Read;
+        let temp_path = std::env::temp_dir().join(format!("phantom_seccomp_{}.bpf", std::process::id()));
 
+        let file = std::fs::File::create(&temp_path).map_err(|e| {
+            PhantomError::Internal(format!("Failed to create temp BPF file: {}", e))
+        })?;
+
+        ctx.export_bpf(&file).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            PhantomError::Internal(format!("Failed to export BPF: {}", e))
+        })?;
+
+        let mut bpf = Vec::new();
+        let mut file = std::fs::File::open(&temp_path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            PhantomError::Internal(format!("Failed to reopen BPF file: {}", e))
+        })?;
+
+        file.read_to_end(&mut bpf).map_err(|e| {
+            let _ = std::fs::remove_file(&temp_path);
+            PhantomError::Internal(format!("Failed to read BPF file: {}", e))
+        })?;
+
+        let _ = std::fs::remove_file(&temp_path);
         Ok(bpf)
     }
 

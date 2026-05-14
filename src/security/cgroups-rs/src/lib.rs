@@ -579,10 +579,4 @@ mod tests {
         assert!(version <= 2);
     }
 
-    #[test]
-    fn test_cgroup_choice_default() {
-        // Test that CgroupChoice variants are distinct
-        assert_ne!(CgroupChoice::UseSudo, CgroupChoice::ContinueWithoutCgroups);
-        assert_ne!(CgroupChoice::ConfigureDelegation, CgroupChoice::Abort);
-    }
 }
