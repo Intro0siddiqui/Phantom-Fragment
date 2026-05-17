@@ -19,6 +19,7 @@ use rmcp::handler::server::wrapper::Parameters;
 pub struct PhantomService {
     metrics: Arc<MetricsCollector>,
     network: Arc<Mutex<NetworkManager>>,
+    #[allow(dead_code)]
     tool_router: ToolRouter<PhantomService>,
 }
 
@@ -131,17 +132,7 @@ struct CleanImagesParams {
 #[tool_handler]
 impl ServerHandler for PhantomService {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Phantom Fragment MCP Server - Secure AI-native execution environment.\n\
-                Tools provided for full fragment lifecycle, image building, and systems discovery.\n\
-                All tools delegate to the 'phantom' CLI for unified behavior."
-                    .to_string(),
-            ),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
 

@@ -135,7 +135,10 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
                 println!("  {} To scan an image, first pull it:", "Info:".yellow());
                 println!("    phantom run {} <command>", target);
                 println!();
-                println!("  {} Or specify rootfs path with --rootfs", "Note:".yellow());
+                println!(
+                    "  {} Or specify rootfs path with --rootfs",
+                    "Note:".yellow()
+                );
                 return Ok(());
             }
 
@@ -182,10 +185,7 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
                     scan_result.risk_level.to_string().red().bold()
                 );
             } else {
-                println!(
-                    "  {} Scan completed successfully",
-                    "✓".green().bold()
-                );
+                println!("  {} Scan completed successfully", "✓".green().bold());
             }
         }
 
@@ -213,7 +213,10 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
             }
 
             if vulns.is_empty() {
-                println!("  {} No vulnerabilities match the filters", "Info:".yellow());
+                println!(
+                    "  {} No vulnerabilities match the filters",
+                    "Info:".yellow()
+                );
             } else {
                 println!("  {} vulnerabilities found:\n", vulns.len());
 
@@ -246,15 +249,14 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
                 Ok(_) => {
                     println!("  {} Database updated successfully", "✓".green());
                     println!();
-                    println!("  {} Note: Remote database sync is not yet implemented.", "Info:".yellow());
+                    println!(
+                        "  {} Note: Remote database sync is not yet implemented.",
+                        "Info:".yellow()
+                    );
                     println!("  Using built-in vulnerability database.");
                 }
                 Err(e) => {
-                    println!(
-                        "  {} Failed to update database: {}",
-                        "✗".red(),
-                        e
-                    );
+                    println!("  {} Failed to update database: {}", "✗".red(), e);
                 }
             }
         }

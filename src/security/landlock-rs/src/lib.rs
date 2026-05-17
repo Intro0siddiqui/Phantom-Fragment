@@ -103,7 +103,10 @@ impl LandlockContext {
                     // doesn't return the original object on error.
                     // Given we can't easily recover the original ruleset if consumed,
                     // we log the fatal loss of context.
-                    log::error!("CRITICAL: Ruleset lost due to add_rule failure for {}", path);
+                    log::error!(
+                        "CRITICAL: Ruleset lost due to add_rule failure for {}",
+                        path
+                    );
                     Err(format!("Failed to add rule for {}: {}", path, e))
                 }
             }

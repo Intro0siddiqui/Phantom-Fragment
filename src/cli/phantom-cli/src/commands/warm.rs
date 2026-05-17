@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::config::PhantomPaths;
+use crate::daemon::{start_daemon_background, DaemonConfig};
 use crate::daemon::{DaemonSupervisor, SupervisorConfig};
 use crate::fragment_pool::FragmentPool;
 use crate::ui::{info, print_divider_full, print_header, success};
-use crate::daemon::{start_daemon_background, DaemonConfig};
 use execution_rs::HardwareProfile;
 
 #[derive(clap::Subcommand, Clone, Debug)]

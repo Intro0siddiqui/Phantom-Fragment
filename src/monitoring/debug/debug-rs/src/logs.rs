@@ -278,14 +278,14 @@ impl FragmentLogSource {
         since: DateTime<Utc>,
         limit: usize,
     ) -> Result<Vec<LogEntry>> {
-        let file = File::open(filename).map_err(|e| DebugError::Io(e))?;
+        let file = File::open(filename).map_err(DebugError::Io)?;
 
         let reader = BufReader::new(file);
         let mut logs = Vec::new();
         let mut line_count = 0;
 
         for line_result in reader.lines() {
-            let line = line_result.map_err(|e| DebugError::Io(e))?;
+            let line = line_result.map_err(DebugError::Io)?;
             if line.is_empty() {
                 continue;
             }

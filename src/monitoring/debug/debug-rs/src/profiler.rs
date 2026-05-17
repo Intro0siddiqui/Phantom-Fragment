@@ -162,7 +162,7 @@ impl FragmentProfiler {
 
         let rss_pages = stat.rss;
         let page_size = procfs::page_size();
-        let rss_bytes = rss_pages * page_size as u64;
+        let rss_bytes = rss_pages * page_size;
 
         // Get context switches and voluntary/involuntary switches from /proc/[pid]/status
         let (voluntary_switches, involuntary_switches) = self.get_context_switches(pid).await?;

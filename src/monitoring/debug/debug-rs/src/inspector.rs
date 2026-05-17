@@ -396,7 +396,7 @@ impl FragmentInspector {
         let mut flag_strs = Vec::new();
         let flags_i32 = flags as i32;
 
-        if flags_i32 & libc::O_RDONLY == libc::O_RDONLY {
+        if (flags_i32 & libc::O_ACCMODE) == libc::O_RDONLY {
             flag_strs.push("RDONLY");
         }
         if flags_i32 & libc::O_WRONLY == libc::O_WRONLY {
@@ -670,7 +670,7 @@ impl FragmentInspector {
             let syscall_path = format!("/proc/{}/syscall", pid);
             if let Ok(content) = std::fs::read_to_string(&syscall_path) {
                 let parts: Vec<&str> = content.split_whitespace().collect();
-                if parts.len() >= 1 {
+                if !parts.is_empty() {
                     if let Ok(syscall_num) = parts[0].parse::<u64>() {
                         // Map syscall number to name (simplified mapping for common syscalls)
                         let syscall_name = Self::syscall_num_to_name(syscall_num);

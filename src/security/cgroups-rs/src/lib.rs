@@ -257,7 +257,7 @@ pub fn check_user_slice_status() -> UserSliceStatus {
         if parent.exists()
             && parent
                 .metadata()
-                .map(|m| m.permissions().readonly() == false)
+                .map(|m| !m.permissions().readonly())
                 .unwrap_or(false)
         {
             return UserSliceStatus::CanCreate;
@@ -345,11 +345,9 @@ pub fn setup_user_cgroup_slice() -> Result<(), CgroupError> {
     }
 
     // Final fallback: try cgroup v1 setup
-    if detect_cgroup_version() == 1 {
-        if let Ok(_) = setup_cgroup_v1_user_slice() {
-            log::info!("Successfully setup user slice via cgroup v1");
-            return Ok(());
-        }
+    if detect_cgroup_version() == 1 && setup_cgroup_v1_user_slice().is_ok() {
+        log::info!("Successfully setup user slice via cgroup v1");
+        return Ok(());
     }
 
     // All methods failed
@@ -578,5 +576,4 @@ mod tests {
         // Should return 0, 1, or 2
         assert!(version <= 2);
     }
-
 }
