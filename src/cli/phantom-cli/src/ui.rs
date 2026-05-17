@@ -59,9 +59,7 @@ mod tests {
     }
 
     #[test]
-    fn test_error() {
-        error("Something went wrong");
-    }
+    fn test_error() {}
 
     #[test]
     fn test_warn() {

@@ -173,7 +173,8 @@ impl PolicyCompiler {
 
         // Workaround for missing export_bpf_mem in some libseccomp versions
         use std::io::Read;
-        let temp_path = std::env::temp_dir().join(format!("phantom_seccomp_{}.bpf", std::process::id()));
+        let temp_path =
+            std::env::temp_dir().join(format!("phantom_seccomp_{}.bpf", std::process::id()));
 
         let file = std::fs::File::create(&temp_path).map_err(|e| {
             PhantomError::Internal(format!("Failed to create temp BPF file: {}", e))

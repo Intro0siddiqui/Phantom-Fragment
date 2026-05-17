@@ -3,7 +3,6 @@
 //! Provides a pool of pre-forked processes that can receive commands
 //! via socketpair IPC for fast process execution.
 
-use std::collections::HashMap;
 use std::os::unix::io::RawFd;
 use types_rs::PhantomError;
 
@@ -711,8 +710,18 @@ mod stress_tests {
         m.print_summary("Concurrent Spawns Test");
 
         println!("\nPool state after concurrent test:");
-        println!("  Pool size: {}", pool.lock().expect("Failed to acquire pool lock").pool_size());
-        println!("  Available: {}", pool.lock().expect("Failed to acquire pool lock").available());
+        println!(
+            "  Pool size: {}",
+            pool.lock()
+                .expect("Failed to acquire pool lock")
+                .pool_size()
+        );
+        println!(
+            "  Available: {}",
+            pool.lock()
+                .expect("Failed to acquire pool lock")
+                .available()
+        );
     }
 
     #[test]

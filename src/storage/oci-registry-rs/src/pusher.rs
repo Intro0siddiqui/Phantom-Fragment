@@ -137,14 +137,12 @@ impl RegistryPusher {
         log::info!("Pushing layer: {}", layer.path.display());
 
         // Read layer file
-        let mut file = File::open(&layer.path)
-            .await
-            .map_err(|e| RegistryError::Io(e))?;
+        let mut file = File::open(&layer.path).await.map_err(RegistryError::Io)?;
 
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .await
-            .map_err(|e| RegistryError::Io(e))?;
+            .map_err(RegistryError::Io)?;
 
         // Compute digest
         let mut hasher = Sha256::new();
@@ -228,14 +226,12 @@ impl RegistryPusher {
     ) -> Result<Descriptor> {
         log::info!("Pushing config: {}", config_path.display());
 
-        let mut file = File::open(config_path)
-            .await
-            .map_err(|e| RegistryError::Io(e))?;
+        let mut file = File::open(config_path).await.map_err(RegistryError::Io)?;
 
         let mut data = Vec::new();
         file.read_to_end(&mut data)
             .await
-            .map_err(|e| RegistryError::Io(e))?;
+            .map_err(RegistryError::Io)?;
 
         let mut hasher = Sha256::new();
         hasher.update(&data);

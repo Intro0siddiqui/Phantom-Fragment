@@ -14,7 +14,7 @@ mod tests {
         MessageType, WarmDaemon,
     };
     use execution_rs::HardwareProfile;
-    use parking_lot::Mutex;
+
     use std::collections::HashMap;
     use std::fs;
     use std::io::{Read, Write};
@@ -477,7 +477,7 @@ mod tests {
         let rootfs = create_test_rootfs(&temp_dir);
 
         let config = create_test_config(socket_path.clone(), rootfs);
-        let mut daemon = WarmDaemon::new(config).expect("Failed to create daemon");
+        let daemon = WarmDaemon::new(config).expect("Failed to create daemon");
 
         // Start daemon in background
         let handle = start_daemon_background_thread(daemon);
@@ -488,8 +488,8 @@ mod tests {
         // Number of concurrent clients
         let num_clients = 10;
         let barrier = Arc::new(Barrier::new(num_clients));
-        let results: Arc<Mutex<Vec<(usize, i32, Option<String)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let results: Arc<std::sync::Mutex<Vec<(usize, i32, Option<String>)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
 
         // Spawn concurrent clients
         let mut handles = Vec::new();

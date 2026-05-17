@@ -30,7 +30,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use cgroups_rs::CgroupManager;
@@ -227,7 +227,7 @@ pub struct WarmDaemon {
     config: DaemonConfig,
     listener: UnixListener,
     running: Arc<AtomicBool>,
-    children: HashMap<u32, ChildProcess>,
+    children: Arc<Mutex<HashMap<u32, ChildProcess>>>,
     daemon_id: u64,
     /// Start time for uptime calculation
     start_time: Instant,
@@ -287,7 +287,7 @@ impl WarmDaemon {
             config,
             listener,
             running: Arc::new(AtomicBool::new(true)),
-            children: HashMap::new(),
+            children: Arc::new(Mutex::new(HashMap::new())),
             daemon_id,
             start_time: Instant::now(),
             total_requests: Arc::new(AtomicU64::new(0)),
@@ -463,35 +463,60 @@ impl WarmDaemon {
             running.store(false, Ordering::SeqCst);
         })?;
 
-        // Main event loop
-        let mut prune_counter = 0;
-        while self.running.load(Ordering::SeqCst) {
-            match self.listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    if let Err(e) = self.handle_client(&mut stream) {
-                        log::error!("Client handler error: {:?}", e);
-                        let _ = self.send_error(&mut stream, &e.to_string());
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connections, sleep briefly
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
 
-                    // Periodically prune dead children (every 100 iterations = ~1 second)
-                    prune_counter += 1;
-                    if prune_counter >= 100 {
+        rt.block_on(async {
+            self.listener.set_nonblocking(true).unwrap();
+            let async_listener =
+                tokio::net::UnixListener::from_std(self.listener.try_clone().unwrap()).unwrap();
+            let mut prune_interval = tokio::time::interval(std::time::Duration::from_secs(1));
+
+            loop {
+                tokio::select! {
+                    accept_result = async_listener.accept() => {
+                        match accept_result {
+                            Ok((stream, _addr)) => {
+                                if !self.running.load(Ordering::SeqCst) {
+                                    break;
+                                }
+
+                                let std_stream = stream.into_std().unwrap();
+                                std_stream.set_nonblocking(false).unwrap();
+
+                                // To avoid changing the entire function signature to be static (borrow checker issues),
+                                // we can't easily spawn a task for handle_client since it takes &mut self.
+                                // Instead, we do it inline via block_in_place so Tokio's thread pool isn't stalled.
+                                tokio::task::block_in_place(|| {
+                                    let mut s = std_stream;
+                                    if let Err(e) = self.handle_client(&mut s) {
+                                        log::error!("Client handler error: {:?}", e);
+                                        let _ = self.send_error(&mut s, &e.to_string());
+                                    }
+
+                                    // If connection dropped prematurely, the socket gets closed here.
+                                    // We can prune immediately as a proactive measure in case the client disconnected while handling an exec request.
+                                    let _ = self.prune_dead_children();
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Accept error: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = prune_interval.tick() => {
                         let pruned = self.prune_dead_children();
                         if pruned > 0 {
                             log::debug!("Pruned {} dead children", pruned);
                         }
-                        prune_counter = 0;
                     }
                 }
-                Err(e) => {
-                    log::error!("Accept error: {:?}", e);
+                if !self.running.load(Ordering::SeqCst) {
+                    break;
                 }
             }
-        }
+        });
 
         // Cleanup
         self.cleanup()?;
@@ -719,14 +744,19 @@ impl WarmDaemon {
 
         // Add Phantom-specific environment variables
         // These are internally generated and safe (cannot contain null bytes)
-        env_vars.push(CString::new("PHANTOM_WARM=1").expect("Static string cannot contain null bytes"));
-        env_vars.push(CString::new(format!("PHANTOM_DAEMON_ID={}", self.daemon_id))
-            .expect("Generated daemon ID cannot contain null bytes"));
+        env_vars
+            .push(CString::new("PHANTOM_WARM=1").expect("Static string cannot contain null bytes"));
+        env_vars.push(
+            CString::new(format!("PHANTOM_DAEMON_ID={}", self.daemon_id))
+                .expect("Generated daemon ID cannot contain null bytes"),
+        );
 
         let rootfs_str = self.config.rootfs_path.to_string_lossy();
         if !rootfs_str.is_empty() && rootfs_str != "/" {
-            env_vars.push(CString::new(format!("PHANTOM_ROOTFS={}", rootfs_str))
-                .expect("Generated rootfs path cannot contain null bytes"));
+            env_vars.push(
+                CString::new(format!("PHANTOM_ROOTFS={}", rootfs_str))
+                    .expect("Generated rootfs path cannot contain null bytes"),
+            );
         }
 
         // Preserve current environment and merge with custom vars
@@ -851,7 +881,8 @@ impl WarmDaemon {
             let fork_result = fork();
 
             // Restore signal mask in both parent and child immediately after fork
-            let restore_ret = libc::pthread_sigmask(libc::SIG_SETMASK, &old_sigmask, std::ptr::null_mut());
+            let restore_ret =
+                libc::pthread_sigmask(libc::SIG_SETMASK, &old_sigmask, std::ptr::null_mut());
 
             match fork_result {
                 Ok(ForkResult::Child) => {
@@ -881,6 +912,39 @@ impl WarmDaemon {
                             eprintln!("Failed to add self to cgroup: {:?}", e);
                             // Continue execution without cgroup - don't fail completely
                         }
+                    }
+
+                    // ENFORCE NAMESPACE PURITY
+                    // Unshare mount namespace
+                    if libc::unshare(libc::CLONE_NEWNS) == 0 {
+                        // Make all mounts private so they don't propagate to parent
+                        let c_none = std::ffi::CString::new("none").unwrap();
+                        libc::mount(
+                            c_none.as_ptr(),
+                            std::ptr::null(),
+                            c_none.as_ptr(),
+                            libc::MS_PRIVATE | libc::MS_REC,
+                            std::ptr::null(),
+                        );
+
+                        let c_tmp = std::ffi::CString::new("/tmp").unwrap();
+                        let c_tmpfs = std::ffi::CString::new("tmpfs").unwrap();
+                        libc::mount(
+                            c_tmpfs.as_ptr(),
+                            c_tmp.as_ptr(),
+                            c_tmpfs.as_ptr(),
+                            0,
+                            std::ptr::null(),
+                        );
+
+                        let c_devshm = std::ffi::CString::new("/dev/shm").unwrap();
+                        libc::mount(
+                            c_tmpfs.as_ptr(),
+                            c_devshm.as_ptr(),
+                            c_tmpfs.as_ptr(),
+                            0,
+                            std::ptr::null(),
+                        );
                     }
 
                     // Change to target directory
@@ -946,7 +1010,10 @@ impl WarmDaemon {
 
                     // Log if signal restoration failed (only safe to do in parent)
                     if restore_ret != 0 {
-                        log::warn!("Failed to restore signal mask after fork: errno {}", restore_ret);
+                        log::warn!(
+                            "Failed to restore signal mask after fork: errno {}",
+                            restore_ret
+                        );
                     }
 
                     child.as_raw() as u32
@@ -960,7 +1027,10 @@ impl WarmDaemon {
 
         // Parent continues here with the child PID
         // Track child with its cgroup for later cleanup
-        self.children.insert(pid, ChildProcess { cgroup });
+        self.children
+            .lock()
+            .unwrap()
+            .insert(pid, ChildProcess { cgroup });
 
         // Wait for child to complete (synchronous execution)
         let wait_result = nix::sys::wait::waitpid(Pid::from_raw(pid as i32), None);
@@ -975,7 +1045,8 @@ impl WarmDaemon {
         };
 
         // Clean up cgroup BEFORE removing from tracking
-        if let Some(child) = self.children.get(&pid) {
+        let mut locked_children = self.children.lock().unwrap();
+        if let Some(child) = locked_children.get(&pid) {
             if let Some(ref cgroup) = child.cgroup {
                 if let Err(e) = cgroup.destroy() {
                     log::warn!("Failed to destroy cgroup for PID {}: {:?}", pid, e);
@@ -984,7 +1055,7 @@ impl WarmDaemon {
         }
 
         // Clean up tracking
-        self.children.remove(&pid);
+        locked_children.remove(&pid);
 
         Ok(ExecResponse {
             exit_code,
@@ -1013,7 +1084,11 @@ impl WarmDaemon {
 
     /// Handle health check
     fn handle_health_check(&self, stream: &mut std::os::unix::net::UnixStream) -> Result<()> {
-        let response = format!("OK pid={} children={}", self.pid(), self.children.len());
+        let response = format!(
+            "OK pid={} children={}",
+            self.pid(),
+            self.children.lock().unwrap().len()
+        );
         let msg = Message::new(MessageType::HealthResponse, response.into_bytes());
         let data = msg.serialize()?;
         stream.write_all(&data)?;
@@ -1074,7 +1149,7 @@ impl WarmDaemon {
             total_requests: total,
             failed_requests: failed,
             avg_response_time_ms: avg_response_time,
-            active_children: self.children.len(),
+            active_children: self.children.lock().unwrap().len(),
             cgroup_active: self.cgroup_active.load(Ordering::Relaxed),
             daemon_pid: self.pid(),
         }
@@ -1093,11 +1168,12 @@ impl WarmDaemon {
 
     /// Prune dead/zombie child processes
     /// Returns the number of pruned children
-    pub fn prune_dead_children(&mut self) -> usize {
+    pub fn prune_dead_children(&self) -> usize {
         let mut pruned = 0;
         let mut to_remove = Vec::new();
 
-        for (pid, _child) in &self.children {
+        let mut locked_children = self.children.lock().unwrap();
+        for (pid, _child) in locked_children.iter() {
             // Check if process is still running using nix
             match nix::sys::signal::kill(nix::unistd::Pid::from_raw(*pid as i32), None) {
                 Ok(_) => {
@@ -1115,7 +1191,7 @@ impl WarmDaemon {
         }
 
         for pid in to_remove {
-            if let Some(child) = self.children.remove(&pid) {
+            if let Some(child) = locked_children.remove(&pid) {
                 // Clean up cgroup if present
                 if let Some(cgroup) = child.cgroup {
                     if let Err(e) = cgroup.destroy() {
@@ -1224,7 +1300,8 @@ impl WarmDaemon {
         }
 
         // Clean up any remaining children
-        for (pid, child) in self.children.drain() {
+        let mut locked_children = self.children.lock().unwrap();
+        for (pid, child) in locked_children.drain() {
             // Kill child if still running
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid as i32),
@@ -1258,35 +1335,55 @@ impl WarmDaemon {
             }
         }
 
-        // Main event loop (no signal handler for tests)
-        let mut prune_counter = 0;
-        while self.running.load(Ordering::SeqCst) {
-            match self.listener.accept() {
-                Ok((mut stream, _addr)) => {
-                    if let Err(e) = self.handle_client(&mut stream) {
-                        log::error!("Client handler error: {:?}", e);
-                        let _ = self.send_error(&mut stream, &e.to_string());
-                    }
-                }
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    // No connections, sleep briefly
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?;
 
-                    // Periodically prune dead children (every 100 iterations = ~1 second)
-                    prune_counter += 1;
-                    if prune_counter >= 100 {
+        rt.block_on(async {
+            self.listener.set_nonblocking(true).unwrap();
+            let async_listener =
+                tokio::net::UnixListener::from_std(self.listener.try_clone().unwrap()).unwrap();
+            let mut prune_interval = tokio::time::interval(std::time::Duration::from_millis(100)); // faster prune for tests
+
+            loop {
+                tokio::select! {
+                    accept_result = async_listener.accept() => {
+                        match accept_result {
+                            Ok((stream, _addr)) => {
+                                if !self.running.load(Ordering::SeqCst) {
+                                    break;
+                                }
+                                let std_stream = stream.into_std().unwrap();
+                                std_stream.set_nonblocking(false).unwrap();
+                                tokio::task::block_in_place(|| {
+                                    let mut s = std_stream;
+                                    if let Err(e) = self.handle_client(&mut s) {
+                                        log::error!("Client handler error: {:?}", e);
+                                        let _ = self.send_error(&mut s, &e.to_string());
+                                    }
+
+                                    // If connection dropped prematurely, the socket gets closed here.
+                                    // We can prune immediately as a proactive measure in case the client disconnected while handling an exec request.
+                                    let _ = self.prune_dead_children();
+                                });
+                            }
+                            Err(e) => {
+                                log::error!("Accept error: {:?}", e);
+                            }
+                        }
+                    }
+                    _ = prune_interval.tick() => {
                         let pruned = self.prune_dead_children();
                         if pruned > 0 {
                             log::debug!("Pruned {} dead children", pruned);
                         }
-                        prune_counter = 0;
                     }
                 }
-                Err(e) => {
-                    log::error!("Accept error: {:?}", e);
+                if !self.running.load(Ordering::SeqCst) {
+                    break;
                 }
             }
-        }
+        });
 
         // Cleanup
         self.cleanup()?;

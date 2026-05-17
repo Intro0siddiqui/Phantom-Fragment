@@ -493,7 +493,6 @@ fn kill_process(pid: u32) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
 
     #[test]
     fn test_supervisor_creation() {
@@ -501,7 +500,7 @@ mod tests {
         let supervisor = DaemonSupervisor::new(config);
 
         assert_eq!(supervisor.state(), SupervisorState::Stopped);
-        assert!(supervisor.daemon_pid().is_none());
+        assert!(supervisor.daemon_pid.is_none());
     }
 
     #[test]
@@ -525,10 +524,10 @@ mod tests {
     fn test_is_process_alive() {
         // Current process should be alive
         let current_pid = std::process::id();
-        assert!(is_process_alive(current_pid));
+        assert!(health_rs::is_process_alive(current_pid));
 
         // Non-existent PID should not be alive
-        assert!(!is_process_alive(99999999));
+        assert!(!health_rs::is_process_alive(99999999));
     }
 
     #[test]

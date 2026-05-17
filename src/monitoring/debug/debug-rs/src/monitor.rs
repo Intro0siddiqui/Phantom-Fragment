@@ -104,7 +104,7 @@ impl ResourceMonitor {
         let clock_ticks = procfs::ticks_per_second();
         let total_time = (stat.utime + stat.stime) as f64 / clock_ticks as f64;
 
-        Ok(total_time.min(100.0).max(0.0))
+        Ok(total_time.clamp(0.0, 100.0))
     }
 
     async fn get_memory_info(&self, pid: i32) -> Result<MemoryInfo> {
@@ -118,8 +118,8 @@ impl ResourceMonitor {
         let page_size = procfs::page_size();
 
         let mut mem_info = MemoryInfo {
-            rss: (statm.resident * page_size) as u64,
-            vms: (statm.size * page_size) as u64,
+            rss: (statm.resident * page_size),
+            vms: (statm.size * page_size),
             ..Default::default()
         };
 

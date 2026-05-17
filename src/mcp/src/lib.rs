@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use rmcp::{
     model::*, tool, tool_handler, tool_router, transport::stdio, ServerHandler, ServiceExt,
 };
@@ -12,19 +12,13 @@ use rmcp::handler::server::wrapper::Parameters;
 /// Allowlist of permitted commands for security
 /// Only these commands can be executed via MCP to prevent command injection
 const ALLOWED_COMMANDS: &[&str] = &[
-    "echo", "cat", "ls", "pwd", "whoami", "id", "uname",
-    "date", "hostname", "env", "printenv", "true", "false",
-    "sleep", "head", "tail", "wc", "sort", "uniq", "grep",
-    "awk", "sed", "cut", "tr", "tee", "xargs", "find",
-    "du", "df", "free", "uptime", "ps", "top", "kill",
-    "mkdir", "rmdir", "touch", "rm", "cp", "mv", "ln",
-    "chmod", "chown", "stat", "file", "which", "type",
-    "sh", "bash", "ash", "dash", "zsh",
-    "python", "python3", "node", "npm", "npx",
-    "cargo", "rustc", "gcc", "g++", "make", "cmake",
-    "git", "curl", "wget", "ping", "netstat", "ss",
-    "jq", "yq", "sed", "awk",
-    // Common utilities
+    "echo", "cat", "ls", "pwd", "whoami", "id", "uname", "date", "hostname", "env", "printenv",
+    "true", "false", "sleep", "head", "tail", "wc", "sort", "uniq", "grep", "awk", "sed", "cut",
+    "tr", "tee", "xargs", "find", "du", "df", "free", "uptime", "ps", "top", "kill", "mkdir",
+    "rmdir", "touch", "rm", "cp", "mv", "ln", "chmod", "chown", "stat", "file", "which", "type",
+    "sh", "bash", "ash", "dash", "zsh", "python", "python3", "node", "npm", "npx", "cargo",
+    "rustc", "gcc", "g++", "make", "cmake", "git", "curl", "wget", "ping", "netstat", "ss", "jq",
+    "yq", "sed", "awk", // Common utilities
     "alpine", "ubuntu", "debian", "busybox",
 ];
 
@@ -38,7 +32,9 @@ fn is_command_allowed(cmd: &str) -> bool {
 /// Sanitize command arguments to prevent injection
 fn sanitize_command(cmd: &str) -> Result<String> {
     // Reject commands with shell metacharacters that could enable injection
-    let dangerous_chars = [';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r'];
+    let dangerous_chars = [
+        ';', '|', '&', '$', '`', '(', ')', '{', '}', '<', '>', '\n', '\r',
+    ];
     for ch in dangerous_chars {
         if cmd.contains(ch) {
             return Err(anyhow!(
@@ -48,17 +44,18 @@ fn sanitize_command(cmd: &str) -> Result<String> {
             ));
         }
     }
-    
+
     // Reject command substitution patterns
     if cmd.contains("$(") || cmd.contains("${") {
         return Err(anyhow!("Command substitution is not allowed: {}", cmd));
     }
-    
+
     Ok(cmd.to_string())
 }
 
 #[derive(Clone)]
 pub struct PhantomService {
+    #[allow(dead_code)]
     tool_router: ToolRouter<PhantomService>,
 }
 
@@ -112,14 +109,7 @@ struct ListFragmentsParams {
 #[tool_handler]
 impl ServerHandler for PhantomService {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo {
-            protocol_version: ProtocolVersion::V_2024_11_05,
-            capabilities: ServerCapabilities::builder().enable_tools().build(),
-            server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Phantom Fragment MCP Server - Secure AI-native execution environment.".to_string(),
-            ),
-        }
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
 
@@ -131,12 +121,11 @@ impl PhantomService {
         Parameters(params): Parameters<RunInFragmentParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         // Security: Sanitize and validate command to prevent injection
-        let sanitized_command = sanitize_command(&params.command)
-            .map_err(|e| rmcp::ErrorData {
-                code: ErrorCode(-32603),
-                message: format!("Security validation failed: {}", e).into(),
-                data: None,
-            })?;
+        let sanitized_command = sanitize_command(&params.command).map_err(|e| rmcp::ErrorData {
+            code: ErrorCode(-32603),
+            message: format!("Security validation failed: {}", e).into(),
+            data: None,
+        })?;
 
         // Security: Check command against allowlist
         if !is_command_allowed(&sanitized_command) {

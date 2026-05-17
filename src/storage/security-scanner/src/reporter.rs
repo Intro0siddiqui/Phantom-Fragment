@@ -134,7 +134,9 @@ impl ScanReport {
                 if vuln.fix_available {
                     output.push_str(&format!(
                         "        Fix: Upgrade to {}\n",
-                        vuln.fixed_version.as_ref().unwrap_or(&"unknown".to_string())
+                        vuln.fixed_version
+                            .as_ref()
+                            .unwrap_or(&"unknown".to_string())
                     ));
                 }
                 output.push_str("\n");
@@ -248,7 +250,9 @@ impl ScanReport {
                 if vuln.fix_available {
                     output.push_str(&format!(
                         "- **Fix**: Upgrade to {}\n",
-                        vuln.fixed_version.as_ref().unwrap_or(&"unknown".to_string())
+                        vuln.fixed_version
+                            .as_ref()
+                            .unwrap_or(&"unknown".to_string())
                     ));
                 }
                 output.push_str("\n");

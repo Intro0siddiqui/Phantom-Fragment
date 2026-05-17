@@ -52,7 +52,7 @@ fn getpid_syscall() i32 {
     const ret = asm volatile ("syscall"
         : [ret] "={rax}" (-> usize),
         : [sys] "{rax}" (SYS_getpid),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     return @intCast(ret);
 }
 
@@ -62,7 +62,7 @@ fn kill_syscall(pid: i32, sig: i32) i32 {
         : [sys] "{rax}" (SYS_kill),
           [pid] "{rdi}" (@as(usize, @intCast(pid))),
           [sig] "{rsi}" (@as(usize, @intCast(sig))),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -74,7 +74,7 @@ fn close_syscall(fd: i32) void {
         : [ret] "={rax}" (-> usize),
         : [sys] "{rax}" (SYS_close),
           [fd] "{rdi}" (@as(usize, @intCast(fd))),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
 }
 
 fn read_syscall(fd: i32, buf: [*]u8, len: usize) isize {
@@ -84,7 +84,7 @@ fn read_syscall(fd: i32, buf: [*]u8, len: usize) isize {
           [fd] "{rdi}" (@as(usize, @intCast(fd))),
           [buf] "{rsi}" (@intFromPtr(buf)),
           [len] "{rdx}" (len),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -@as(isize, @intCast(ret & 0xFFF));
     }
@@ -98,7 +98,7 @@ fn write_syscall(fd: i32, buf: [*]const u8, len: usize) isize {
           [fd] "{rdi}" (@as(usize, @intCast(fd))),
           [buf] "{rsi}" (@intFromPtr(buf)),
           [len] "{rdx}" (len),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -@as(isize, @intCast(ret & 0xFFF));
     }
@@ -113,7 +113,7 @@ fn socketpair_syscall(domain: i32, sock_type: i32, protocol: i32, sv: *[2]i32) i
           [sock_type] "{rsi}" (@as(usize, @intCast(sock_type))),
           [protocol] "{rdx}" (@as(usize, @intCast(protocol))),
           [sv] "{r10}" (@intFromPtr(sv)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -125,7 +125,7 @@ fn chdir_syscall(path: [*:0]const u8) i32 {
         : [ret] "={rax}" (-> usize),
         : [sys] "{rax}" (SYS_chdir),
           [path] "{rdi}" (@intFromPtr(path)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -137,7 +137,7 @@ fn unshare_syscall(flags: u32) i32 {
         : [ret] "={rax}" (-> usize),
         : [sys] "{rax}" (SYS_unshare),
           [flags] "{rdi}" (@as(usize, flags)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -151,7 +151,7 @@ fn wait4_syscall(pid: i32, status: *i32, options: i32) i32 {
           [pid] "{rdi}" (@as(usize, @intCast(pid))),
           [status] "{rsi}" (@intFromPtr(status)),
           [options] "{rdx}" (@as(usize, @intCast(options))),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -165,7 +165,7 @@ fn execve_syscall(path: [*:0]const u8, argv: [*]?[*:0]u8, envp: [*]?[*:0]u8) usi
           [path] "{rdi}" (@intFromPtr(path)),
           [argv] "{rsi}" (@intFromPtr(argv)),
           [envp] "{rdx}" (@intFromPtr(envp)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
 }
 
 fn open_syscall(path: [*:0]const u8, flags: linux.O) i32 {
@@ -176,7 +176,7 @@ fn open_syscall(path: [*:0]const u8, flags: linux.O) i32 {
           [path] "{rdi}" (@intFromPtr(path)),
           [flags] "{rsi}" (@as(usize, flags_int)),
           [mode] "{rdx}" (@as(usize, 0o644)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;
     }
@@ -189,7 +189,7 @@ fn pivot_root_syscall(new_root: [*:0]const u8, put_old: [*:0]const u8) i32 {
         : [sys] "{rax}" (SYS_pivot_root),
           [new_root] "{rdi}" (@intFromPtr(new_root)),
           [put_old] "{rsi}" (@intFromPtr(put_old)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) return -1;
     return 0;
 }
@@ -203,7 +203,7 @@ fn mount_syscall(source: [*:0]const u8, target: [*:0]const u8, filesystemtype: [
           [fstype] "{rdx}" (@intFromPtr(filesystemtype)),
           [flags] "{r10}" (mountflags),
           [data] "{r8}" (@intFromPtr(data)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) return -1;
     return 0;
 }
@@ -214,7 +214,7 @@ fn umount2_syscall(target: [*:0]const u8, flags: i32) i32 {
         : [sys] "{rax}" (SYS_umount2),
           [target] "{rdi}" (@intFromPtr(target)),
           [flags] "{rsi}" (@as(usize, @intCast(flags))),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) return -1;
     return 0;
 }
@@ -223,7 +223,7 @@ fn fork_syscall() i32 {
     const ret = asm volatile ("syscall"
         : [ret] "={rax}" (-> usize),
         : [sys] "{rax}" (SYS_fork),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
     if (ret > 0xFFFFFFFFFFFFF000) return -1;
     return @intCast(ret);
 }
@@ -253,7 +253,7 @@ fn close_all_fds_except_stdio(except_fd: i32) void {
               [fd] "{rdi}" (@as(usize, @intCast(fd_dir))),
               [buf] "{rsi}" (@intFromPtr(&buf)),
               [len] "{rdx}" (buf.len),
-            : .{ .rcx = true, .r11 = true, .memory = true });
+            : "rcx", "r11", "memory");
 
         if (nread == 0) break;
         if (nread > 0xFFFFFFFFFFFFF000) break;
@@ -291,7 +291,7 @@ fn do_clone() i32 {
           [ptid] "{rdx}" (@as(usize, 0)),
           [ctid] "{r10}" (@as(usize, 0)),
           [tls] "{r8}" (@as(usize, 0)),
-        : .{ .rcx = true, .r11 = true, .memory = true });
+        : "rcx", "r11", "memory");
 
     if (ret > 0xFFFFFFFFFFFFF000) {
         return -1;

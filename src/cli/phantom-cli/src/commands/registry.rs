@@ -104,13 +104,19 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
             if registries.is_empty() {
                 println!("  {} No registries configured", "Info:".yellow());
                 println!();
-                println!("  {} Default registries are always available:", "Note:".yellow());
+                println!(
+                    "  {} Default registries are always available:",
+                    "Note:".yellow()
+                );
                 println!("    • docker.io (Docker Hub)");
                 println!("    • ghcr.io (GitHub Container Registry)");
                 println!("    • quay.io (Quay.io)");
                 println!("    • gcr.io (Google Container Registry)");
                 println!();
-                println!("  {} Use 'phantom registry add <name>' to add custom registries", "Tip:".yellow());
+                println!(
+                    "  {} Use 'phantom registry add <name>' to add custom registries",
+                    "Tip:".yellow()
+                );
             } else {
                 println!("  {} Custom registries:\n", "✓".green());
 
@@ -152,8 +158,20 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
 
             println!("  {:<20} {}", "Name:".yellow(), name);
             println!("  {:<20} {}", "URL:".yellow(), registry_url);
-            println!("  {:<20} {}", "Auth:".yellow(), if username.is_some() || token.is_some() { "Yes" } else { "No" });
-            println!("  {:<20} {}", "Insecure:".yellow(), if insecure { "Yes" } else { "No" });
+            println!(
+                "  {:<20} {}",
+                "Auth:".yellow(),
+                if username.is_some() || token.is_some() {
+                    "Yes"
+                } else {
+                    "No"
+                }
+            );
+            println!(
+                "  {:<20} {}",
+                "Insecure:".yellow(),
+                if insecure { "Yes" } else { "No" }
+            );
             println!();
 
             // Save to config
@@ -189,7 +207,9 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
                 use std::io::{self, Write};
                 io::stdout().flush().context("Failed to flush stdout")?;
                 let mut input = String::new();
-                io::stdin().read_line(&mut input).context("Failed to read username")?;
+                io::stdin()
+                    .read_line(&mut input)
+                    .context("Failed to read username")?;
                 input.trim().to_string()
             };
 
@@ -201,12 +221,17 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
                     Ok(pass) => pass,
                     Err(_e) => {
                         // Fallback to visible input if rpassword fails
-                        eprintln!("  {} Hidden input not available, falling back to visible input", "Warning:".yellow());
+                        eprintln!(
+                            "  {} Hidden input not available, falling back to visible input",
+                            "Warning:".yellow()
+                        );
                         print!("  Password: ");
                         use std::io::{self, Write};
                         io::stdout().flush().context("Failed to flush stdout")?;
                         let mut input = String::new();
-                        io::stdin().read_line(&mut input).context("Failed to read password")?;
+                        io::stdin()
+                            .read_line(&mut input)
+                            .context("Failed to read password")?;
                         input.trim().to_string()
                     }
                 }
@@ -221,7 +246,10 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
             println!();
             println!("  {} Logged in to '{}' successfully", "✓".green(), name);
             println!();
-            println!("  {} Credentials stored securely using Argon2 hashing", "Info:".yellow());
+            println!(
+                "  {} Credentials stored securely using Argon2 hashing",
+                "Info:".yellow()
+            );
         }
 
         RegistryCommands::Logout { name } => {
@@ -230,7 +258,11 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
             if remove_registry_credentials(&name)? {
                 println!("  {} Logged out from '{}' successfully", "✓".green(), name);
             } else {
-                println!("  {} No credentials found for '{}'", "Warning:".yellow(), name);
+                println!(
+                    "  {} No credentials found for '{}'",
+                    "Warning:".yellow(),
+                    name
+                );
             }
         }
 
@@ -280,7 +312,12 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
                         println!("  {} {} results found:\n", "✓".green(), results.len());
 
                         for (i, result) in results.iter().take(limit).enumerate() {
-                            println!("  {}. {} {}", i + 1, result.name.cyan(), result.description.dimmed());
+                            println!(
+                                "  {}. {} {}",
+                                i + 1,
+                                result.name.cyan(),
+                                result.description.dimmed()
+                            );
                             if let Some(stars) = result.star_count {
                                 println!("     {} stars", "★".to_string().repeat(stars.min(5)));
                             }
@@ -315,21 +352,19 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
             let cache_dir = PathBuf::from(&home).join(".phantom").join("cache");
 
             match RegistryClient::new(cache_dir) {
-                Ok(client) => {
-                    match client.pull(&image_ref).await {
-                        Ok(image_info) => {
-                            println!("  {} Image pulled successfully", "✓".green());
-                            println!();
-                            println!("  Image details:");
-                            println!("    • Digest: {}", image_info.digest);
-                            println!("    • Size: {} MB", image_info.size / (1024 * 1024));
-                            println!("    • Layers: {}", image_info.layers.len());
-                        }
-                        Err(e) => {
-                            println!("  {} Pull failed: {}", "✗".red(), e);
-                        }
+                Ok(client) => match client.pull(&image_ref).await {
+                    Ok(image_info) => {
+                        println!("  {} Image pulled successfully", "✓".green());
+                        println!();
+                        println!("  Image details:");
+                        println!("    • Digest: {}", image_info.digest);
+                        println!("    • Size: {} MB", image_info.size / (1024 * 1024));
+                        println!("    • Layers: {}", image_info.layers.len());
                     }
-                }
+                    Err(e) => {
+                        println!("  {} Pull failed: {}", "✗".red(), e);
+                    }
+                },
                 Err(e) => {
                     println!("  {} Failed to create registry client: {}", "✗".red(), e);
                 }
@@ -354,26 +389,33 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
             println!();
 
             if layers.is_empty() {
-                println!("  {} No layers specified. Use --layers to specify layer paths.", "Warning:".yellow());
+                println!(
+                    "  {} No layers specified. Use --layers to specify layer paths.",
+                    "Warning:".yellow()
+                );
                 return Ok(());
             }
 
             println!("  {} Pushing image...", "→".yellow());
             println!();
 
-            use oci_registry_rs::{RegistryPusher, PushConfig, PushImage, PushLayer};
+            use oci_registry_rs::{PushConfig, PushImage, PushLayer, RegistryPusher};
 
             let push_config = PushConfig::default();
             match RegistryPusher::new(push_config) {
                 Ok(pusher) => {
                     let push_image = PushImage {
                         reference: image_ref.clone(),
-                        layers: layers.iter().map(|p| PushLayer {
-                            path: PathBuf::from(p),
-                            media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_string(),
-                            digest: None,
-                            size: None,
-                        }).collect(),
+                        layers: layers
+                            .iter()
+                            .map(|p| PushLayer {
+                                path: PathBuf::from(p),
+                                media_type: "application/vnd.oci.image.layer.v1.tar+gzip"
+                                    .to_string(),
+                                digest: None,
+                                size: None,
+                            })
+                            .collect(),
                         config_path: None,
                         annotations: std::collections::HashMap::new(),
                     };
@@ -404,7 +446,14 @@ pub async fn exec(_ctx: CommandContext<'_>, command: RegistryCommands) -> Result
                 if let Some(config) = registries.get(&n) {
                     println!("  {} Configuration for '{}':\n", "→".cyan(), n);
                     println!("    URL: {}", config.url);
-                    println!("    Auth: {}", if config.has_auth() { "Configured" } else { "None" });
+                    println!(
+                        "    Auth: {}",
+                        if config.has_auth() {
+                            "Configured"
+                        } else {
+                            "None"
+                        }
+                    );
                     println!("    Insecure: {}", config.insecure);
                 } else {
                     println!("  {} Registry '{}' not found", "Warning:".yellow(), n);
@@ -458,17 +507,21 @@ fn get_configured_registries() -> std::collections::HashMap<String, RegistryConf
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(auths) = json.get("auths").and_then(|v| v.as_object()) {
                     for (name, auth) in auths {
-                        let url = auth.get("url")
+                        let url = auth
+                            .get("url")
                             .and_then(|v| v.as_str())
                             .unwrap_or(&format!("https://{}", name))
                             .to_string();
 
-                        registries.insert(name.clone(), RegistryConfig {
-                            url,
-                            username: None,
-                            token: None,
-                            insecure: false,
-                        });
+                        registries.insert(
+                            name.clone(),
+                            RegistryConfig {
+                                url,
+                                username: None,
+                                token: None,
+                                insecure: false,
+                            },
+                        );
                     }
                 }
             }
@@ -523,13 +576,13 @@ fn save_registry_config(
 
 /// Save registry credentials securely using Argon2 hashing and AES-GCM encryption
 fn save_registry_credentials(name: &str, username: &str, password: &str) -> Result<()> {
-    use argon2::{
-        password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
-        Argon2,
-    };
     use aes_gcm::{
         aead::{Aead, KeyInit, OsRng as AeadOsRng},
         Aes256Gcm, Nonce,
+    };
+    use argon2::{
+        password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
+        Argon2,
     };
     use rand::RngCore;
 
@@ -578,7 +631,10 @@ fn save_registry_credentials(name: &str, username: &str, password: &str) -> Resu
         }
         Err(e) => {
             // Return error if keyring is unavailable to avoid insecure circular encryption
-            return Err(anyhow::anyhow!("System keyring unavailable and no secure fallback: {}", e));
+            return Err(anyhow::anyhow!(
+                "System keyring unavailable and no secure fallback: {}",
+                e
+            ));
         }
     };
 
@@ -711,8 +767,14 @@ async fn search_registry(registry: &str, query: &str, limit: usize) -> Result<Ve
     let client = reqwest::Client::new();
 
     let url = match registry {
-        "docker.io" => format!("https://hub.docker.com/v2/search/repositories/?query={}&page_size={}", query, limit),
-        "ghcr.io" => format!("https://ghcr.io/api/v2/search?q={}&per_page={}", query, limit),
+        "docker.io" => format!(
+            "https://hub.docker.com/v2/search/repositories/?query={}&page_size={}",
+            query, limit
+        ),
+        "ghcr.io" => format!(
+            "https://ghcr.io/api/v2/search?q={}&per_page={}",
+            query, limit
+        ),
         _ => {
             // Generic OCI registry search (not all support search)
             return Ok(vec![]);
@@ -731,19 +793,22 @@ async fn search_registry(registry: &str, query: &str, limit: usize) -> Result<Ve
 
     if let Some(search_results) = json.get("results").and_then(|v| v.as_array()) {
         for result in search_results {
-            let name = result.get("repo_name")
+            let name = result
+                .get("repo_name")
                 .or_else(|| result.get("name"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
 
-            let description = result.get("short_description")
+            let description = result
+                .get("short_description")
                 .or_else(|| result.get("description"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
 
-            let star_count = result.get("star_count")
+            let star_count = result
+                .get("star_count")
                 .and_then(|v| v.as_u64())
                 .map(|v| v as usize);
 

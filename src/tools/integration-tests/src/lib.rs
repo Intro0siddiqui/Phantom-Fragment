@@ -36,7 +36,7 @@ mod tests {
         assert!(required.components.contains(&Component::TcpStack));
 
         // 2. Determine Execution Mode
-        let engine = AdaptiveEngine::new();
+        let engine = AdaptiveEngine::new().unwrap();
         let risk = RiskProfile {
             network_access: true,
             ..Default::default()
