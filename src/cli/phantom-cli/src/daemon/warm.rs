@@ -525,6 +525,14 @@ impl WarmDaemon {
 
     /// Handle a client connection
     fn handle_client(&mut self, stream: &mut UnixStream) -> Result<()> {
+        // Set 5-second socket read and write timeouts to prevent hanging indefinitely under IPC load
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
         // Verify peer credentials (SO_PEERCRED) to ensure only authorized users can connect
         #[cfg(unix)]
         {
@@ -1469,88 +1477,176 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
     anyhow::bail!("Daemon failed to start (socket not ready)");
 }
 
-/// Connect to running daemon and send exec request
-pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecResponse> {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
-        .with_context(|| format!("Failed to connect to daemon at {:?}", socket_path))?;
-
-    // Serialize request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1][cpu:4][mem:4]
-    let mut payload = Vec::new();
-
-    // Command
-    payload.extend_from_slice(&(request.command.len() as u16).to_le_bytes());
-    payload.extend_from_slice(request.command.as_bytes());
-
-    // Args
-    payload.push(request.args.len() as u8);
-    for arg in &request.args {
-        payload.extend_from_slice(&(arg.len() as u16).to_le_bytes());
-        payload.extend_from_slice(arg.as_bytes());
-    }
-
-    // Env
-    payload.push(request.env.len() as u8);
-    for (key, val) in &request.env {
-        payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
-        payload.extend_from_slice(key.as_bytes());
-        payload.extend_from_slice(&(val.len() as u16).to_le_bytes());
-        payload.extend_from_slice(val.as_bytes());
-    }
-
-    // Cwd
-    let cwd_bytes = request.cwd.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
-    payload.extend_from_slice(&(cwd_bytes.len() as u16).to_le_bytes());
-    payload.extend_from_slice(cwd_bytes);
-
-    // Hardware profile
-    if let Some(ref profile) = request.hardware_profile {
-        payload.push(1);
-        payload.extend_from_slice(&(profile.cpu_count as u32).to_le_bytes());
-        payload.extend_from_slice(&(profile.memory_mb as u32).to_le_bytes());
-    } else {
-        payload.push(0);
-        payload.extend_from_slice(&0u32.to_le_bytes());
-        payload.extend_from_slice(&0u32.to_le_bytes());
-    }
-
-    // Send request
-    let msg = Message::new(MessageType::Exec, payload);
-    let data = msg.serialize()?;
-    stream.write_all(&data)?;
-
-    // Read response
-    let mut header = [0u8; 10];
-    stream.read_exact(&mut header)?;
-    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-    let mut response_data = vec![0u8; length];
-    stream.read_exact(&mut response_data)?;
-
-    // Parse response: [exit_code:4][pid:4][error_len:2][error]
-    let exit_code = i32::from_le_bytes([
-        response_data[0],
-        response_data[1],
-        response_data[2],
-        response_data[3],
-    ]);
-    let pid = u32::from_le_bytes([
-        response_data[4],
-        response_data[5],
-        response_data[6],
-        response_data[7],
-    ]);
-    let error_len = u16::from_le_bytes([response_data[8], response_data[9]]) as usize;
-
-    let error = if error_len > 0 {
-        Some(String::from_utf8_lossy(&response_data[10..10 + error_len]).to_string())
-    } else {
-        None
+/// Ping a running daemon via Unix socket to verify it is responsive
+pub fn ping_daemon(socket_path: &Path) -> Result<bool> {
+    let stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+        Ok(s) => s,
+        Err(_) => return Ok(false),
     };
 
-    Ok(ExecResponse {
-        exit_code,
-        pid,
-        error,
-    })
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+        .ok();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(1)))
+        .ok();
+
+    let mut stream = stream;
+    let msg = Message::new(MessageType::HealthCheck, vec![]);
+    let data = msg.serialize()?;
+    if stream.write_all(&data).is_err() {
+        return Ok(false);
+    }
+
+    let mut header = [0u8; 10];
+    if stream.read_exact(&mut header).is_err() {
+        return Ok(false);
+    }
+
+    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
+    let mut payload = vec![0u8; length];
+    if stream.read_exact(&mut payload).is_err() {
+        return Ok(false);
+    }
+
+    let msg = Message::deserialize(&[&header[..], &payload[..]].concat())?;
+    Ok(msg.msg_type == MessageType::HealthResponse)
+}
+
+/// Connect to running daemon and send exec request with auto-reconnect retries and timeouts
+pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecResponse> {
+    let mut last_err = None;
+
+    // Retry up to 3 times before failing back to cold execution
+    for attempt in 1..=3 {
+        let stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+            Ok(s) => s,
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!(
+                    "Failed to connect to daemon at {:?}: {}",
+                    socket_path,
+                    e
+                ));
+                std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                continue;
+            }
+        };
+
+        // Set 5-second socket read and write timeouts
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        stream
+            .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+
+        let mut stream = stream;
+
+        // Serialize request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1][cpu:4][mem:4]
+        let mut payload = Vec::new();
+
+        // Command
+        payload.extend_from_slice(&(request.command.len() as u16).to_le_bytes());
+        payload.extend_from_slice(request.command.as_bytes());
+
+        // Args
+        payload.push(request.args.len() as u8);
+        for arg in &request.args {
+            payload.extend_from_slice(&(arg.len() as u16).to_le_bytes());
+            payload.extend_from_slice(arg.as_bytes());
+        }
+
+        // Env
+        payload.push(request.env.len() as u8);
+        for (key, val) in &request.env {
+            payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
+            payload.extend_from_slice(key.as_bytes());
+            payload.extend_from_slice(&(val.len() as u16).to_le_bytes());
+            payload.extend_from_slice(val.as_bytes());
+        }
+
+        // Cwd
+        let cwd_bytes = request.cwd.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
+        payload.extend_from_slice(&(cwd_bytes.len() as u16).to_le_bytes());
+        payload.extend_from_slice(cwd_bytes);
+
+        // Hardware profile
+        if let Some(ref profile) = request.hardware_profile {
+            payload.push(1);
+            payload.extend_from_slice(&(profile.cpu_count as u32).to_le_bytes());
+            payload.extend_from_slice(&(profile.memory_mb as u32).to_le_bytes());
+        } else {
+            payload.push(0);
+            payload.extend_from_slice(&0u32.to_le_bytes());
+            payload.extend_from_slice(&0u32.to_le_bytes());
+        }
+
+        // Send request
+        let msg = Message::new(MessageType::Exec, payload);
+        let data = match msg.serialize() {
+            Ok(d) => d,
+            Err(e) => return Err(e),
+        };
+
+        if let Err(e) = stream.write_all(&data) {
+            last_err = Some(anyhow::anyhow!("Failed to send request to daemon: {}", e));
+            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+            continue;
+        }
+
+        // Read response
+        let mut header = [0u8; 10];
+        if let Err(e) = stream.read_exact(&mut header) {
+            last_err = Some(anyhow::anyhow!(
+                "Failed to read response header from daemon: {}",
+                e
+            ));
+            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+            continue;
+        }
+
+        let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
+        let mut response_data = vec![0u8; length];
+        if let Err(e) = stream.read_exact(&mut response_data) {
+            last_err = Some(anyhow::anyhow!(
+                "Failed to read response payload from daemon: {}",
+                e
+            ));
+            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+            continue;
+        }
+
+        // Parse response: [exit_code:4][pid:4][error_len:2][error]
+        let exit_code = i32::from_le_bytes([
+            response_data[0],
+            response_data[1],
+            response_data[2],
+            response_data[3],
+        ]);
+        let pid = u32::from_le_bytes([
+            response_data[4],
+            response_data[5],
+            response_data[6],
+            response_data[7],
+        ]);
+        let error_len = u16::from_le_bytes([response_data[8], response_data[9]]) as usize;
+
+        let error = if error_len > 0 {
+            Some(String::from_utf8_lossy(&response_data[10..10 + error_len]).to_string())
+        } else {
+            None
+        };
+
+        return Ok(ExecResponse {
+            exit_code,
+            pid,
+            error,
+        });
+    }
+
+    Err(last_err.unwrap_or_else(|| {
+        anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")
+    }))
 }
 
 /// Connect to running daemon and get metrics

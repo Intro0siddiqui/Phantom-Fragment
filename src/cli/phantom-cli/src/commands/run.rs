@@ -341,7 +341,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                                                 "Warm execution failed: {:?}, falling back to cold",
                                                 e
                                             ));
-                                            let _ = pool.release_pid(pid);
+                                            let _ = pool.purge_pid(pid);
                                         }
                                     }
                                 } else {
@@ -371,6 +371,12 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
             use zygote_rs::{ZygoteCommand, ZygotePool};
 
             ui::info("Using zygote pool:", "for ultra-fast execution");
+
+            // Apply pre-exec security policies (seccomp + landlock) before process handoff
+            if let Some(ref policy) = security_policy {
+                let mut manager = security_rs::SecurityManager::new();
+                let _ = manager.apply_container_security("zygote-fragment", policy, graceful_security);
+            }
 
             // Try zygote pool execution
             match ZygotePool::new(4) {

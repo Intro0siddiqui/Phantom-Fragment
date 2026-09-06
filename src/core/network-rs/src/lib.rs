@@ -37,44 +37,41 @@ impl NetworkNamespace {
     }
 
     /// Bring up the loopback interface in the current network namespace.
-    /// Uses a blocking runtime since this is called from synchronous contexts.
+    /// Runs in a dedicated thread with its own Tokio runtime to avoid
+    /// nested block_on panics when called from an async context.
     fn bring_up_loopback() -> Result<()> {
-        let fut = async {
-            let (connection, handle, _) = new_connection()?;
-            tokio::spawn(connection);
-
-            let mut links = handle.link().get().execute();
-            while let Some(link) = links.try_next().await? {
-                let mut is_loopback = false;
-                for nla in &link.nlas {
-                    if let Nla::IfName(name) = nla {
-                        if name == "lo" {
-                            is_loopback = true;
-                            break;
-                        }
-                    }
-                }
-
-                if is_loopback {
-                    handle.link().set(link.header.index).up().execute().await?;
-                    log::info!("Loopback interface (lo) brought up successfully");
-                    return Ok(());
-                }
-            }
-            Err(anyhow!("Loopback interface not found"))
-        };
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            // If already in a tokio runtime, we can't use block_on directly if we're
-            // in an async context. However, since this is called from synchronous
-            // NetworkNamespace::new, we might be on a blocking thread.
-            handle.block_on(fut)
-        } else {
-            // No runtime, create a temporary one
+        let handle = std::thread::spawn(|| {
             let rt = tokio::runtime::Runtime::new()
                 .map_err(|e| anyhow!("Failed to create tokio runtime: {}", e))?;
-            rt.block_on(fut)
-        }
+            rt.block_on(async {
+                let (connection, handle, _) = new_connection()?;
+                tokio::spawn(connection);
+
+                let mut links = handle.link().get().execute();
+                while let Some(link) = links.try_next().await? {
+                    let mut is_loopback = false;
+                    for nla in &link.nlas {
+                        if let Nla::IfName(name) = nla {
+                            if name == "lo" {
+                                is_loopback = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if is_loopback {
+                        handle.link().set(link.header.index).up().execute().await?;
+                        log::info!("Loopback interface (lo) brought up successfully");
+                        return Ok(());
+                    }
+                }
+                Err(anyhow!("Loopback interface not found"))
+            })
+        });
+
+        handle
+            .join()
+            .map_err(|_| anyhow!("Thread panicked when bringing up loopback interface"))?
     }
 }
 

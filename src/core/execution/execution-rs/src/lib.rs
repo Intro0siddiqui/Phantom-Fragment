@@ -240,34 +240,54 @@ impl AdaptiveEngine {
         // Note: seccomp/landlock/capabilities require pre-exec application, so we use
         // fork-exec for full security. Zygote is used for cgroup/BPF-LSM only.
 
-        // Try zygote for faster spawn, then apply post-spawn security
+        // Attempt Zygote pool execution with pre-exec security policy application
         if let Ok(mut guard) = self.zygote_pool.lock() {
-            if let Some(ref mut _pool) = *guard {
-                let mut parts = command.split_whitespace();
-                let exec_path = match parts.next() {
-                    Some(p) => p.to_string(),
-                    None => return Err(PhantomError::InvalidInput("Empty command".to_string())),
-                };
-                let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+            if let Some(ref mut pool) = *guard {
+                if pool.available() > 0 {
+                    let mut parts = command.split_whitespace();
+                    if let Some(p) = parts.next() {
+                        let exec_path = p.to_string();
+                        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
 
-                let mut zygote_cmd = ZygoteCommand::new(exec_path)
-                    .args(args)
-                    .cwd(
-                        std::env::current_dir()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| "/".to_string()),
-                    )
-                    .flags(0);
+                        let mut zygote_cmd = ZygoteCommand::new(exec_path)
+                            .args(args)
+                            .cwd(
+                                std::env::current_dir()
+                                    .map(|p| p.to_string_lossy().to_string())
+                                    .unwrap_or_else(|_| "/".to_string()),
+                            )
+                            .flags(0);
 
-                for (key, value) in std::env::vars() {
-                    zygote_cmd = zygote_cmd.env(&key, &value);
+                        for (key, value) in std::env::vars() {
+                            zygote_cmd = zygote_cmd.env(&key, &value);
+                        }
+
+                        // Apply security policies (seccomp + landlock + capabilities) BEFORE handoff
+                        if let Err(e) = self.apply_security_policies(mode) {
+                            log::warn!("Failed to pre-apply security policies for zygote execution: {:?}", e);
+                        }
+
+                        if let Some(policy) = security_policy {
+                            let mut manager = SecurityManager::new();
+                            let _ = manager.apply_container_security("zygote-fragment", policy, true);
+                        }
+
+                        log::info!("Executing command via Zygote pool FFI...");
+                        match pool.execute(zygote_cmd) {
+                            Ok(exit_status) => {
+                                let exit_code = if exit_status >= 0 { exit_status } else { 127 };
+                                log::info!("Zygote execution completed with exit code {}", exit_code);
+                                return Ok(exit_code);
+                            }
+                            Err(e) => {
+                                log::warn!("Zygote pool execution failed: {:?}, falling back to cold start", e);
+                                // Fall through to cold fork-exec below
+                            }
+                        }
+                    }
+                } else {
+                    log::debug!("Zygote pool empty/unavailable, falling back to cold start");
                 }
-
-                // Note: zygote blocks until completion, so we can't apply cgroups/BPF
-                // For sandboxed/hardened modes, fall back to fork-exec which allows
-                // security policy application
-                log::debug!("Zygote not used for sandboxed mode (requires security application)");
-                // Fall through to fork-exec below
             }
         }
 

@@ -175,7 +175,7 @@ impl PhantomService {
                     )
                 };
 
-                Ok(CallToolResult::success(vec![Content::text(response)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(response)]))
             }
             Err(e) => Err(rmcp::ErrorData {
                 code: ErrorCode(-32603),
@@ -205,7 +205,7 @@ impl PhantomService {
         match cmd.output() {
             Ok(result) => {
                 let stdout = String::from_utf8_lossy(&result.stdout);
-                Ok(CallToolResult::success(vec![Content::text(
+                Ok(CallToolResult::success(vec![ContentBlock::text(
                     stdout.to_string(),
                 )]))
             }
@@ -229,7 +229,7 @@ impl PhantomService {
         }
 
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -252,7 +252,7 @@ impl PhantomService {
         }
 
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -301,7 +301,7 @@ impl PhantomService {
             Ok(result) => {
                 let out = String::from_utf8_lossy(&result.stdout);
                 let err = String::from_utf8_lossy(&result.stderr);
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "{}\n{}",
                     out, err
                 ))]))
@@ -326,7 +326,7 @@ impl PhantomService {
         }
 
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -346,7 +346,7 @@ impl PhantomService {
             .args(["search", &params.query])
             .output();
         match output {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -364,7 +364,7 @@ impl PhantomService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let output = Command::new("phantom").args(["images"]).output();
         match output {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -390,7 +390,7 @@ impl PhantomService {
         }
 
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout).to_string(),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -408,7 +408,7 @@ impl PhantomService {
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let network = self.network.lock().await;
         match network.list_interfaces().await {
-            Ok(interfaces) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(interfaces) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 interfaces.join("\n"),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -425,7 +425,7 @@ impl PhantomService {
         Parameters(_params): Parameters<GetMetricsParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         match self.metrics.export() {
-            Ok(metrics) => Ok(CallToolResult::success(vec![Content::text(metrics)])),
+            Ok(metrics) => Ok(CallToolResult::success(vec![ContentBlock::text(metrics)])),
             Err(e) => Err(rmcp::ErrorData {
                 code: ErrorCode(-32603),
                 message: format!("{:?}", e).into(),
