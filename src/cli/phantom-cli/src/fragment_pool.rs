@@ -134,18 +134,61 @@ impl FragmentPool {
         Ok(())
     }
 
+    /// Purge a dead or unresponsive PID slot from the pool completely
+    pub fn purge_pid(&mut self, pid: u32) -> Result<()> {
+        if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == pid) {
+            self.meta.busy_pids.remove(pos);
+        }
+        if let Some(pos) = self.meta.available_pids.iter().position(|&p| p == pid) {
+            self.meta.available_pids.remove(pos);
+        }
+        // Force kill dead process if still lingering
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        self.save()?;
+        Ok(())
+    }
+
     pub fn acquire_pid(&mut self) -> Option<u32> {
-        // Try to acquire a live PID
+        let socket_path_file = self.pool_path.join("socket.path");
+        let socket_path = if socket_path_file.exists() {
+            fs::read_to_string(&socket_path_file)
+                .map(|s| PathBuf::from(s.trim()))
+                .ok()
+        } else {
+            None
+        };
+
+        // Try to acquire a live PID whose socket is healthy
         while let Some(pid) = self.meta.available_pids.pop() {
-            // Check if process is still alive
-            if is_process_alive(pid) {
+            let mut is_healthy = is_process_alive(pid);
+
+            if is_healthy {
+                if let Some(ref sock) = socket_path {
+                    if sock.exists() {
+                        if let Ok(responsive) = crate::daemon::ping_daemon(sock) {
+                            if !responsive {
+                                is_healthy = false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if is_healthy {
                 self.meta.busy_pids.push(pid);
                 self.update_last_used();
                 let _ = self.save();
                 return Some(pid);
             } else {
-                // Process is dead, log and continue to next
-                log::warn!("Daemon PID {} is dead, removing from pool", pid);
+                log::warn!("Daemon PID {} is dead/unresponsive, purging from pool", pid);
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid as i32),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
+                let _ = self.save();
             }
         }
         None

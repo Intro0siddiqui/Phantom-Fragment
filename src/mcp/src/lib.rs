@@ -159,7 +159,7 @@ impl PhantomService {
                 } else {
                     format!("✗ Failed: {}", stdout)
                 };
-                Ok(CallToolResult::success(vec![Content::text(response)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(response)]))
             }
             Err(e) => Err(rmcp::ErrorData {
                 code: ErrorCode(-32603),
@@ -183,7 +183,7 @@ impl PhantomService {
             &params.profile,
         ]);
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -205,7 +205,7 @@ impl PhantomService {
             cmd.arg("--all");
         }
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout),
             )])),
             Err(e) => Err(rmcp::ErrorData {
@@ -227,7 +227,7 @@ impl PhantomService {
             cmd.arg("--force");
         }
         match cmd.output() {
-            Ok(result) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 String::from_utf8_lossy(&result.stdout),
             )])),
             Err(e) => Err(rmcp::ErrorData {
