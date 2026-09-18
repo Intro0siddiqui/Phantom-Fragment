@@ -3,23 +3,42 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [main, master]
+    tags:
+      - 'v*'
   pull_request:
     branches: [main, master]
-  release:
-    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+  RUSTC_WRAPPER: sccache
 
 jobs:
   # Build job - compiles the project
   build:
     name: Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev pkg-config clang llvm mold
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: 0.14.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-action@stable
@@ -27,22 +46,19 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Setup rust-cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Build (release)
-        run: cargo build --release --workspace
+        run: cargo build --release --locked --workspace --exclude phantom-mcp
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
-          name: phantom-binary
+          name: phantom-linux
           path: target/release/phantom
           retention-days: 7
 
@@ -51,35 +67,61 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev pkg-config clang llvm mold
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: 0.14.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-action@stable
         with:
           toolchain: stable
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Setup rust-cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          tool: cargo-nextest
 
       - name: Run tests
-        run: cargo test --workspace --all-features
+        run: cargo nextest run --locked --workspace --exclude phantom-mcp
 
   # Lint job - checks code quality
   lint:
     name: Lint
     runs-on: ubuntu-latest
     needs: build
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libseccomp-dev pkg-config clang llvm mold
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2.0.5
+        with:
+          version: 0.14.1
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-action@stable
@@ -87,51 +129,39 @@ jobs:
           toolchain: stable
           components: rustfmt, clippy
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.10
+
+      - name: Setup rust-cache
+        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --workspace --exclude phantom-mcp -- -D warnings
 
   # Release job - publishes on tags
   release:
     name: Release
     runs-on: ubuntu-latest
     needs: [build, test, lint]
-    if: github.event_name == 'release'
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+      - name: Download build artifact
+        uses: actions/download-artifact@v6
         with:
-          toolchain: stable
+          name: phantom-linux
 
-      - name: Cache cargo registry
-        uses: actions/cache@v4
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Build release binary
-        run: cargo build --release --workspace
-
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v1
-        with:
-          files: target/release/phantom
+          files: phantom
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
