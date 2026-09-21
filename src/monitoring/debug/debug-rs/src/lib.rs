@@ -18,9 +18,9 @@ mod tests;
 pub use error::{DebugError, Result};
 pub use types::*;
 
-// Re-export DebugInspector for easy access
-pub use types::ActiveFragment;
-pub use types::DebugConfig;
-pub use types::DebugInspector;
-pub use types::ResourceUsage;
-pub use types::SystemInfo;
+// Re-export key structs for convenient access
+pub use types::{
+    ActiveFragment, DebugConfig, DebugInspector, FragmentAttacher, FragmentInspector,
+    FragmentProfiler, FragmentState, LogAnalyzer, ResourceMetrics, ResourceMonitor,
+    ResourceMonitorWithHistory, ResourceUsage, SystemInfo,
+};

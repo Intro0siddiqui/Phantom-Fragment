@@ -9,6 +9,12 @@ use tokio::time::{interval, timeout};
 use crate::error::{DebugError, Result};
 use crate::types::*;
 
+impl Default for FragmentProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FragmentProfiler {
     pub fn new() -> Self {
         Self {
@@ -317,6 +323,12 @@ pub struct CPUProfiler {
     profile: FragmentProfile,
 }
 
+impl Default for CPUProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CPUProfiler {
     pub fn new() -> Self {
         Self {
@@ -389,6 +401,12 @@ impl ProfilerBackend for CPUProfiler {
 pub struct MemoryProfiler {
     pid: Option<i32>,
     profile: FragmentProfile,
+}
+
+impl Default for MemoryProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl MemoryProfiler {
@@ -465,6 +483,12 @@ pub struct IOProfiler {
     profile: FragmentProfile,
     initial_read: u64,
     initial_write: u64,
+}
+
+impl Default for IOProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl IOProfiler {
@@ -557,6 +581,12 @@ pub struct CombinedProfiler {
     memory_profiler: MemoryProfiler,
     io_profiler: IOProfiler,
     profile: FragmentProfile,
+}
+
+impl Default for CombinedProfiler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CombinedProfiler {
