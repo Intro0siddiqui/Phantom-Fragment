@@ -12,6 +12,12 @@ use crate::error::{DebugError, Result};
 use crate::types::*;
 
 /// Log analyzer for log analysis and filtering
+impl Default for LogAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LogAnalyzer {
     /// Create a new log analyzer
     pub fn new() -> Self {

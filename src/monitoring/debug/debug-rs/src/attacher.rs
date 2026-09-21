@@ -8,6 +8,12 @@ use tokio::process::Command as TokioCommand;
 use crate::error::{DebugError, Result};
 use crate::types::{DebuggerBackend, FragmentAttacher};
 
+impl Default for FragmentAttacher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FragmentAttacher {
     pub fn new() -> Self {
         Self {
@@ -97,8 +103,7 @@ impl FragmentAttacher {
         let env_path = format!("/proc/{}/environ", pid);
         if let Ok(data) = tokio::fs::read_to_string(&env_path).await {
             for env_var in data.split('\0') {
-                if env_var.starts_with("PHANTOM_FRAGMENT_ID=") {
-                    let fragment_id_env = &env_var["PHANTOM_FRAGMENT_ID=".len()..];
+                if let Some(fragment_id_env) = env_var.strip_prefix("PHANTOM_FRAGMENT_ID=") {
                     if fragment_id_env == fragment_id {
                         return true;
                     }
@@ -118,7 +123,7 @@ impl FragmentAttacher {
                 "gdb" => Box::new(GDBBackend::new()),
                 "dlv" => Box::new(DelveBackend::new()),
                 _ => {
-                    return Err(DebugError::unsupported(&format!(
+                    return Err(DebugError::unsupported(format!(
                         "debugger type: {}",
                         debugger_type
                     )))
@@ -137,6 +142,12 @@ pub struct GDBBackend {
     pid: Option<i32>,
     port: Option<u16>,
     child: Option<tokio::process::Child>,
+}
+
+impl Default for GDBBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GDBBackend {
@@ -239,6 +250,12 @@ pub struct DelveBackend {
     pid: Option<i32>,
     port: Option<u16>,
     child: Option<tokio::process::Child>,
+}
+
+impl Default for DelveBackend {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DelveBackend {

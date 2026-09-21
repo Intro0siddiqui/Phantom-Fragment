@@ -8,6 +8,12 @@ use tokio::time::Duration;
 use crate::error::{DebugError, Result};
 use crate::types::*;
 
+impl Default for FragmentInspector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FragmentInspector {
     pub fn new() -> Self {
         Self
@@ -206,7 +212,7 @@ impl FragmentInspector {
             let clock_ticks = procfs::ticks_per_second();
             let total_time = (stat.utime + stat.stime) * 1000 / clock_ticks;
 
-            Ok((format!("{:?}", stat.state), stat.ppid, total_time as u64))
+            Ok((format!("{:?}", stat.state), stat.ppid, total_time))
         })
         .await
         .map_err(|e| DebugError::SystemCall(format!("spawn_blocking error: {}", e)))??;
@@ -228,21 +234,19 @@ impl FragmentInspector {
 
             let mut threads = Vec::new();
             if let Ok(tasks) = proc.tasks() {
-                for task_result in tasks {
-                    if let Ok(task) = task_result {
-                        if let Ok(task_stat) = task.stat() {
-                            // Try to collect stack trace from /proc/[pid]/task/[tid]/stack
-                            let stack =
-                                Self::collect_thread_stack(task_stat.pid).unwrap_or_default();
+                for task in tasks.flatten() {
+                    if let Ok(task_stat) = task.stat() {
+                        // Try to collect stack trace from /proc/[pid]/task/[tid]/stack
+                        let stack =
+                            Self::collect_thread_stack(task_stat.pid).unwrap_or_default();
 
-                            let thread = ThreadInfo {
-                                id: task_stat.pid,
-                                state: format!("{:?}", task_stat.state),
-                                cpu_usage: (task_stat.utime + task_stat.stime) as f64 / 100.0,
-                                stack,
-                            };
-                            threads.push(thread);
-                        }
+                        let thread = ThreadInfo {
+                            id: task_stat.pid,
+                            state: format!("{:?}", task_stat.state),
+                            cpu_usage: (task_stat.utime + task_stat.stime) as f64 / 100.0,
+                            stack,
+                        };
+                        threads.push(thread);
                     }
                 }
             }
@@ -279,8 +283,8 @@ impl FragmentInspector {
 
             let page_size = procfs::page_size();
 
-            let rss = (statm.resident * page_size) as u64;
-            let vms = (statm.size * page_size) as u64;
+            let rss = statm.resident * page_size;
+            let vms = statm.size * page_size;
             let mut peak_rss = 0u64;
             let mut swap = 0u64;
 
@@ -314,45 +318,43 @@ impl FragmentInspector {
 
             let mut files = Vec::new();
             if let Ok(fds) = proc.fd() {
-                for fd_info in fds {
-                    if let Ok(fd) = fd_info {
-                        let path = match fd.target {
-                            procfs::process::FDTarget::Path(p) => p.to_string_lossy().into_owned(),
-                            procfs::process::FDTarget::Socket(s) => format!("socket:[{}]", s),
-                            procfs::process::FDTarget::Net(n) => format!("net:[{}]", n),
-                            procfs::process::FDTarget::Pipe(p) => format!("pipe:[{}]", p),
-                            procfs::process::FDTarget::AnonInode(a) => {
-                                format!("anon_inode:[{}]", a)
-                            }
-                            procfs::process::FDTarget::MemFD(m) => format!("memfd:[{}]", m),
-                            procfs::process::FDTarget::Other(o, _) => o,
-                        };
+                for fd in fds.flatten() {
+                    let path = match fd.target {
+                        procfs::process::FDTarget::Path(p) => p.to_string_lossy().into_owned(),
+                        procfs::process::FDTarget::Socket(s) => format!("socket:[{}]", s),
+                        procfs::process::FDTarget::Net(n) => format!("net:[{}]", n),
+                        procfs::process::FDTarget::Pipe(p) => format!("pipe:[{}]", p),
+                        procfs::process::FDTarget::AnonInode(a) => {
+                            format!("anon_inode:[{}]", a)
+                        }
+                        procfs::process::FDTarget::MemFD(m) => format!("memfd:[{}]", m),
+                        procfs::process::FDTarget::Other(o, _) => o,
+                    };
 
-                        let file_type = if path.starts_with("socket:") {
-                            "socket".to_string()
-                        } else if path.starts_with("pipe:") {
-                            "pipe".to_string()
-                        } else if path.starts_with("anon_inode:") {
-                            "anonymous_inode".to_string()
-                        } else if path.is_empty() {
-                            "deleted".to_string()
-                        } else {
-                            "file".to_string()
-                        };
+                    let file_type = if path.starts_with("socket:") {
+                        "socket".to_string()
+                    } else if path.starts_with("pipe:") {
+                        "pipe".to_string()
+                    } else if path.starts_with("anon_inode:") {
+                        "anonymous_inode".to_string()
+                    } else if path.is_empty() {
+                        "deleted".to_string()
+                    } else {
+                        "file".to_string()
+                    };
 
-                        // Get file position and flags from /proc/[pid]/fdinfo/[fd]
-                        let (position, flags) =
-                            Self::get_fd_info(pid, fd.fd).unwrap_or((0, "unknown".to_string()));
+                    // Get file position and flags from /proc/[pid]/fdinfo/[fd]
+                    let (position, flags) =
+                        Self::get_fd_info(pid, fd.fd).unwrap_or((0, "unknown".to_string()));
 
-                        let file_info = FileInfo {
-                            fd: fd.fd,
-                            path: path.clone(),
-                            file_type,
-                            position,
-                            flags,
-                        };
-                        files.push(file_info);
-                    }
+                    let file_info = FileInfo {
+                        fd: fd.fd,
+                        path: path.clone(),
+                        file_type,
+                        position,
+                        flags,
+                    };
+                    files.push(file_info);
                 }
             }
 

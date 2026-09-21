@@ -8,6 +8,12 @@ use tokio::time::interval;
 use crate::error::{DebugError, Result};
 use crate::types::*;
 
+impl Default for ResourceMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceMonitor {
     pub fn new() -> Self {
         Self
