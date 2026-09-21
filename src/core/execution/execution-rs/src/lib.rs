@@ -9,18 +9,13 @@ use types_rs::PhantomError;
 use bpf_lsm_rs::BpfError;
 
 /// Security mode for handling security feature failures
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SecurityMode {
     /// Fail if security features are unavailable (strict security)
     Strict,
     /// Log warning and continue (permissive, backward compatible)
+    #[default]
     Permissive,
-}
-
-impl Default for SecurityMode {
-    fn default() -> Self {
-        SecurityMode::Permissive
-    }
 }
 
 /// Execution modes with varying security/performance trade-offs
@@ -264,19 +259,26 @@ impl AdaptiveEngine {
 
                         // Apply security policies (seccomp + landlock + capabilities) BEFORE handoff
                         if let Err(e) = self.apply_security_policies(mode) {
-                            log::warn!("Failed to pre-apply security policies for zygote execution: {:?}", e);
+                            log::warn!(
+                                "Failed to pre-apply security policies for zygote execution: {:?}",
+                                e
+                            );
                         }
 
                         if let Some(policy) = security_policy {
                             let mut manager = SecurityManager::new();
-                            let _ = manager.apply_container_security("zygote-fragment", policy, true);
+                            let _ =
+                                manager.apply_container_security("zygote-fragment", policy, true);
                         }
 
                         log::info!("Executing command via Zygote pool FFI...");
                         match pool.execute(zygote_cmd) {
                             Ok(exit_status) => {
                                 let exit_code = if exit_status >= 0 { exit_status } else { 127 };
-                                log::info!("Zygote execution completed with exit code {}", exit_code);
+                                log::info!(
+                                    "Zygote execution completed with exit code {}",
+                                    exit_code
+                                );
                                 return Ok(exit_code);
                             }
                             Err(e) => {

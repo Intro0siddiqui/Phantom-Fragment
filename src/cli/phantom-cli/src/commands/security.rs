@@ -71,11 +71,9 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
                 issues.push("File I/O enabled".to_string());
                 score -= 5;
             }
-            if comprehensive {
-                if fragment.mode != "Hardened" {
-                    issues.push("Consider hardened mode for sensitive workloads".to_string());
-                    score -= 10;
-                }
+            if comprehensive && fragment.mode != "Hardened" {
+                issues.push("Consider hardened mode for sensitive workloads".to_string());
+                score -= 10;
             }
 
             println!(
@@ -196,7 +194,7 @@ pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<
             let db = scanner.database();
 
             println!("  {:<20} {}", "Total vulnerabilities:".yellow(), db.count());
-            println!("  {:<20} {}", "Last updated:".yellow(), "Built-in database");
+            println!("  {:<20} Built-in database", "Last updated:".yellow());
             println!();
 
             let mut vulns: Vec<_> = db.all_vulnerabilities();

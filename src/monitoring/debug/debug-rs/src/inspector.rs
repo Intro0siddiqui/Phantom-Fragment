@@ -237,8 +237,7 @@ impl FragmentInspector {
                 for task in tasks.flatten() {
                     if let Ok(task_stat) = task.stat() {
                         // Try to collect stack trace from /proc/[pid]/task/[tid]/stack
-                        let stack =
-                            Self::collect_thread_stack(task_stat.pid).unwrap_or_default();
+                        let stack = Self::collect_thread_stack(task_stat.pid).unwrap_or_default();
 
                         let thread = ThreadInfo {
                             id: task_stat.pid,

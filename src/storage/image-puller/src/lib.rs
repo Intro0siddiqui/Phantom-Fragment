@@ -156,7 +156,7 @@ impl ImagePuller {
             // Store layer via image-store-rs API (content-addressable, deduplicated)
             let stored_digest = {
                 let mut store = self.store.borrow_mut();
-                let was_new = !store.get_layer(&layer.digest).is_ok();
+                let was_new = store.get_layer(&layer.digest).is_err();
 
                 // Store layer with reference counting
                 let digest = store.store_layer(&layer_data, image_ref)?;

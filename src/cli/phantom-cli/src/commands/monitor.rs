@@ -29,7 +29,7 @@ pub fn exec(ctx: CommandContext<'_>, args: MonitorArgs) -> anyhow::Result<()> {
 
     print_header(&format!("Monitoring fragment: {}", args.name));
 
-    if args.metrics || (!args.metrics && !args.logs) {
+    if args.metrics || !args.logs {
         println!("{}:", "Metrics".yellow());
         println!(
             "  {:<20} {}",

@@ -22,12 +22,21 @@ pub enum ScanDepth {
 
 impl ScanDepth {
     /// Parse from string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "quick" => ScanDepth::Quick,
             "deep" => ScanDepth::Deep,
             _ => ScanDepth::Standard,
         }
+    }
+}
+
+impl std::str::FromStr for ScanDepth {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::from_str(s))
     }
 }
 
