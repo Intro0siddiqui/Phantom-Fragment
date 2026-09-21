@@ -18,12 +18,21 @@ pub enum ReportFormat {
 
 impl ReportFormat {
     /// Parse from string
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "json" => ReportFormat::Json,
             "markdown" | "md" => ReportFormat::Markdown,
             _ => ReportFormat::Text,
         }
+    }
+}
+
+impl std::str::FromStr for ReportFormat {
+    type Err = std::convert::Infallible;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Ok(Self::from_str(s))
     }
 }
 
@@ -57,16 +66,12 @@ impl ScanReport {
         let mut output = String::new();
 
         // Header
-        output.push_str(&format!(
-            "╔══════════════════════════════════════════════════════════════╗\n"
-        ));
+        output.push_str("╔══════════════════════════════════════════════════════════════╗\n");
         output.push_str(&format!(
             "║  Security Scan Report: {:<46} ║\n",
             truncate(&self.result.image_ref, 46)
         ));
-        output.push_str(&format!(
-            "╚══════════════════════════════════════════════════════════════╝\n\n"
-        ));
+        output.push_str("╚══════════════════════════════════════════════════════════════╝\n\n");
 
         // Summary
         output.push_str(&format!(
@@ -78,16 +83,15 @@ impl ScanReport {
             "Duration:", self.result.scan_duration_ms
         ));
         output.push_str(&format!(
-            "  {:<20} {}\n",
-            "Risk Score:",
-            format!("{:.1}/100", self.result.risk_score)
+            "  {:<20} {:.1}/100\n",
+            "Risk Score:", self.result.risk_score
         ));
         output.push_str(&format!(
             "  {:<20} {}\n",
             "Risk Level:",
             format_risk_level(&self.result.risk_level)
         ));
-        output.push_str("\n");
+        output.push('\n');
 
         // Package summary
         output.push_str(&format!(
@@ -102,7 +106,7 @@ impl ScanReport {
             "  {:<20} {}\n",
             "Updates Available:", self.result.package_summary.outdated_packages
         ));
-        output.push_str("\n");
+        output.push('\n');
 
         // Vulnerabilities
         if !self.result.vulnerabilities.is_empty() {
@@ -135,14 +139,14 @@ impl ScanReport {
                     output.push_str(&format!(
                         "        Fix: Upgrade to {}\n",
                         vuln.fixed_version
-                            .as_ref()
-                            .unwrap_or(&"unknown".to_string())
+                            .as_deref()
+                            .unwrap_or("unknown")
                     ));
                 }
-                output.push_str("\n");
+                output.push('\n');
             }
         } else {
-            output.push_str(&format!("  {} No vulnerabilities found\n\n", "✓"));
+            output.push_str("  ✓ No vulnerabilities found\n\n");
         }
 
         // Configuration issues
@@ -169,7 +173,7 @@ impl ScanReport {
                 if let Some(path) = &issue.path {
                     output.push_str(&format!("        Path: {}\n", path));
                 }
-                output.push_str("\n");
+                output.push('\n');
             }
         }
 
@@ -204,8 +208,8 @@ impl ScanReport {
         ));
 
         output.push_str("## Summary\n\n");
-        output.push_str(&format!("| Metric | Value |\n"));
-        output.push_str(&format!("|--------|-------|\n"));
+        output.push_str("| Metric | Value |\n");
+        output.push_str("|--------|-------|\n");
         output.push_str(&format!("| Scan Depth | {} |\n", self.result.scan_depth));
         output.push_str(&format!(
             "| Duration | {} ms |\n",
@@ -224,7 +228,7 @@ impl ScanReport {
             "| Vulnerable Packages | {} |\n",
             self.result.package_summary.vulnerable_packages
         ));
-        output.push_str("\n");
+        output.push('\n');
 
         if !self.result.vulnerabilities.is_empty() {
             output.push_str("## Vulnerabilities\n\n");
@@ -251,11 +255,11 @@ impl ScanReport {
                     output.push_str(&format!(
                         "- **Fix**: Upgrade to {}\n",
                         vuln.fixed_version
-                            .as_ref()
-                            .unwrap_or(&"unknown".to_string())
+                            .as_deref()
+                            .unwrap_or("unknown")
                     ));
                 }
-                output.push_str("\n");
+                output.push('\n');
             }
         } else {
             output.push_str("## Vulnerabilities\n\n");
@@ -273,7 +277,7 @@ impl ScanReport {
                 if let Some(path) = &issue.path {
                     output.push_str(&format!("- **Path**: `{}`\n", path));
                 }
-                output.push_str("\n");
+                output.push('\n');
             }
         }
 
@@ -287,7 +291,7 @@ impl ScanReport {
     }
 }
 
-/// Helper functions for formatting
+// Helper functions for formatting
 
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {

@@ -148,7 +148,7 @@ impl SupervisorStatsWrapper {
         F: FnOnce(&mut SupervisorStats),
     {
         let mut stats = self.inner.write().unwrap();
-        f(&mut *stats);
+        f(&mut stats);
     }
 
     fn get(&self) -> SupervisorStats {
@@ -310,10 +310,10 @@ impl DaemonSupervisor {
         // Wait briefly for daemon to start
         for _ in 0..50 {
             thread::sleep(Duration::from_millis(20));
-            if socket_path.exists() {
-                if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-                    break;
-                }
+            if socket_path.exists()
+                && std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+            {
+                break;
             }
         }
 

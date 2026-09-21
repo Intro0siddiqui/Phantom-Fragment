@@ -213,7 +213,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                     image
                 );
             }
-            return Ok(());
+            Ok(())
         }
         WarmCommands::List => {
             print_header("Fragment Pools (beta/experimental)");
@@ -239,7 +239,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                     println!();
                 }
             }
-            return Ok(());
+            Ok(())
         }
         WarmCommands::Remove { image } => {
             print_header("Remove Fragment Pool (beta/experimental)");
@@ -247,7 +247,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("\n{} Removing fragment pool for: {}", "→".yellow(), image);
             FragmentPool::remove(&image)?;
             println!("{} Fragment pool removed.", "✓".green().bold());
-            return Ok(());
+            Ok(())
         }
         WarmCommands::RemoveAll => {
             print_header("Remove All Fragment Pools (beta/experimental)");
@@ -255,11 +255,10 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("\n{} Removing all fragment pools...", "→".yellow());
             FragmentPool::remove_all()?;
             println!("{} All fragment pools removed.", "✓".green().bold());
-            return Ok(());
+            Ok(())
         }
         WarmCommands::Benchmark { iterations, size } => {
-            run_benchmark(iterations, size).await?;
-            return Ok(());
+            run_benchmark(iterations, size).await
         }
         WarmCommands::Supervise { image } => {
             print_header("Start Daemon Supervision (beta/experimental)");
@@ -426,7 +425,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                 }
             }
 
-            return Ok(());
+            Ok(())
         }
     }
 }

@@ -56,8 +56,8 @@ pub async fn exec(_ctx: CommandContext<'_>, args: SearchArgs) -> Result<()> {
     }
 
     println!(
-        "\n{0: <30} {1: <10} {2: <10} {3}",
-        "NAME", "STARS", "OFFICIAL", "DESCRIPTION"
+            "\n{:<30} {:<10} {:<10} DESCRIPTION",
+            "NAME", "STARS", "OFFICIAL"
     );
     println!("{}", "─".repeat(80).dimmed());
 
@@ -77,7 +77,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: SearchArgs) -> Result<()> {
             desc.dimmed()
         );
     }
-    println!("");
+    println!();
 
     Ok(())
 }
