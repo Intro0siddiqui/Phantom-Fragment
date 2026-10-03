@@ -152,6 +152,8 @@ pub struct RunArgs {
     pub config: Option<String>,
 }
 
+/// Run an image or command using the requested profile and execution options.
+/// Checks privileges and prepares the image and security policy before execution.
 pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> {
     // ============ UNIFIED PRIVILEGE CHECK ============
     // Check security feature requirements BEFORE attempting to use them.
@@ -375,7 +377,8 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
             // Apply pre-exec security policies (seccomp + landlock) before process handoff
             if let Some(ref policy) = security_policy {
                 let mut manager = security_rs::SecurityManager::new();
-                let _ = manager.apply_container_security("zygote-fragment", policy, graceful_security);
+                let _ =
+                    manager.apply_container_security("zygote-fragment", policy, graceful_security);
             }
 
             // Try zygote pool execution

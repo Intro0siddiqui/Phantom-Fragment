@@ -558,7 +558,7 @@ fn save_registry_config(
     };
 
     // Ensure auths object exists
-    if !config.get("auths").is_some() {
+    if config.get("auths").is_none() {
         config["auths"] = serde_json::json!({});
     }
 
@@ -622,7 +622,7 @@ fn save_registry_credentials(name: &str, username: &str, password: &str) -> Resu
                     let mut key_bytes = [0u8; 32];
                     AeadOsRng.fill_bytes(&mut key_bytes);
                     use base64::{engine::general_purpose::STANDARD, Engine as _};
-                    let new_key = STANDARD.encode(&key_bytes);
+                    let new_key = STANDARD.encode(key_bytes);
                     // Store in keyring (best effort)
                     let _ = entry.set_password(&new_key);
                     new_key
@@ -672,7 +672,7 @@ fn save_registry_credentials(name: &str, username: &str, password: &str) -> Resu
     };
 
     // Ensure credentials object exists
-    if !config.get("credentials").is_some() {
+    if config.get("credentials").is_none() {
         config["credentials"] = serde_json::json!({});
     }
 

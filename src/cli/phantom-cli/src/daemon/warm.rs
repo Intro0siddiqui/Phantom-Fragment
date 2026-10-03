@@ -1125,7 +1125,7 @@ impl WarmDaemon {
         payload.extend_from_slice(&response.total_requests.to_le_bytes());
         payload.extend_from_slice(&response.failed_requests.to_le_bytes());
         payload.extend_from_slice(&response.successful_requests.to_le_bytes());
-        payload.extend_from_slice(&(response.avg_response_time_ms.to_bits() as u64).to_le_bytes());
+        payload.extend_from_slice(&response.avg_response_time_ms.to_bits().to_le_bytes());
         payload.extend_from_slice(&(response.active_children as u32).to_le_bytes());
         payload.push(if response.cgroup_active { 1 } else { 0 });
 
@@ -1583,10 +1583,7 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
 
         // Send request
         let msg = Message::new(MessageType::Exec, payload);
-        let data = match msg.serialize() {
-            Ok(d) => d,
-            Err(e) => return Err(e),
-        };
+        let data = msg.serialize()?;
 
         if let Err(e) = stream.write_all(&data) {
             last_err = Some(anyhow::anyhow!("Failed to send request to daemon: {}", e));
@@ -1644,9 +1641,8 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
         });
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")))
 }
 
 /// Connect to running daemon and get metrics

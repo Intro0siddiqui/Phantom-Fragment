@@ -79,10 +79,12 @@ pub fn strip_timestamp(line: &str) -> String {
     line.to_string()
 }
 
+/// Return the last `n` lines read before EOF or the first line-reading error.
+/// Returns an error if the file cannot be opened.
 pub fn tail_file(path: PathBuf, n: usize) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
     let start = if all_lines.len() > n {
         all_lines.len() - n
@@ -93,10 +95,12 @@ pub fn tail_file(path: PathBuf, n: usize) -> anyhow::Result<Vec<String>> {
     Ok(all_lines[start..].to_vec())
 }
 
+/// Read lines until EOF or the first line-reading error, returning the collected lines.
+/// Returns an error if the file cannot be opened.
 pub fn read_file_lines(path: PathBuf) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    Ok(reader.lines().filter_map(|l| l.ok()).collect())
+    Ok(reader.lines().map_while(Result::ok).collect())
 }
 
 pub fn get_log_path(name: &str) -> PathBuf {
