@@ -152,6 +152,8 @@ pub struct RunArgs {
     pub config: Option<String>,
 }
 
+/// Run an image or command using the requested profile and execution options.
+/// Checks privileges and prepares the image and security policy before execution.
 pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> {
     // ============ UNIFIED PRIVILEGE CHECK ============
     // Check security feature requirements BEFORE attempting to use them.

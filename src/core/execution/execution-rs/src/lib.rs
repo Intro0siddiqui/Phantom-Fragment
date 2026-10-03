@@ -223,6 +223,8 @@ impl AdaptiveEngine {
         }
     }
 
+    /// Attempt zygote execution, falling back to fork/exec with security policies.
+    /// Returns an exit code for zygote execution or the child PID for fork/exec.
     fn spawn_sandboxed(
         &self,
         command: &str,

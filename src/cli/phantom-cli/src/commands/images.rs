@@ -14,6 +14,7 @@ pub struct ImagesArgs {
 
 use crate::commands::CommandContext;
 
+/// Display available images, recommended base images, or layer sharing statistics.
 pub fn exec(_ctx: CommandContext, args: ImagesArgs) -> Result<()> {
     use image_puller::ImagePuller;
 

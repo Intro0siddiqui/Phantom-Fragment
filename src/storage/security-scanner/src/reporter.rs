@@ -31,6 +31,7 @@ impl ReportFormat {
 impl std::str::FromStr for ReportFormat {
     type Err = std::convert::Infallible;
 
+    /// Parse a case-insensitive format name, defaulting to text for unknown names.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(Self::from_str(s))
     }
@@ -293,6 +294,11 @@ impl ScanReport {
 
 // Helper functions for formatting
 
+/// Shorten a string to at most `max_len` bytes, adding `...` when truncated.
+///
+/// # Panics
+/// When truncation is needed, panics if `max_len` is less than three or the
+/// truncation point is not a UTF-8 character boundary.
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() > max_len {
         format!("{}...", &s[..max_len - 3])

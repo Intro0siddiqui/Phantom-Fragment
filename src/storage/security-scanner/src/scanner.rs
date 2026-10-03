@@ -35,6 +35,7 @@ impl ScanDepth {
 impl std::str::FromStr for ScanDepth {
     type Err = std::convert::Infallible;
 
+    /// Parse a case-insensitive depth name, defaulting to standard for unknown names.
     fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         Ok(Self::from_str(s))
     }

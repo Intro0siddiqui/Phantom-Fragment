@@ -102,6 +102,7 @@ fn kill_existing_daemons(pid_file_dir: &std::path::Path) -> Result<usize> {
     Ok(killed_count)
 }
 
+/// Manage experimental warm fragment pools, daemon supervision, and pool benchmarks.
 pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
     // Warn that warm fragments are beta/experimental
     println!("{} Warm fragments are a beta/experimental feature with limitations (daemon stability, IPC issues)", "⚠".yellow().bold());

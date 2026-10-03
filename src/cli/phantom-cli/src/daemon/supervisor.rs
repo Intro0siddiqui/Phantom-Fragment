@@ -143,6 +143,10 @@ impl SupervisorStatsWrapper {
         }
     }
 
+    /// Apply a callback to the supervisor statistics while holding the write lock.
+    ///
+    /// # Panics
+    /// Panics if the statistics lock is poisoned.
     fn update<F>(&self, f: F)
     where
         F: FnOnce(&mut SupervisorStats),

@@ -22,6 +22,8 @@ struct SearchResponse {
 
 use crate::commands::CommandContext;
 
+/// Search Docker Hub and display up to ten matching repositories.
+/// Returns an error if the request fails or the response cannot be parsed.
 pub async fn exec(_ctx: CommandContext<'_>, args: SearchArgs) -> Result<()> {
     println!(
         "{} {}",

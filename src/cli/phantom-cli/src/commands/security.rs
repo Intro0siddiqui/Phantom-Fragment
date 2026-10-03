@@ -46,6 +46,7 @@ pub enum SecurityCommands {
 
 use crate::commands::CommandContext;
 
+/// Dispatch security audits, vulnerability scans, and vulnerability database commands.
 pub async fn exec(ctx: CommandContext<'_>, command: SecurityCommands) -> Result<()> {
     let CommandContext { registry, .. } = ctx;
 

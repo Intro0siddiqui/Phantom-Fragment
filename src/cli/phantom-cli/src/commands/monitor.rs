@@ -18,6 +18,8 @@ pub struct MonitorArgs {
     pub follow: bool,
 }
 
+/// Display a registered fragment's metrics and optionally its ten most recent log lines.
+/// Metrics are shown by default, or alongside logs when explicitly requested.
 pub fn exec(ctx: CommandContext<'_>, args: MonitorArgs) -> anyhow::Result<()> {
     let CommandContext {
         registry, paths, ..
