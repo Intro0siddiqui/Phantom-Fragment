@@ -1644,9 +1644,8 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
         });
     }
 
-    Err(last_err.unwrap_or_else(|| {
-        anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")
-    }))
+    Err(last_err
+        .unwrap_or_else(|| anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")))
 }
 
 /// Connect to running daemon and get metrics
