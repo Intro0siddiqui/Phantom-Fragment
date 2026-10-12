@@ -365,10 +365,58 @@ impl BuildExecutor {
         Ok(())
     }
 
+    /// Helper method to construct bwrap command arguments safely
+    pub fn build_bwrap_args(&self, command: &[String]) -> Result<Vec<String>> {
+        if command.is_empty() {
+            anyhow::bail!("RUN command cannot be empty");
+        }
+
+        let substituted_command: Vec<String> =
+            command.iter().map(|c| self.substitute_vars(c)).collect();
+
+        let mut bwrap_args = vec![
+            "--bind".to_string(),
+            self.context.build_rootfs.to_str().unwrap().to_string(),
+            "/".to_string(),
+            // Essential mounts
+            "--dev".to_string(),
+            "/dev".to_string(),
+            "--proc".to_string(),
+            "/proc".to_string(),
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--chdir".to_string(),
+            self.context.workdir.to_str().unwrap().to_string(),
+            // Explicitly unshare everything EXCEPT network
+            "--unshare-user".to_string(),
+            "--unshare-ipc".to_string(),
+            "--unshare-pid".to_string(),
+            "--unshare-uts".to_string(),
+            // Share network
+            "--share-net".to_string(),
+            // Bind DNS (Host -> Container)
+            "--ro-bind".to_string(),
+            "/etc/resolv.conf".to_string(),
+            "/etc/resolv.conf".to_string(),
+            "--die-with-parent".to_string(),
+        ];
+
+        if substituted_command.len() == 1 {
+            // Shell form: RUN <command>
+            bwrap_args.push("/bin/sh".to_string());
+            bwrap_args.push("-c".to_string());
+            bwrap_args.push(substituted_command[0].clone());
+        } else {
+            // Exec form: RUN ["executable", "param1", "param2"]
+            bwrap_args.extend(substituted_command);
+        }
+
+        Ok(bwrap_args)
+    }
+
     /// Execute RUN instruction
     async fn execute_run(&mut self, command: &[String], mounts: &[String]) -> Result<()> {
-        let cmd_str = command.join(" ");
-        log::info!("    RUN {}", cmd_str);
+        log::info!("    RUN {}", command.join(" "));
 
         // Handle secret mounts
         for mount in mounts {
@@ -397,36 +445,7 @@ impl BuildExecutor {
             }
         }
 
-        // Execute command in build rootfs using bubblewrap
-        let bwrap_args = vec![
-            "--bind",
-            self.context.build_rootfs.to_str().unwrap(),
-            "/",
-            // Essential mounts
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "--tmpfs",
-            "/tmp",
-            "--chdir",
-            self.context.workdir.to_str().unwrap(),
-            // Explicitly unshare everything EXCEPT network
-            "--unshare-user",
-            "--unshare-ipc",
-            "--unshare-pid",
-            "--unshare-uts",
-            // Share network
-            "--share-net",
-            // Bind DNS (Host -> Container)
-            "--ro-bind",
-            "/etc/resolv.conf",
-            "/etc/resolv.conf",
-            "--die-with-parent",
-            "/bin/sh",
-            "-c",
-            &cmd_str,
-        ];
+        let bwrap_args = self.build_bwrap_args(command)?;
 
         log::debug!("      Executing with bwrap: {:?}", bwrap_args);
 
@@ -934,5 +953,47 @@ mod tests {
         // Simulate setting workdir
         executor.context.workdir = PathBuf::from("/app");
         assert_eq!(executor.context.workdir, PathBuf::from("/app"));
+    }
+
+    #[test]
+    fn test_execute_run_exec_vs_shell_form() {
+        let ctx = BuildContext::new(".");
+        let mut executor = BuildExecutor::new(ctx);
+        executor
+            .context
+            .environment
+            .insert("MY_VAR".to_string(), "world".to_string());
+
+        // Single element command -> shell form (/bin/sh -c)
+        let shell_cmd = vec!["echo $MY_VAR".to_string()];
+        let shell_args = executor.build_bwrap_args(&shell_cmd).unwrap();
+
+        assert_eq!(shell_args.last().unwrap(), "echo world");
+        assert_eq!(shell_args[shell_args.len() - 3], "/bin/sh");
+        assert_eq!(shell_args[shell_args.len() - 2], "-c");
+
+        // Multi element command -> exec form (direct execution)
+        let exec_cmd = vec!["echo".to_string(), "$MY_VAR; touch /tmp/pwned".to_string()];
+        let exec_args = executor.build_bwrap_args(&exec_cmd).unwrap();
+
+        // Should NOT contain /bin/sh or -c at the command position
+        assert_ne!(exec_args[exec_args.len() - 2], "/bin/sh");
+        assert_eq!(exec_args[exec_args.len() - 2], "echo");
+        // Argument passed directly without shell interpretation
+        assert_eq!(exec_args.last().unwrap(), "world; touch /tmp/pwned");
+    }
+
+    #[test]
+    fn test_execute_run_empty_command_validation() {
+        let ctx = BuildContext::new(".");
+        let executor = BuildExecutor::new(ctx);
+
+        let empty_cmd: Vec<String> = vec![];
+        let result = executor.build_bwrap_args(&empty_cmd);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "RUN command cannot be empty"
+        );
     }
 }
