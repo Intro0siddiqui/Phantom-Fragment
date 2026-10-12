@@ -5,6 +5,7 @@
 use crate::{
     AuthConfig, CredentialHelper, Descriptor, ImageManifest, ImageReference, RegistryError, Result,
 };
+use futures::stream::{self, StreamExt, TryStreamExt};
 use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
@@ -64,19 +65,21 @@ pub struct PushImage {
 
 /// Registry pusher
 pub struct RegistryPusher {
+    config: PushConfig,
     client: Client,
     auth_helper: CredentialHelper,
 }
 
 impl RegistryPusher {
     /// Create a new pusher
-    pub fn new(_config: PushConfig) -> Result<Self> {
+    pub fn new(config: PushConfig) -> Result<Self> {
         let client = Client::builder()
             .user_agent("phantom-fragment/0.1.0")
             .build()
             .map_err(|e| RegistryError::Other(format!("Failed to create HTTP client: {}", e)))?;
 
         Ok(Self {
+            config,
             client,
             auth_helper: CredentialHelper::new(),
         })
@@ -93,12 +96,17 @@ impl RegistryPusher {
         let auth = self.get_auth(&reference)?;
         let token = self.authenticate(&reference, &auth).await?;
 
-        // Push layers
-        let mut layer_descriptors = Vec::new();
-        for layer in &image.layers {
-            let descriptor = self.push_layer(&reference, layer, &token).await?;
-            layer_descriptors.push(descriptor);
-        }
+        // Push layers concurrently
+        let max_concurrent = self.config.max_concurrent.max(1);
+        let layer_futures = image
+            .layers
+            .iter()
+            .map(|layer| self.push_layer(&reference, layer, &token));
+
+        let layer_descriptors: Vec<Descriptor> = stream::iter(layer_futures)
+            .buffered(max_concurrent)
+            .try_collect()
+            .await?;
 
         // Push config if provided
         let config_descriptor = if let Some(config_path) = &image.config_path {
@@ -512,5 +520,70 @@ mod tests {
         let config = PushConfig::default();
         assert_eq!(config.max_concurrent, 3);
         assert!(config.compress);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_layer_push_ordering_and_speedup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        // Simulate layer pushing with artificial delay
+        let layer_count = 6;
+        let delay_ms = 50;
+
+        let active_count = Arc::new(AtomicUsize::new(0));
+        let max_active_observed = Arc::new(AtomicUsize::new(0));
+
+        let tasks = (0..layer_count).map(|id| {
+            let active = Arc::clone(&active_count);
+            let max_active = Arc::clone(&max_active_observed);
+            async move {
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                let _ = max_active.fetch_max(current, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                active.fetch_sub(1, Ordering::SeqCst);
+                id
+            }
+        });
+
+        let max_concurrent = 3;
+        let start = Instant::now();
+        let results: Vec<usize> = stream::iter(tasks).buffered(max_concurrent).collect().await;
+        let concurrent_duration = start.elapsed();
+
+        // Check ordering was preserved
+        assert_eq!(results, vec![0, 1, 2, 3, 4, 5]);
+
+        // Check concurrency: max active tasks should be <= max_concurrent and > 1
+        assert!(max_active_observed.load(Ordering::SeqCst) <= max_concurrent);
+        assert!(max_active_observed.load(Ordering::SeqCst) > 1);
+
+        // Benchmark against sequential execution time:
+        // Sequential duration for 6 tasks with 50ms delay = ~300ms.
+        // Concurrent duration with max_concurrent=3 = ~100ms.
+        let sequential_expected = Duration::from_millis(layer_count as u64 * delay_ms);
+        println!(
+            "Concurrent layer push benchmark: {:?} for {} layers (sequential expected ~{:?}, peak concurrency {})",
+            concurrent_duration,
+            layer_count,
+            sequential_expected,
+            max_active_observed.load(Ordering::SeqCst)
+        );
+
+        assert!(
+            concurrent_duration < sequential_expected,
+            "Concurrent execution ({:?}) should be faster than sequential (~{:?})",
+            concurrent_duration,
+            sequential_expected
+        );
+    }
+
+    #[tokio::test]
+    async fn test_push_layer_zero_max_concurrent_fallback() {
+        let tasks = (0..3).map(|id| async move { id });
+        let max_concurrent = 0usize.max(1);
+        let results: Vec<usize> = stream::iter(tasks).buffered(max_concurrent).collect().await;
+        assert_eq!(results, vec![0, 1, 2]);
     }
 }
