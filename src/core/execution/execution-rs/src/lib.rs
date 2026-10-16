@@ -9,18 +9,13 @@ use types_rs::PhantomError;
 use bpf_lsm_rs::BpfError;
 
 /// Security mode for handling security feature failures
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SecurityMode {
     /// Fail if security features are unavailable (strict security)
     Strict,
     /// Log warning and continue (permissive, backward compatible)
+    #[default]
     Permissive,
-}
-
-impl Default for SecurityMode {
-    fn default() -> Self {
-        SecurityMode::Permissive
-    }
 }
 
 /// Execution modes with varying security/performance trade-offs
@@ -228,6 +223,8 @@ impl AdaptiveEngine {
         }
     }
 
+    /// Attempt zygote execution, falling back to fork/exec with security policies.
+    /// Returns an exit code for zygote execution or the child PID for fork/exec.
     fn spawn_sandboxed(
         &self,
         command: &str,

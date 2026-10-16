@@ -64,14 +64,11 @@ phantom-fragment/
 │   ├── components/
 │   ├── getting-started/
 │   ├── migration/
-│   └── security/
+│   ├── security/
+│   └── testing/                  # Testing documentation
 │
 ├── roadmap/                      # Project roadmap and implementation plans
 │   └── IMPLEMENTATION_PLAN.md
-│
-├── tests/                        # Test files and benchmarks
-│   ├── TEST.md                   # Testing documentation
-│   └── TODO_FUTURE_TESTS.md      # Planned tests
 │
 ├── tools/                        # Development utilities
 │   ├── benchmark.sh              # Performance benchmarking
