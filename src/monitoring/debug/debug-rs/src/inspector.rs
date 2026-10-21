@@ -226,6 +226,8 @@ impl FragmentInspector {
         Ok(())
     }
 
+    /// Populate thread information from procfs using a blocking worker.
+    /// Skips unreadable task entries and uses an empty stack when stack collection fails.
     async fn collect_thread_info(&self, state: &mut FragmentState) -> Result<()> {
         let pid = state.pid;
         let threads = tokio::task::spawn_blocking(move || -> Result<_> {

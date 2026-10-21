@@ -231,10 +231,10 @@ impl ImageAnalyzer {
                 let mut current_ver: Option<String> = None;
 
                 for line in content.lines() {
-                    if line.starts_with("P:") {
-                        current_pkg = Some(line[2..].trim().to_string());
-                    } else if line.starts_with("V:") {
-                        current_ver = Some(line[2..].trim().to_string());
+                    if let Some(pkg) = line.strip_prefix("P:") {
+                        current_pkg = Some(pkg.trim().to_string());
+                    } else if let Some(ver) = line.strip_prefix("V:") {
+                        current_ver = Some(ver.trim().to_string());
                     } else if line.starts_with("o:") && current_pkg.is_some() {
                         // End of package entry
                         if let (Some(pkg), Some(ver)) = (current_pkg.take(), current_ver.take()) {
@@ -276,10 +276,10 @@ impl ImageAnalyzer {
                 let mut current_ver: Option<String> = None;
 
                 for line in content.lines() {
-                    if line.starts_with("Package:") {
-                        current_pkg = Some(line[8..].trim().to_string());
-                    } else if line.starts_with("Version:") {
-                        current_ver = Some(line[8..].trim().to_string());
+                    if let Some(pkg) = line.strip_prefix("Package:") {
+                        current_pkg = Some(pkg.trim().to_string());
+                    } else if let Some(ver) = line.strip_prefix("Version:") {
+                        current_ver = Some(ver.trim().to_string());
                     } else if line.is_empty() && current_pkg.is_some() {
                         if let (Some(pkg), Some(ver)) = (current_pkg.take(), current_ver.take()) {
                             packages.push(PackageInfo {
