@@ -11,16 +11,17 @@
 #[allow(clippy::module_inception)]
 mod tests {
     use crate::daemon::warm::{
-        exec_in_daemon, is_safe_command, DaemonConfig, ExecRequest, ExecResponse, Message,
-        MessageType, WarmDaemon,
+        exec_in_daemon, is_safe_command, ping_daemon, read_message, write_message, DaemonConfig,
+        ExecRequest, ExecResponse, Message, MessageType, WarmDaemon,
     };
     use execution_rs::HardwareProfile;
 
     use std::collections::HashMap;
     use std::fs;
     use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
+    use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
@@ -768,5 +769,356 @@ mod tests {
 
         thread::sleep(Duration::from_millis(100));
         let _ = handle.join();
+    }
+
+    // ========================================================================
+    // IPC framing tests (deterministic, no daemon required)
+    // ========================================================================
+
+    const TEST_MAGIC: u32 = 0x5048_4E54; // "PHNT"
+    const TEST_VERSION: u8 = 1;
+
+    /// Build a raw frame header so malformed frames can be injected.
+    fn frame_header(magic: u32, version: u8, msg_type: u8, length: u32) -> Vec<u8> {
+        let mut header = Vec::with_capacity(10);
+        header.extend_from_slice(&magic.to_le_bytes());
+        header.push(version);
+        header.push(msg_type);
+        header.extend_from_slice(&length.to_le_bytes());
+        header
+    }
+
+    /// Reader that yields at most one byte per `read` call.
+    struct OneByteReader {
+        data: Vec<u8>,
+        pos: usize,
+    }
+
+    impl Read for OneByteReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.pos >= self.data.len() || buf.is_empty() {
+                return Ok(0);
+            }
+            buf[0] = self.data[self.pos];
+            self.pos += 1;
+            Ok(1)
+        }
+    }
+
+    #[test]
+    fn test_read_message_handles_partial_reads() {
+        let msg = Message::new(MessageType::Exec, vec![1, 2, 3, 4, 5]);
+        let data = msg.serialize().unwrap();
+
+        let mut reader = OneByteReader { data, pos: 0 };
+        let parsed = read_message(&mut reader).expect("partial reads must be reassembled");
+
+        assert_eq!(parsed.msg_type, MessageType::Exec);
+        assert_eq!(parsed.payload, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn test_read_message_rejects_absurd_length() {
+        // The length field must be validated before allocating: u32::MAX would
+        // otherwise request a 4 GiB buffer.
+        let header = frame_header(TEST_MAGIC, TEST_VERSION, MessageType::Exec as u8, u32::MAX);
+        let mut reader = OneByteReader {
+            data: header,
+            pos: 0,
+        };
+
+        let err = read_message(&mut reader).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_message_rejects_invalid_magic() {
+        let header = frame_header(0xDEAD_BEEF, TEST_VERSION, MessageType::Exec as u8, 0);
+        let mut reader = OneByteReader {
+            data: header,
+            pos: 0,
+        };
+
+        let err = read_message(&mut reader).unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid protocol magic"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_message_rejects_unsupported_version() {
+        let header = frame_header(TEST_MAGIC, TEST_VERSION + 1, MessageType::Exec as u8, 0);
+        let mut reader = OneByteReader {
+            data: header,
+            pos: 0,
+        };
+
+        let err = read_message(&mut reader).unwrap_err();
+        assert!(
+            err.to_string().contains("Unsupported protocol version"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_read_message_rejects_truncated_payload() {
+        let mut frame = frame_header(TEST_MAGIC, TEST_VERSION, MessageType::Exec as u8, 64);
+        frame.extend_from_slice(&[1, 2, 3]); // only 3 of the promised 64 bytes
+
+        let mut reader = OneByteReader {
+            data: frame,
+            pos: 0,
+        };
+        let err = read_message(&mut reader).unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to read message payload"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_serialize_rejects_oversized_payload() {
+        let oversized = vec![0u8; 1024 * 1024 + 1];
+        let msg = Message::new(MessageType::Exec, oversized);
+
+        let err = msg.serialize().unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "unexpected error: {}",
+            err
+        );
+    }
+
+    // ========================================================================
+    // Client-side framing tests (fake daemon, no rootfs required)
+    // ========================================================================
+
+    /// Serve exec connections until `stop` is set, replying with `reply`.
+    ///
+    /// The client gives up after at most three attempts and may return before
+    /// the server has accepted a connection (for example when the response
+    /// parses far enough to fail client-side). A fixed accept count would then
+    /// leave the server blocked forever in `accept()` and hang `join()`, so the
+    /// listener is non-blocking and the loop exits as soon as `stop` is set.
+    fn spawn_fake_daemon(
+        listener: UnixListener,
+        reply: Vec<u8>,
+    ) -> (thread::JoinHandle<()>, Arc<AtomicBool>) {
+        listener
+            .set_nonblocking(true)
+            .expect("Failed to make fake daemon listener non-blocking");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_flag = Arc::clone(&stop);
+
+        let handle = thread::spawn(move || {
+            while !stop_flag.load(Ordering::SeqCst) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        // Consume the client request before answering.
+                        let _ = read_message(&mut stream);
+                        let _ = stream.write_all(&reply);
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => return,
+                }
+            }
+        });
+
+        (handle, stop)
+    }
+
+    fn simple_request() -> ExecRequest {
+        ExecRequest {
+            command: "/bin/true".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: None,
+            hardware_profile: None,
+        }
+    }
+
+    #[test]
+    fn test_client_rejects_absurd_response_length() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("fake.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        let reply = frame_header(
+            TEST_MAGIC,
+            TEST_VERSION,
+            MessageType::ExecResponse as u8,
+            u32::MAX,
+        );
+        let (server, stop) = spawn_fake_daemon(listener, reply);
+
+        let err = exec_in_daemon(&socket_path, &simple_request()).unwrap_err();
+        assert!(
+            err.to_string().contains("exceeds maximum"),
+            "unexpected error: {}",
+            err
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn test_client_rejects_truncated_response_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("fake.sock");
+        let listener = UnixListener::bind(&socket_path).unwrap();
+
+        // Valid frame, but only 4 payload bytes where 10 are required.
+        let mut reply = frame_header(TEST_MAGIC, TEST_VERSION, MessageType::ExecResponse as u8, 4);
+        reply.extend_from_slice(&0u32.to_le_bytes());
+        let (server, stop) = spawn_fake_daemon(listener, reply);
+
+        let err = exec_in_daemon(&socket_path, &simple_request()).unwrap_err();
+        assert!(
+            err.to_string().contains("Malformed payload"),
+            "unexpected error: {}",
+            err
+        );
+
+        stop.store(true, Ordering::SeqCst);
+        server.join().unwrap();
+    }
+
+    // ========================================================================
+    // Daemon lifecycle tests
+    // ========================================================================
+
+    /// Bind then drop a listener, leaving a socket file nobody is listening on.
+    fn create_stale_socket(path: &Path) {
+        let listener = UnixListener::bind(path).expect("Failed to bind stale socket");
+        drop(listener);
+        assert!(path.exists(), "stale socket file should remain");
+    }
+
+    #[test]
+    fn test_stale_socket_is_replaced_on_startup() {
+        let (temp_dir, socket_path) = setup_test_env("test_stale_socket");
+        let rootfs = create_test_rootfs(&temp_dir);
+        create_stale_socket(&socket_path);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("a stale socket must be replaced, not treated as fatal");
+
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+        assert!(
+            ping_daemon(&socket_path).unwrap(),
+            "daemon should be pingable"
+        );
+
+        // Shutdown daemon
+        {
+            let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect");
+            let shutdown_msg = Message::new(MessageType::Shutdown, vec![]);
+            let data = shutdown_msg.serialize().expect("Failed to serialize");
+            stream.write_all(&data).expect("Failed to send shutdown");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_live_daemon_socket_is_not_clobbered() {
+        let (temp_dir, socket_path) = setup_test_env("test_live_socket");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        // A second daemon must refuse to unlink a socket that is still serving.
+        let second = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs));
+        let err = match second {
+            Ok(_) => panic!("second daemon must not clobber a live socket"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("already listening"),
+            "unexpected error: {}",
+            err
+        );
+
+        // The original daemon is still reachable.
+        assert!(ping_daemon(&socket_path).unwrap());
+
+        // Shutdown daemon
+        {
+            let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect");
+            let shutdown_msg = Message::new(MessageType::Shutdown, vec![]);
+            let data = shutdown_msg.serialize().expect("Failed to serialize");
+            stream.write_all(&data).expect("Failed to send shutdown");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_daemon_survives_malformed_exec_payload() {
+        let (temp_dir, socket_path) = setup_test_env("test_malformed_exec");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        // Command length claims 16 bytes but the payload ends immediately.
+        let msg = Message::new(MessageType::Exec, vec![16, 0]);
+        let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write_message(&mut stream, &msg).expect("Failed to send malformed request");
+
+        let response = read_message(&mut stream).expect("daemon should answer with an error frame");
+        assert_eq!(response.msg_type, MessageType::Error);
+        let text = String::from_utf8_lossy(&response.payload);
+        assert!(
+            text.contains("Malformed payload"),
+            "unexpected error payload: {}",
+            text
+        );
+
+        // The daemon must still be alive and serving after the bad frame.
+        let response = send_exec_request(&socket_path, "/bin/true", vec![])
+            .expect("daemon should keep serving after a malformed frame");
+        assert_eq!(response.exit_code, 0);
+
+        // Shutdown daemon
+        {
+            let mut stream = UnixStream::connect(&socket_path).expect("Failed to connect");
+            let shutdown_msg = Message::new(MessageType::Shutdown, vec![]);
+            let data = shutdown_msg.serialize().expect("Failed to serialize");
+            stream.write_all(&data).expect("Failed to send shutdown");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = handle.join();
+    }
+
+    #[test]
+    fn test_ping_daemon_returns_false_without_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let missing = temp_dir.path().join("missing.sock");
+
+        assert!(!ping_daemon(&missing).expect("ping should not fail for a missing socket"));
     }
 }

@@ -464,4 +464,99 @@ mod tests {
 
         // Clean up fragments older than 1 hour
     }
+
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("failed to spawn helper process");
+        let pid = child.id();
+        child.wait().expect("failed to reap helper process");
+        pid
+    }
+
+    fn fragment_info(name: &str, pid: Option<u32>, status: FragmentStatus) -> FragmentInfo {
+        FragmentInfo {
+            name: name.to_string(),
+            profile: "sandbox".to_string(),
+            pid,
+            created_at: 0,
+            status,
+            components: vec![],
+            memory_kb: 4096,
+            cpu_count: None,
+            mode: "sandbox".to_string(),
+            last_validated: None,
+            image: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_pid_checks_existence_without_signalling() {
+        assert!(FragmentRegistry::validate_pid(std::process::id()));
+        assert!(!FragmentRegistry::validate_pid(999_999_999));
+    }
+
+    #[test]
+    fn test_prune_stale_marks_dead_fragments_stopped() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry_path = temp_dir.path().join("registry.json");
+        let mut registry = FragmentRegistry::with_path(&registry_path).unwrap();
+
+        let pid = dead_pid();
+        registry
+            .register(fragment_info("dead", Some(pid), FragmentStatus::Running))
+            .unwrap();
+
+        let pruned = registry.prune_stale().unwrap();
+        assert_eq!(pruned, vec!["dead".to_string()]);
+        assert_eq!(
+            registry.get("dead").unwrap().status,
+            FragmentStatus::Stopped
+        );
+
+        // The status change must be persisted, not just held in memory.
+        let reloaded = FragmentRegistry::with_path(&registry_path).unwrap();
+        assert_eq!(
+            reloaded.get("dead").unwrap().status,
+            FragmentStatus::Stopped
+        );
+    }
+
+    #[test]
+    fn test_prune_stale_persists_validation_timestamp_for_live_fragment() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry_path = temp_dir.path().join("registry.json");
+        let mut registry = FragmentRegistry::with_path(&registry_path).unwrap();
+
+        registry
+            .register(fragment_info(
+                "alive",
+                Some(std::process::id()),
+                FragmentStatus::Running,
+            ))
+            .unwrap();
+
+        let pruned = registry.prune_stale().unwrap();
+        assert!(pruned.is_empty());
+
+        // Even when nothing is pruned, the refreshed timestamp must be saved.
+        let reloaded = FragmentRegistry::with_path(&registry_path).unwrap();
+        assert!(reloaded.get("alive").unwrap().last_validated.is_some());
+    }
+
+    #[test]
+    fn test_save_is_atomic_and_leaves_no_temp_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let registry_path = temp_dir.path().join("registry.json");
+        let mut registry = FragmentRegistry::with_path(&registry_path).unwrap();
+
+        registry
+            .register(fragment_info("atomic", None, FragmentStatus::Stopped))
+            .unwrap();
+
+        let data = fs::read_to_string(&registry_path).unwrap();
+        let parsed: HashMap<String, FragmentInfo> = serde_json::from_str(&data).unwrap();
+        assert!(parsed.contains_key("atomic"));
+        assert!(!registry_path.with_extension("json.tmp").exists());
+    }
 }

@@ -674,4 +674,29 @@ mod tests {
         // Initial backoff was 100, now should be 200
         assert_eq!(supervisor.current_backoff_ms.load(Ordering::SeqCst), 200);
     }
+
+    #[test]
+    fn test_state_is_mirrored_for_handles() {
+        let mut supervisor = DaemonSupervisor::new(SupervisorConfig::default());
+        supervisor.set_state(SupervisorState::Running);
+
+        assert_eq!(supervisor.state(), SupervisorState::Running);
+        assert_eq!(
+            supervisor.state_flag.load(Ordering::SeqCst),
+            SupervisorState::Running.as_u8()
+        );
+    }
+
+    #[test]
+    fn test_supervisor_state_u8_roundtrip() {
+        for state in [
+            SupervisorState::Starting,
+            SupervisorState::Running,
+            SupervisorState::Restarting,
+            SupervisorState::Stopped,
+            SupervisorState::Failed,
+        ] {
+            assert_eq!(SupervisorState::from_u8(state.as_u8()), state);
+        }
+    }
 }
