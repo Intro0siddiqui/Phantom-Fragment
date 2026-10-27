@@ -389,57 +389,69 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                     "Security policy requested: zygote cannot apply seccomp/landlock, using normal execution",
                 );
             } else {
-                // Try zygote pool execution
-                match ZygotePool::new(4) {
-                    Ok(mut pool) => {
-                        // Build zygote command with rootfs
-                        let mut zygote_cmd = ZygoteCommand::new(
-                            final_command
-                                .first()
-                                .cloned()
-                                .unwrap_or_else(|| "/bin/sh".to_string()),
-                        )
-                        .args(final_command.iter().skip(1).cloned().collect())
-                        .cwd(
-                            std::env::current_dir()
-                                .map(|p| p.to_string_lossy().to_string())
-                                .unwrap_or_else(|_| "/".to_string()),
-                        )
-                        .rootfs(rootfs_path.display().to_string())
-                        .flags(0);
+                // The zygote child uses execve, not execvp: a bare command
+                // name would fail with 126 instead of being looked up in PATH.
+                let program = final_command
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "/bin/sh".to_string());
+                match resolve_in_rootfs(&rootfs_path, &program) {
+                    Some(exec_path) => {
+                        // Try zygote pool execution
+                        match ZygotePool::new(4) {
+                            Ok(mut pool) => {
+                                // Build zygote command with rootfs
+                                let mut zygote_cmd = ZygoteCommand::new(exec_path)
+                                    .args(final_command.iter().skip(1).cloned().collect())
+                                    .cwd(
+                                        std::env::current_dir()
+                                            .map(|p| p.to_string_lossy().to_string())
+                                            .unwrap_or_else(|_| "/".to_string()),
+                                    )
+                                    .rootfs(rootfs_path.display().to_string())
+                                    .flags(0);
 
-                        // Inherit environment from parent
-                        for (key, value) in std::env::vars() {
-                            zygote_cmd = zygote_cmd.env(&key, &value);
-                        }
-
-                        match pool.execute(zygote_cmd) {
-                            Ok(status) => {
-                                // `execute` returns a raw wait status; decode it
-                                // or exit(42) would surface as 10752.
-                                let exit_code = zygote_rs::decode_exit_status(status);
-                                if exit_code != 0 {
-                                    ui::error_with_prefix(
-                                        "✗",
-                                        &format!("Command exited with code: {}", exit_code),
-                                    );
-                                    std::process::exit(exit_code);
+                                // Inherit environment from parent
+                                for (key, value) in std::env::vars() {
+                                    zygote_cmd = zygote_cmd.env(&key, &value);
                                 }
-                                return Ok(());
+
+                                match pool.execute(zygote_cmd) {
+                                    Ok(status) => {
+                                        // `execute` returns a raw wait status; decode it
+                                        // or exit(42) would surface as 10752.
+                                        let exit_code = zygote_rs::decode_exit_status(status);
+                                        if exit_code != 0 {
+                                            ui::error_with_prefix(
+                                                "✗",
+                                                &format!("Command exited with code: {}", exit_code),
+                                            );
+                                            std::process::exit(exit_code);
+                                        }
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        ui::warn(&format!(
+                                            "Zygote execution failed: {:?}, falling back to normal execution",
+                                            e
+                                        ));
+                                        // Fall through to normal execution below
+                                    }
+                                }
                             }
                             Err(e) => {
                                 ui::warn(&format!(
-                                    "Zygote execution failed: {:?}, falling back to normal execution",
+                                    "Zygote pool unavailable: {:?}, falling back to normal execution",
                                     e
                                 ));
                                 // Fall through to normal execution below
                             }
                         }
                     }
-                    Err(e) => {
+                    None => {
                         ui::warn(&format!(
-                            "Zygote pool unavailable: {:?}, falling back to normal execution",
-                            e
+                            "Command '{}' not found in fragment PATH, falling back to normal execution",
+                            program
                         ));
                         // Fall through to normal execution below
                     }
@@ -554,20 +566,20 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
             // Try zygote pool execution
             match ZygotePool::new(4) {
                 Ok(mut pool) => {
-                    // Build zygote command
-                    let mut zygote_cmd = ZygoteCommand::new(
-                        final_command
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "/bin/sh".to_string()),
-                    )
-                    .args(final_command.iter().skip(1).cloned().collect())
-                    .cwd(
-                        std::env::current_dir()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| "/".to_string()),
-                    )
-                    .flags(0);
+                    // The zygote child uses execve, not execvp: a bare command
+                    // name would fail with 126 instead of being looked up in PATH.
+                    let program = final_command
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "/bin/sh".to_string());
+                    let mut zygote_cmd = ZygoteCommand::new(resolve_on_host(&program))
+                        .args(final_command.iter().skip(1).cloned().collect())
+                        .cwd(
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| "/".to_string()),
+                        )
+                        .flags(0);
 
                     // Inherit environment from parent
                     for (key, value) in std::env::vars() {
@@ -672,6 +684,41 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
     }
 
     Ok(())
+}
+
+/// Directories searched for a bare command name, matching a typical PATH.
+const PATH_DIRS: [&str; 4] = ["/bin", "/usr/bin", "/sbin", "/usr/sbin"];
+
+/// Resolve a bare command name to an absolute path *inside* `rootfs`.
+///
+/// The cold path execs with `execvp`, which searches `PATH` after the chroot.
+/// The zygote child execs with `execve`, so `phantom run --zygote alpine echo`
+/// would otherwise fail with 126 instead of finding `/bin/echo`.
+fn resolve_in_rootfs(rootfs: &std::path::Path, program: &str) -> Option<String> {
+    if program.contains('/') {
+        return Some(program.to_string());
+    }
+
+    PATH_DIRS
+        .iter()
+        .map(|dir| format!("{}/{}", dir, program))
+        .find(|candidate| rootfs.join(candidate.trim_start_matches('/')).exists())
+}
+
+/// Resolve a bare command name against the host filesystem.
+///
+/// Used by the zygote path that runs without a fragment rootfs. Falls back to
+/// the original name so the failure is reported by `execve` as before.
+fn resolve_on_host(program: &str) -> String {
+    if program.contains('/') {
+        return program.to_string();
+    }
+
+    PATH_DIRS
+        .iter()
+        .map(|dir| format!("{}/{}", dir, program))
+        .find(|candidate| std::path::Path::new(candidate).exists())
+        .unwrap_or_else(|| program.to_string())
 }
 
 fn fork_from_daemon(
