@@ -435,7 +435,7 @@ impl FragmentInspector {
     async fn collect_namespace_info(&self, state: &mut FragmentState) -> Result<()> {
         let ns_dir = format!("/proc/{}/ns", state.pid);
 
-        if let Ok(link) = fs::read_link(format!("{}/pid", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/pid", ns_dir)).await {
             let s = link.to_string_lossy();
             if let Some(start) = s.find('[') {
                 if let Some(end) = s.find(']') {
@@ -446,19 +446,19 @@ impl FragmentInspector {
             }
         }
 
-        if let Ok(link) = fs::read_link(format!("{}/mnt", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/mnt", ns_dir)).await {
             state.namespaces.mount = link.to_string_lossy().to_string();
         }
-        if let Ok(link) = fs::read_link(format!("{}/net", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/net", ns_dir)).await {
             state.namespaces.network = link.to_string_lossy().to_string();
         }
-        if let Ok(link) = fs::read_link(format!("{}/user", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/user", ns_dir)).await {
             state.namespaces.user = link.to_string_lossy().to_string();
         }
-        if let Ok(link) = fs::read_link(format!("{}/ipc", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/ipc", ns_dir)).await {
             state.namespaces.ipc = link.to_string_lossy().to_string();
         }
-        if let Ok(link) = fs::read_link(format!("{}/cgroup", &ns_dir)).await {
+        if let Ok(link) = fs::read_link(format!("{}/cgroup", ns_dir)).await {
             state.namespaces.cgroups = link.to_string_lossy().to_string();
         }
 
