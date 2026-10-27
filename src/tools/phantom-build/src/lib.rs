@@ -137,7 +137,8 @@ pub async fn run(args: Args) -> Result<()> {
     executor.execute_stage(target_stage).await?;
 
     if let Some(tag) = &args.tag {
-        let simple_name = tag.replace(":", "-").replace("/", "_");
+        // Validate before the installer removes/renames into this path.
+        let simple_name = executor::image_dir_name(tag)?;
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));

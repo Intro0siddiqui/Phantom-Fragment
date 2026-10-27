@@ -38,6 +38,32 @@ fn resolve_within(root: &Path, path: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// Convert an image reference or tag into a safe, single-component directory
+/// name below `~/.phantom/rootfs`.
+///
+/// Rejects `.`/`..` and empty path segments so that `FROM ..` or `--tag ..`
+/// cannot resolve outside of the rootfs directory (and be deleted by the
+/// build installer).
+pub(crate) fn image_dir_name(image: &str) -> Result<String> {
+    let valid_segments = !image.is_empty()
+        && !image.contains('\0')
+        && image
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+
+    let simple_name = image.replace(':', "-").replace('/', "_");
+    let is_single_component = matches!(
+        Path::new(&simple_name).components().next(),
+        Some(Component::Normal(_))
+    ) && Path::new(&simple_name).components().count() == 1;
+
+    if !valid_segments || !is_single_component {
+        anyhow::bail!("Invalid image reference: {:?}", image);
+    }
+
+    Ok(simple_name)
+}
+
 /// Image configuration stored with built images
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ImageConfig {
@@ -215,7 +241,9 @@ impl BuildExecutor {
         let phantom_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("phantom"));
 
         let status = Command::new(phantom_exe)
-            .args(["run", image, "/bin/sh", "-c", "true"])
+            // `--` keeps a hostile `FROM` value (e.g. `--profile`) from being
+            // parsed as a phantom CLI flag.
+            .args(["run", "--", image, "/bin/sh", "-c", "true"])
             .status()
             .context("Failed to pull base image")?;
 
@@ -242,7 +270,7 @@ impl BuildExecutor {
         }
 
         // Find the pulled base image
-        let simple_name = base_image.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(base_image)?;
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
@@ -850,7 +878,7 @@ impl BuildExecutor {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let simple_name = stage.base_image.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(&stage.base_image)?;
         let image_path = home.join(".phantom").join("rootfs").join(&simple_name);
 
         if let Err(e) = self.save_image_config(&image_path) {
@@ -1091,6 +1119,26 @@ mod tests {
         assert!(dest.join("abs.txt").exists());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_image_dir_name_is_safe() {
+        assert_eq!(image_dir_name("alpine:3.18").unwrap(), "alpine-3.18");
+        assert_eq!(
+            image_dir_name("ghcr.io/user/app:v1").unwrap(),
+            "ghcr.io_user_app-v1"
+        );
+    }
+
+    #[test]
+    fn test_image_dir_name_rejects_traversal() {
+        for name in ["..", ".", "../..", "../../etc", "/etc/passwd", "", "a\0b"] {
+            assert!(
+                image_dir_name(name).is_err(),
+                "image reference {:?} should be rejected",
+                name
+            );
+        }
     }
 
     #[test]
