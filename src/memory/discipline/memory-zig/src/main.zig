@@ -147,8 +147,8 @@ fn initNumaCache() void {
     if (numa_cache_initialized) return;
 
     // Check if /sys/devices/system/node exists
-    var stat_buf: linux.Stat = undefined;
-    const result = linux.stat("/sys/devices/system/node", &stat_buf);
+    var stat_buf: linux.Statx = undefined;
+    const result = linux.statx(linux.AT.FDCWD, "/sys/devices/system/node", 0, .{ .TYPE = true }, &stat_buf);
     if (result != 0) {
         numa_available_cache = 0;
         numa_max_node_cache = 0;
@@ -157,7 +157,7 @@ fn initNumaCache() void {
     }
 
     // Check if /sys/devices/system/node/online exists
-    const online_result = linux.stat("/sys/devices/system/node/online", &stat_buf);
+    const online_result = linux.statx(linux.AT.FDCWD, "/sys/devices/system/node/online", 0, .{ .TYPE = true }, &stat_buf);
     if (online_result != 0) {
         numa_available_cache = 0;
         numa_max_node_cache = 0;

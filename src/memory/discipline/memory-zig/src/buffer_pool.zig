@@ -1,5 +1,18 @@
 const std = @import("std");
-const Mutex = std.Thread.Mutex;
+
+/// Spin mutex compatible with the C ABI entry points, which cannot take an
+/// `std.Io` instance. Critical sections here are short.
+const Mutex = struct {
+    state: std.atomic.Mutex = .unlocked,
+
+    fn lock(self: *Mutex) void {
+        while (!self.state.tryLock()) std.atomic.spinLoopHint();
+    }
+
+    fn unlock(self: *Mutex) void {
+        self.state.unlock();
+    }
+};
 const Allocator = std.mem.Allocator;
 const ArrayListUnmanaged = std.ArrayListUnmanaged;
 
@@ -16,7 +29,7 @@ pub const BufferPool = struct {
             .allocator = allocator,
             .buffer_size = buffer_size,
             .capacity = capacity,
-            .buffers = ArrayListUnmanaged([]u8){},
+            .buffers = ArrayListUnmanaged([]u8).empty,
             .mutex = Mutex{},
         };
 
