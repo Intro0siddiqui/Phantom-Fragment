@@ -50,6 +50,12 @@ members = [
 ]
 
 
+[workspace.package]
+# Single source of truth for every crate in the workspace.
+# Release tags, `phantom --version`, `phantom-mcp --version` and the changelog
+# must all agree with this value.
+version = "3.1.0"
+
 [workspace.dependencies]
 # Common dependencies
 anyhow = "1.0"

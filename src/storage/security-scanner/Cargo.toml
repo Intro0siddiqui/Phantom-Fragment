@@ -1,6 +1,6 @@
 [package]
 name = "security-scanner"
-version = "3.1.0"
+version.workspace = true
 edition = "2021"
 description = "Vulnerability scanner for container images"
 

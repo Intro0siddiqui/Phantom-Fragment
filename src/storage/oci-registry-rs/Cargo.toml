@@ -1,6 +1,6 @@
 [package]
 name = "oci-registry-rs"
-version = "3.1.0"
+version.workspace = true
 edition = "2021"
 description = "OCI Registry client for Phantom Fragment - pull and push container images"
 

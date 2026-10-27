@@ -1,6 +1,6 @@
 [package]
 name = "phantom-debug"
-version = "3.1.0"
+version.workspace = true
 edition = "2021"
 description = "Debug and monitoring utilities for Phantom Fragment"
 license = "MIT OR Apache-2.0"
