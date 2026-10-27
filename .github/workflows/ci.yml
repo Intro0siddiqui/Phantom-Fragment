@@ -33,7 +33,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read
     steps:
@@ -120,6 +120,10 @@ jobs:
       # `.config/nextest.toml` caps every test with slow-timeout/terminate-after,
       # so the known zygote-pool hangs fail the job instead of hanging it.
       # `--no-fail-fast` makes sure one failure does not hide the rest.
+      #
+      # integration-tests is intentionally kept in the run: its kernel-dependent
+      # cases self-skip when landlock/BPF are unavailable and it needs no root,
+      # network access, or bubblewrap on the GitHub runner.
       - name: Run tests
         run: cargo nextest run --locked --workspace --profile ci --no-fail-fast
 
