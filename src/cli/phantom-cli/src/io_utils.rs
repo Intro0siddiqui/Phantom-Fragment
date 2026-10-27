@@ -82,7 +82,7 @@ pub fn strip_timestamp(line: &str) -> String {
 pub fn tail_file(path: PathBuf, n: usize) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    let all_lines: Vec<String> = reader.lines().filter_map(|l| l.ok()).collect();
+    let all_lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
     let start = if all_lines.len() > n {
         all_lines.len() - n
@@ -96,7 +96,7 @@ pub fn tail_file(path: PathBuf, n: usize) -> anyhow::Result<Vec<String>> {
 pub fn read_file_lines(path: PathBuf) -> anyhow::Result<Vec<String>> {
     let file = File::open(path)?;
     let reader = BufReader::new(file);
-    Ok(reader.lines().filter_map(|l| l.ok()).collect())
+    Ok(reader.lines().map_while(Result::ok).collect())
 }
 
 pub fn get_log_path(name: &str) -> PathBuf {

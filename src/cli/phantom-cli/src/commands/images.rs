@@ -26,56 +26,46 @@ pub fn exec(_ctx: CommandContext, args: ImagesArgs) -> Result<()> {
         );
         println!("{}", "Popular Linux Distributions:".yellow());
         println!(
-            "  {:<30} {}",
-            "alpine".cyan(),
-            "Minimal Linux (5MB) - Recommended for most uses"
+            "  {:<30} Minimal Linux (5MB) - Recommended for most uses",
+            "alpine".cyan()
         );
         println!(
-            "  {:<30} {}",
-            "ubuntu:22.04".cyan(),
-            "Ubuntu LTS (77MB) - Full-featured"
+            "  {:<30} Ubuntu LTS (77MB) - Full-featured",
+            "ubuntu:22.04".cyan()
         );
         println!(
-            "  {:<30} {}",
-            "debian:bookworm-slim".cyan(),
-            "Debian Stable (80MB)"
+            "  {:<30} Debian Stable (80MB)",
+            "debian:bookworm-slim".cyan()
         );
         println!(
-            "  {:<30} {}",
-            "fedora:latest".cyan(),
-            "Fedora (190MB) - Cutting-edge packages"
+            "  {:<30} Fedora (190MB) - Cutting-edge packages",
+            "fedora:latest".cyan()
         );
         println!(
-            "  {:<30} {}",
-            "archlinux:base".cyan(),
-            "Arch Linux (~400MB) - Rolling release"
+            "  {:<30} Arch Linux (~400MB) - Rolling release",
+            "archlinux:base".cyan()
         );
         println!(
-            "  {:<30} {}",
-            "kalilinux/kali-rolling".cyan(),
-            "Kali Linux (~125MB) - Security distro"
+            "  {:<30} Kali Linux (~125MB) - Security distro",
+            "kalilinux/kali-rolling".cyan()
         );
         println!();
         println!("{}", "Google Distroless (Minimal, No Shell):".yellow());
         println!(
-            "  {:<45} {}",
-            "gcr.io/distroless/static-debian12".cyan(),
-            "~2MB - Static binaries"
+            "  {:<45} ~2MB - Static binaries",
+            "gcr.io/distroless/static-debian12".cyan()
         );
         println!(
-            "  {:<45} {}",
-            "gcr.io/distroless/base-debian12".cyan(),
-            "~20MB - Dynamic binaries"
+            "  {:<45} ~20MB - Dynamic binaries",
+            "gcr.io/distroless/base-debian12".cyan()
         );
         println!(
-            "  {:<45} {}",
-            "gcr.io/distroless/python3-debian12".cyan(),
-            "~50MB - Python apps"
+            "  {:<45} ~50MB - Python apps",
+            "gcr.io/distroless/python3-debian12".cyan()
         );
         println!(
-            "  {:<45} {}",
-            "gcr.io/distroless/nodejs18-debian12".cyan(),
-            "~100MB - Node.js apps"
+            "  {:<45} ~100MB - Node.js apps",
+            "gcr.io/distroless/nodejs18-debian12".cyan()
         );
         println!();
         println!("{}", "Usage:".dimmed());
