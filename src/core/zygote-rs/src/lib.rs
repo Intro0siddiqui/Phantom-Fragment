@@ -7,7 +7,14 @@ use std::os::unix::io::RawFd;
 use types_rs::PhantomError;
 
 const ZYGOTE_POOL_MAX: usize = 32;
+/// Must match `MAX_COMMAND_SIZE` in `zygote.zig`.
 const MAX_COMMAND_SIZE: usize = 8192;
+/// Longest accepted path (rootfs, exec path, cwd). Must match `MAX_PATH`.
+const MAX_PATH_LEN: usize = 4096;
+/// Maximum number of arguments or environment entries (u8 count on the wire).
+const MAX_ITEMS: usize = 255;
+/// Wire protocol version marker; also the smallest valid message.
+const MIN_COMMAND_SIZE: usize = 17;
 
 extern "C" {
     fn phantom_zygote_pool_create(size: usize) -> i32;
@@ -94,11 +101,15 @@ impl ZygoteCommand {
         }
     }
 
+    /// Append one argument. Arguments are passed to the program as `argv[1..]`;
+    /// `argv[0]` is always the exec path.
     pub fn arg(mut self, arg: String) -> Self {
         self.args.push(arg);
         self
     }
 
+    /// Replace the argument list. Arguments are passed as `argv[1..]`;
+    /// `argv[0]` is always the exec path.
     pub fn args(mut self, args: Vec<String>) -> Self {
         self.args = args;
         self
@@ -129,82 +140,118 @@ impl ZygoteCommand {
         self
     }
 
-    pub fn serialize(&self) -> Result<Vec<u8>, PhantomError> {
-        let mut buf = Vec::with_capacity(MAX_COMMAND_SIZE);
+    /// Validate the command against the wire protocol limits before encoding.
+    fn validate(&self) -> Result<(), PhantomError> {
+        if self.cmd_type > 4 {
+            return Err(PhantomError::InvalidInput(format!(
+                "unsupported command type {}",
+                self.cmd_type
+            )));
+        }
 
-        let exec_path_bytes = self.exec_path.as_bytes();
-        if exec_path_bytes.len() > 4096 {
+        let is_setup = matches!(self.cmd_type, 1 | 3);
+        if is_setup {
+            match self.rootfs.as_deref() {
+                Some(rootfs) if !rootfs.is_empty() => {}
+                _ => {
+                    return Err(PhantomError::InvalidInput(
+                        "rootfs is required for setup commands".to_string(),
+                    ))
+                }
+            }
+        } else if self.exec_path.is_empty() {
+            return Err(PhantomError::InvalidInput(
+                "exec_path must not be empty".to_string(),
+            ));
+        }
+
+        if self.exec_path.len() > MAX_PATH_LEN {
             return Err(PhantomError::InvalidInput("exec_path too long".to_string()));
         }
-
-        let total_len = self.calculate_total_len();
-        if total_len > MAX_COMMAND_SIZE {
-            return Err(PhantomError::InvalidInput("command too large".to_string()));
-        }
-
-        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
-        buf.push(self.cmd_type);
-
-        if let Some(ref rootfs) = self.rootfs {
-            let rootfs_bytes = rootfs.as_bytes();
-            if rootfs_bytes.len() > 65535 {
+        if let Some(rootfs) = &self.rootfs {
+            if rootfs.len() > MAX_PATH_LEN {
                 return Err(PhantomError::InvalidInput(
                     "rootfs path too long".to_string(),
                 ));
             }
-            buf.extend_from_slice(&(rootfs_bytes.len() as u16).to_le_bytes());
-            buf.extend_from_slice(rootfs_bytes);
-        } else {
-            buf.extend_from_slice(&0u16.to_le_bytes());
         }
-
-        buf.extend_from_slice(&(exec_path_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(exec_path_bytes);
-
-        if self.args.len() > 255 {
-            return Err(PhantomError::InvalidInput("too many args".to_string()));
-        }
-        buf.push(self.args.len() as u8);
-        for arg in &self.args {
-            let arg_bytes = arg.as_bytes();
-            if arg_bytes.len() > 65534 {
-                return Err(PhantomError::InvalidInput("arg too long".to_string()));
-            }
-            buf.extend_from_slice(&(arg_bytes.len() as u16).to_le_bytes());
-            buf.extend_from_slice(arg_bytes);
-            buf.push(0);
-        }
-
-        if self.env.len() > 255 {
-            return Err(PhantomError::InvalidInput("too many env vars".to_string()));
-        }
-        buf.push(self.env.len() as u8);
-        for env in &self.env {
-            let env_bytes = env.as_bytes();
-            if env_bytes.len() > 65534 {
-                return Err(PhantomError::InvalidInput("env var too long".to_string()));
-            }
-            buf.extend_from_slice(&(env_bytes.len() as u16).to_le_bytes());
-            buf.extend_from_slice(env_bytes);
-            buf.push(0);
-        }
-
-        let cwd_bytes = self.cwd.as_bytes();
-        if cwd_bytes.len() > 65535 {
+        if self.cwd.len() > MAX_PATH_LEN {
             return Err(PhantomError::InvalidInput("cwd too long".to_string()));
         }
-        buf.extend_from_slice(&(cwd_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(cwd_bytes);
+        if self.args.len() > MAX_ITEMS {
+            return Err(PhantomError::InvalidInput("too many args".to_string()));
+        }
+        if self.env.len() > MAX_ITEMS {
+            return Err(PhantomError::InvalidInput("too many env vars".to_string()));
+        }
+        for arg in &self.args {
+            if arg.len() > MAX_COMMAND_SIZE {
+                return Err(PhantomError::InvalidInput("arg too long".to_string()));
+            }
+        }
+        for env in &self.env {
+            if env.len() > MAX_COMMAND_SIZE {
+                return Err(PhantomError::InvalidInput("env var too long".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn serialize(&self) -> Result<Vec<u8>, PhantomError> {
+        self.validate()?;
+
+        let total_len = self.calculate_total_len();
+        if !(MIN_COMMAND_SIZE..=MAX_COMMAND_SIZE).contains(&total_len) {
+            return Err(PhantomError::InvalidInput(format!(
+                "command size {} out of range",
+                total_len
+            )));
+        }
+
+        let mut buf = Vec::with_capacity(total_len);
+
+        buf.extend_from_slice(&(total_len as u32).to_le_bytes());
+        buf.push(self.cmd_type);
+
+        match self.rootfs.as_deref() {
+            Some(rootfs) if !rootfs.is_empty() => {
+                buf.extend_from_slice(&(rootfs.len() as u16).to_le_bytes());
+                buf.extend_from_slice(rootfs.as_bytes());
+            }
+            _ => buf.extend_from_slice(&0u16.to_le_bytes()),
+        }
+
+        buf.extend_from_slice(&(self.exec_path.len() as u16).to_le_bytes());
+        buf.extend_from_slice(self.exec_path.as_bytes());
+
+        buf.push(self.args.len() as u8);
+        for arg in &self.args {
+            buf.extend_from_slice(&(arg.len() as u16).to_le_bytes());
+            buf.extend_from_slice(arg.as_bytes());
+            buf.push(0);
+        }
+
+        buf.push(self.env.len() as u8);
+        for env in &self.env {
+            buf.extend_from_slice(&(env.len() as u16).to_le_bytes());
+            buf.extend_from_slice(env.as_bytes());
+            buf.push(0);
+        }
+
+        buf.extend_from_slice(&(self.cwd.len() as u16).to_le_bytes());
+        buf.extend_from_slice(self.cwd.as_bytes());
 
         buf.extend_from_slice(&self.flags.to_le_bytes());
 
+        debug_assert_eq!(buf.len(), total_len);
         Ok(buf)
     }
 
     fn calculate_total_len(&self) -> usize {
         let mut len = 4; // total_len
         len += 1; // cmd_type
-        len += 2 + self.rootfs.as_ref().map(|r| r.len()).unwrap_or(0);
+        len += 2 + self.rootfs.as_deref().map(str::len).unwrap_or(0);
         len += 2 + self.exec_path.len();
         len += 1; // args_count
         for arg in &self.args {
@@ -217,6 +264,20 @@ impl ZygoteCommand {
         len += 2 + self.cwd.len();
         len += 4; // flags
         len
+    }
+}
+
+/// Decode a raw `waitpid`/zygote status word into a conventional exit code.
+///
+/// Normal exits yield their exit status, signal deaths yield `128 + signal`
+/// (shell convention), and anything else is returned unchanged.
+pub fn decode_exit_status(status: i32) -> i32 {
+    if libc::WIFEXITED(status) {
+        libc::WEXITSTATUS(status)
+    } else if libc::WIFSIGNALED(status) {
+        128 + libc::WTERMSIG(status)
+    } else {
+        status
     }
 }
 
@@ -233,8 +294,10 @@ impl ZygotePool {
             return Err(PhantomError::Internal("Pool size must be > 0".into()));
         }
 
+        // SAFETY: the FFI entry point only touches the process-global pool and
+        // returns a negative value on failure.
         let created = unsafe { phantom_zygote_pool_create(actual_size) };
-        if created < 0 {
+        if created <= 0 {
             return Err(PhantomError::Internal(
                 "Failed to create zygote pool".into(),
             ));
@@ -246,31 +309,47 @@ impl ZygotePool {
     }
 
     pub fn available(&self) -> i32 {
+        // SAFETY: pure status query over the process-global pool.
         unsafe { phantom_zygote_pool_status() }
     }
 
     pub fn pool_size(&self) -> i32 {
+        // SAFETY: pure status query over the process-global pool.
         unsafe { phantom_zygote_pool_size() }
+    }
+
+    /// Number of zygote PIDs currently tracked as in use by this handle.
+    pub fn in_use_count(&self) -> usize {
+        self.zygote_pids.len()
     }
 
     /// Spawn a zygote from the pool and return its PID.
     /// The zygote is marked as in-use and must be released after use.
     pub fn spawn(&mut self) -> Result<i32, PhantomError> {
+        // SAFETY: the FFI entry point marks a free slot in use and returns its
+        // PID, or -1 when the pool is exhausted.
         let pid = unsafe { phantom_numa_pool_get() };
-        if pid > 0 {
-            self.zygote_pids.push(pid);
-            return Ok(pid);
+        if pid <= 0 {
+            return Err(PhantomError::Internal("No zygotes available".into()));
         }
-        Err(PhantomError::Internal("No zygotes available".into()))
+        if self.zygote_pids.contains(&pid) {
+            return Err(PhantomError::Internal(format!(
+                "Zygote PID {} handed out twice",
+                pid
+            )));
+        }
+        self.zygote_pids.push(pid);
+        Ok(pid)
     }
 
-    /// Send a command to a zygote and return the exit status.
+    /// Send a command to a zygote and return the raw wait status of the
+    /// process the zygote executed.
     ///
-    /// The zygote forks a grandchild process, waits for it to complete,
-    /// and returns the exit status. The zygote stays alive for reuse.
+    /// The zygote forks a grandchild process, waits for it to complete, and
+    /// reports the grandchild's wait status. The zygote stays alive for reuse.
     ///
-    /// After this returns, call `release(zygote_pid)` to return the
-    /// zygote to the pool.
+    /// After this returns, call `release(zygote_pid)` to return the zygote to
+    /// the pool.
     pub fn send_command(
         &mut self,
         zygote_pid: i32,
@@ -278,6 +357,8 @@ impl ZygotePool {
     ) -> Result<i32, PhantomError> {
         let serialized = command.serialize()?;
 
+        // SAFETY: `serialized` is a valid buffer for the duration of the call
+        // and the FFI validates its length prefix.
         let result = unsafe {
             phantom_zygote_send_command(zygote_pid, serialized.as_ptr(), serialized.len())
         };
@@ -288,68 +369,104 @@ impl ZygotePool {
             ));
         }
 
-        // Return the exit status
         Ok(result)
     }
 
-    /// Execute a command via the zygote pool and return the child PID.
+    /// Execute a command via the zygote pool and return the raw wait status.
     ///
-    /// This spawns a zygote, sends the command, and returns the child PID.
-    /// The zygote itself stays alive and is automatically released back to the pool.
+    /// This spawns a zygote, sends the command, and releases the zygote back
+    /// to the pool (even on failure). Use [`decode_exit_status`] to turn the
+    /// result into an exit code.
     pub fn execute(&mut self, command: ZygoteCommand) -> Result<i32, PhantomError> {
         let zygote_pid = self.spawn()?;
         let result = self.send_command(zygote_pid, &command);
 
-        // Since send_command is synchronous and zygote remains alive,
-        // we release the zygote slot immediately after completion.
+        // send_command is synchronous and the zygote remains alive, so the
+        // slot can be recycled immediately. Release on error too, otherwise a
+        // failed command leaks the slot.
         self.release(zygote_pid);
 
         result
     }
 
+    /// Block until `pid` exits and return its raw wait status.
+    ///
+    /// Note: only usable for processes that are direct children of this
+    /// process. Processes executed by a zygote are children of the zygote;
+    /// their status is returned by [`ZygotePool::send_command`] instead.
     pub fn wait(&mut self, pid: i32) -> Result<i32, PhantomError> {
         let mut status: i32 = 0;
-        let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
-        if waited < 0 {
-            return Err(PhantomError::Internal("Failed to wait for process".into()));
+        loop {
+            // SAFETY: waitpid only writes `status` on success.
+            let waited = unsafe { libc::waitpid(pid, &mut status, 0) };
+            if waited == pid {
+                return Ok(status);
+            }
+            if waited < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(PhantomError::Internal(format!(
+                    "waitpid({}) failed: {}",
+                    pid, err
+                )));
+            }
+            // waitpid without WNOHANG cannot return 0; retry defensively.
         }
-        Ok(status)
     }
 
+    /// Non-blocking variant of [`ZygotePool::wait`].
+    ///
+    /// Returns `Ok(None)` if `pid` is still running, `Ok(Some(status))` once
+    /// it has exited, and an error if it is not a waitable child (for example
+    /// a zygote-executed grandchild).
     pub fn wait_no_hang(&mut self, pid: i32) -> Result<Option<i32>, PhantomError> {
         let mut status: i32 = 0;
-        let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
-        if waited < 0 {
-            return Err(PhantomError::Internal("Failed to wait for process".into()));
+        loop {
+            // SAFETY: waitpid only writes `status` on success.
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if waited == 0 {
+                return Ok(None);
+            }
+            if waited == pid {
+                return Ok(Some(status));
+            }
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(PhantomError::Internal(format!(
+                "waitpid({}) failed: {}",
+                pid, err
+            )));
         }
-        if waited == 0 {
-            return Ok(None);
-        }
-        Ok(Some(status))
     }
 
     /// Release a zygote back to the pool for reuse.
     ///
-    /// The zygote remains alive with its socket connection open, ready
-    /// to handle the next command. This enables true zygote recycling.
-    pub fn release(&mut self, zygote_pid: i32) {
-        // Remove from zygote_pids tracking
+    /// The zygote remains alive with its socket connection open, ready to
+    /// handle the next command. Returns `false` if the pool rejected the PID
+    /// (unknown PID, or a double release).
+    pub fn release(&mut self, zygote_pid: i32) -> bool {
         self.zygote_pids.retain(|&p| p != zygote_pid);
-        // Return zygote to pool
-        unsafe {
-            phantom_zygote_pool_put(zygote_pid);
-        }
+        // SAFETY: the FFI entry point validates the PID against the pool.
+        unsafe { phantom_zygote_pool_put(zygote_pid) == 0 }
     }
 
-    pub fn refill(&mut self) -> Result<(), PhantomError> {
+    /// Restore the pool to its configured size. Returns how many zygotes were
+    /// spawned. Dead slots are reaped first.
+    pub fn refill(&mut self) -> Result<i32, PhantomError> {
+        // SAFETY: the FFI entry point refills the process-global pool.
         let spawned = unsafe { phantom_zygote_pool_refill() };
         if spawned < 0 {
             return Err(PhantomError::Internal("Failed to refill pool".into()));
         }
-        Ok(())
+        Ok(spawned)
     }
 
     pub fn get_socket(&self, pid: i32) -> Option<RawFd> {
+        // SAFETY: the FFI entry point only reads pool bookkeeping.
         let fd = unsafe { phantom_zygote_get_socket(pid) };
         if fd >= 0 {
             Some(fd)
@@ -361,20 +478,18 @@ impl ZygotePool {
 
 impl Drop for ZygotePool {
     fn drop(&mut self) {
+        // The Zig side closes every socket, kills each child and reaps it.
+        // SAFETY: destroying the process-global pool is idempotent.
         unsafe {
             phantom_zygote_pool_destroy();
         }
-        // Wait for any tracked zygotes (shouldn't be any if release() was called properly)
-        for zygote_pid in &self.zygote_pids {
-            unsafe {
-                libc::waitpid(*zygote_pid, std::ptr::null_mut(), 0);
-            }
-        }
+        self.zygote_pids.clear();
     }
 }
 
 pub fn send_command_raw(pid: i32, command: &ZygoteCommand) -> Result<(), PhantomError> {
     let serialized = command.serialize()?;
+    // SAFETY: `serialized` is valid for the duration of the call.
     let result = unsafe { phantom_zygote_send_command(pid, serialized.as_ptr(), serialized.len()) };
     if result < 0 {
         return Err(PhantomError::Internal("Failed to send command".into()));
@@ -383,6 +498,7 @@ pub fn send_command_raw(pid: i32, command: &ZygoteCommand) -> Result<(), Phantom
 }
 
 pub fn get_socket_fd(pid: i32) -> Option<RawFd> {
+    // SAFETY: the FFI entry point only reads pool bookkeeping.
     let fd = unsafe { phantom_zygote_get_socket(pid) };
     if fd >= 0 {
         Some(fd)
@@ -395,819 +511,342 @@ pub fn get_socket_fd(pid: i32) -> Option<RawFd> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_command_serialize() {
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(vec!["hello".to_string(), "world".to_string()])
-            .cwd("/tmp".to_string())
-            .flags(0);
+    /// Parsed form of a serialized command, used to verify the wire format
+    /// from the Rust side without forking.
+    #[derive(Debug, PartialEq)]
+    struct Parsed {
+        total_len: u32,
+        cmd_type: u8,
+        rootfs: Option<String>,
+        exec_path: String,
+        args: Vec<String>,
+        env: Vec<String>,
+        cwd: String,
+        flags: u32,
+    }
 
-        let serialized = cmd.serialize().unwrap();
-        assert!(!serialized.is_empty());
+    struct Cursor<'a> {
+        buf: &'a [u8],
+        pos: usize,
+    }
 
-        assert_eq!(serialized[0..4], (serialized.len() as u32).to_le_bytes());
+    impl<'a> Cursor<'a> {
+        fn take(&mut self, n: usize) -> &'a [u8] {
+            let out = &self.buf[self.pos..self.pos + n];
+            self.pos += n;
+            out
+        }
+
+        fn u8(&mut self) -> u8 {
+            self.take(1)[0]
+        }
+
+        fn u16(&mut self) -> u16 {
+            u16::from_le_bytes(self.take(2).try_into().unwrap())
+        }
+
+        fn u32(&mut self) -> u32 {
+            u32::from_le_bytes(self.take(4).try_into().unwrap())
+        }
+
+        fn string(&mut self, len: usize) -> String {
+            String::from_utf8(self.take(len).to_vec()).unwrap()
+        }
+    }
+
+    fn parse(buf: &[u8]) -> Parsed {
+        let mut cur = Cursor { buf, pos: 0 };
+
+        let total_len = cur.u32();
+        let cmd_type = cur.u8();
+
+        let rootfs_len = cur.u16() as usize;
+        let rootfs = if rootfs_len == 0 {
+            None
+        } else {
+            Some(cur.string(rootfs_len))
+        };
+
+        let exec_len = cur.u16() as usize;
+        let exec_path = cur.string(exec_len);
+
+        let argc = cur.u8() as usize;
+        let mut args = Vec::with_capacity(argc);
+        for _ in 0..argc {
+            let len = cur.u16() as usize;
+            args.push(cur.string(len));
+            assert_eq!(cur.u8(), 0, "arg must be NUL terminated");
+        }
+
+        let envc = cur.u8() as usize;
+        let mut env = Vec::with_capacity(envc);
+        for _ in 0..envc {
+            let len = cur.u16() as usize;
+            env.push(cur.string(len));
+            assert_eq!(cur.u8(), 0, "env entry must be NUL terminated");
+        }
+
+        let cwd_len = cur.u16() as usize;
+        let cwd = cur.string(cwd_len);
+        let flags = cur.u32();
+
+        assert_eq!(cur.pos, buf.len(), "serializer emitted trailing bytes");
+        Parsed {
+            total_len,
+            cmd_type,
+            rootfs,
+            exec_path,
+            args,
+            env,
+            cwd,
+            flags,
+        }
     }
 
     #[test]
-    fn test_command_serialize_with_env() {
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec!["-c".to_string(), "echo $FOO".to_string()])
+    fn serialize_roundtrip_preserves_every_field() {
+        let cmd = ZygoteCommand::new("/bin/echo".to_string())
+            .args(vec![
+                "hello".to_string(),
+                "world".to_string(),
+                String::new(),
+            ])
             .env("FOO", "bar")
-            .cwd("/".to_string())
-            .flags(0);
+            .cwd("/tmp".to_string())
+            .rootfs("/srv/rootfs".to_string())
+            .flags(0x42);
 
-        let serialized = cmd.serialize().unwrap();
-        assert!(!serialized.is_empty());
+        let buf = cmd.serialize().unwrap();
+        let parsed = parse(&buf);
+
+        assert_eq!(parsed.total_len as usize, buf.len());
+        assert_eq!(parsed.cmd_type, 0);
+        assert_eq!(parsed.rootfs.as_deref(), Some("/srv/rootfs"));
+        assert_eq!(parsed.exec_path, "/bin/echo");
+        assert_eq!(parsed.args, vec!["hello", "world", ""]);
+        assert_eq!(parsed.env, vec!["FOO=bar"]);
+        assert_eq!(parsed.cwd, "/tmp");
+        assert_eq!(parsed.flags, 0x42);
     }
 
     #[test]
-    fn test_pool_create() {
-        let pool = ZygotePool::new(4);
-        assert!(pool.is_ok());
-        let pool = pool.expect("Failed to create zygote pool");
-        assert!(pool.pool_size() > 0);
+    fn serialize_setup_command_roundtrip() {
+        let buf = ZygoteCommand::mother_setup("/srv/rootfs".to_string())
+            .serialize()
+            .unwrap();
+        let parsed = parse(&buf);
+        assert_eq!(parsed.cmd_type, 1);
+        assert_eq!(parsed.rootfs.as_deref(), Some("/srv/rootfs"));
+        assert!(parsed.exec_path.is_empty());
     }
 
     #[test]
-    fn test_pool_zero_size() {
-        let pool = ZygotePool::new(0);
-        assert!(pool.is_err());
+    fn serialize_rejects_empty_exec_path_for_exec_types() {
+        for cmd in [
+            ZygoteCommand::new(String::new()),
+            ZygoteCommand::mother_exec(String::new()),
+            ZygoteCommand::fragment_exec(String::new()),
+        ] {
+            assert!(cmd.serialize().is_err(), "cmd_type {}", cmd.cmd_type);
+        }
     }
 
     #[test]
-    fn test_pool_spawn_and_execute() {
-        let mut pool = ZygotePool::new(2).expect("Failed to create pool");
-
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(vec!["test".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        let result = pool.execute(cmd);
-        assert!(result.is_ok());
-
-        let exit_status = result.unwrap();
-        // Exit status 0 means success (exit code 0)
-        assert_eq!(exit_status, 0);
-
-        // Release the zygote back to the pool
-        pool.release(exit_status);
-    }
-
-    #[test]
-    fn test_command_too_long() {
-        let long_path = "/".repeat(5000);
-        let cmd = ZygoteCommand::new(long_path);
+    fn serialize_requires_rootfs_for_setup_types() {
+        let mut cmd = ZygoteCommand::fragment_setup(String::new());
+        assert!(cmd.serialize().is_err());
+        cmd.rootfs = None;
         assert!(cmd.serialize().is_err());
     }
 
     #[test]
-    fn test_empty_args() {
+    fn serialize_rejects_oversized_paths() {
+        let too_long = "/".repeat(MAX_PATH_LEN + 1);
+
+        assert!(ZygoteCommand::new(too_long.clone()).serialize().is_err());
+        assert!(ZygoteCommand::new("/bin/true".to_string())
+            .cwd(too_long.clone())
+            .serialize()
+            .is_err());
+        assert!(ZygoteCommand::mother_setup(too_long).serialize().is_err());
+    }
+
+    #[test]
+    fn serialize_rejects_unknown_command_type() {
+        let mut cmd = ZygoteCommand::new("/bin/true".to_string());
+        cmd.cmd_type = 5;
+        assert!(cmd.serialize().is_err());
+    }
+
+    #[test]
+    fn serialize_rejects_too_many_args_and_env() {
+        let cmd =
+            ZygoteCommand::new("/bin/true".to_string()).args(vec!["a".to_string(); MAX_ITEMS + 1]);
+        assert!(cmd.serialize().is_err());
+
         let cmd = ZygoteCommand::new("/bin/true".to_string())
-            .cwd("/".to_string())
-            .flags(0);
-
-        let serialized = cmd.serialize().unwrap();
-        assert!(!serialized.is_empty());
-    }
-}
-
-#[cfg(test)]
-mod stress_tests {
-    use super::*;
-    use std::collections::VecDeque;
-    use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::Instant;
-
-    struct StressMetrics {
-        total_spawns: usize,
-        successful_spawns: usize,
-        failed_spawns: usize,
-        latencies: VecDeque<u128>,
-        errors: Vec<String>,
-        max_latency: u128,
-    }
-
-    impl StressMetrics {
-        fn new() -> Self {
-            Self {
-                total_spawns: 0,
-                successful_spawns: 0,
-                failed_spawns: 0,
-                latencies: VecDeque::new(),
-                errors: Vec::new(),
-                max_latency: 0,
-            }
-        }
-
-        fn record_success(&mut self, latency_us: u128) {
-            self.total_spawns += 1;
-            self.successful_spawns += 1;
-            self.latencies.push_back(latency_us);
-            if latency_us > self.max_latency {
-                self.max_latency = latency_us;
-            }
-        }
-
-        fn record_failure(&mut self, error: String) {
-            self.total_spawns += 1;
-            self.failed_spawns += 1;
-            self.errors.push(error);
-        }
-
-        fn average_latency(&self) -> f64 {
-            if self.latencies.is_empty() {
-                return 0.0;
-            }
-            let sum: u128 = self.latencies.iter().sum();
-            sum as f64 / self.latencies.len() as f64
-        }
-
-        fn print_summary(&self, test_name: &str) {
-            println!("\n=== {} Results ===", test_name);
-            println!("Total spawns attempted: {}", self.total_spawns);
-            println!("Successful spawns: {}", self.successful_spawns);
-            println!("Failed spawns: {}", self.failed_spawns);
-            println!(
-                "Success rate: {:.2}%",
-                (self.successful_spawns as f64 / self.total_spawns as f64) * 100.0
-            );
-            if !self.latencies.is_empty() {
-                println!("Average latency: {:.2} μs", self.average_latency());
-                println!("Max latency: {} μs", self.max_latency);
-            }
-            if !self.errors.is_empty() {
-                println!("\nErrors encountered:");
-                for (i, err) in self.errors.iter().enumerate().take(10) {
-                    println!("  {}. {}", i + 1, err);
-                }
-                if self.errors.len() > 10 {
-                    println!("  ... and {} more errors", self.errors.len() - 10);
-                }
-            }
-        }
-    }
-
-    /// Run a command via zygote and return the exit status.
-    ///
-    /// This is a helper for tests that executes a command.
-    fn run_command_and_wait(pool: &mut ZygotePool, cmd: ZygoteCommand) -> Result<i32, String> {
-        pool.execute(cmd)
-            .map_err(|e| format!("Execute failed: {:?}", e))
+            .envs(vec!["A=B".to_string(); MAX_ITEMS + 1]);
+        assert!(cmd.serialize().is_err());
     }
 
     #[test]
-    fn test_pool_creation_and_basic_spawn() {
-        println!("\n--- Test: Pool Creation and Basic Spawn ---");
-
-        let mut pool = ZygotePool::new(4).expect("Failed to create pool");
-
-        println!("Pool size: {}", pool.pool_size());
-        println!("Available zygotes: {}", pool.available());
-
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(vec!["hello".to_string(), "world".to_string()])
-            .cwd("/tmp".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        let result = run_command_and_wait(&mut pool, cmd);
-        let elapsed = start.elapsed().as_micros();
-
-        match result {
-            Ok(exit_status) => {
-                println!("Exit status: {}", exit_status);
-                println!("Spawn + exec + wait latency: {} μs", elapsed);
-            }
-            Err(e) => {
-                println!("Error: {}", e);
-            }
-        }
-
-        println!("Available after spawn: {}", pool.available());
+    fn serialize_rejects_command_over_budget() {
+        // Each arg is small enough on its own, but together they exceed 8 KiB.
+        let args: Vec<String> = (0..MAX_ITEMS).map(|_| "x".repeat(64)).collect();
+        let cmd = ZygoteCommand::new("/bin/true".to_string()).args(args);
+        let err = cmd.serialize().unwrap_err();
+        assert!(matches!(err, PhantomError::InvalidInput(_)));
     }
 
     #[test]
-    fn test_different_commands() {
-        println!("\n--- Test: Different Commands ---");
-
-        let mut pool = ZygotePool::new(10).expect("Failed to create pool");
-
-        println!("Initial pool size: {}", pool.pool_size());
-        println!("Initial available: {}", pool.available());
-
-        let commands = vec![
-            ("/bin/echo", vec!["test".to_string()], "echo"),
-            ("/bin/ls", vec!["-la".to_string(), "/tmp".to_string()], "ls"),
-            (
-                "/bin/cat",
-                vec!["/etc/passwd".to_string()],
-                "cat (first 5 lines)",
-            ),
-            ("/bin/date", vec![], "date"),
-            ("/bin/hostname", vec![], "hostname"),
-            ("/bin/uname", vec!["-a".to_string()], "uname"),
-            (
-                "/bin/printf",
-                vec!["hello %s\n".to_string(), "world".to_string()],
-                "printf",
-            ),
-            ("/bin/basename", vec!["/usr/bin/ls".to_string()], "basename"),
-        ];
-
-        let mut metrics = StressMetrics::new();
-
-        for (path, args, name) in commands {
-            println!("\nTesting: {}", name);
-
-            let cmd = ZygoteCommand::new(path.to_string())
-                .args(args)
-                .cwd("/".to_string())
-                .flags(0);
-
-            let start = Instant::now();
-            match run_command_and_wait(&mut pool, cmd) {
-                Ok(exit_status) => {
-                    let elapsed = start.elapsed().as_micros();
-                    metrics.record_success(elapsed);
-                    println!("  Status: {}, Latency: {} μs", exit_status, elapsed);
-
-                    let exit_code = exit_status >> 8;
-                    if exit_code != 0 {
-                        metrics.record_failure(format!("{} exited with code {}", name, exit_code));
-                    }
-                }
-                Err(e) => {
-                    metrics.record_failure(format!("{}: {}", name, e));
-                    println!("  Error: {}", e);
-                }
-            }
-        }
-
-        metrics.print_summary("Different Commands Test");
+    fn decode_exit_status_handles_exit_and_signal() {
+        // wait status for a normal exit with code 42.
+        assert_eq!(decode_exit_status(42 << 8), 42);
+        // wait status for death by SIGKILL (9).
+        assert_eq!(decode_exit_status(libc::SIGKILL), 128 + libc::SIGKILL);
     }
 
     #[test]
-    fn test_concurrent_spawns() {
-        println!("\n--- Test: Concurrent Spawns ---");
+    fn ffi_rejects_invalid_command_buffers() {
+        // SAFETY: null pointer / undersized buffer must be rejected before any
+        // dereference by the FFI layer.
+        let rc = unsafe { phantom_zygote_send_command(1, std::ptr::null(), 0) };
+        assert_eq!(rc, -1);
 
-        let pool = Arc::new(Mutex::new(
-            ZygotePool::new(8).expect("Failed to create pool"),
-        ));
-        let metrics = Arc::new(Mutex::new(StressMetrics::new()));
-
-        let num_threads = 4;
-        let spawns_per_thread = 10;
-
-        println!(
-            "Spawning {} threads with {} spawns each",
-            num_threads, spawns_per_thread
-        );
-
-        let mut handles = vec![];
-
-        for t in 0..num_threads {
-            let pool_clone = Arc::clone(&pool);
-            let metrics_clone = Arc::clone(&metrics);
-
-            let handle = thread::spawn(move || {
-                for i in 0..spawns_per_thread {
-                    let mut pool = pool_clone.lock().unwrap();
-
-                    let cmd = ZygoteCommand::new("/bin/echo".to_string())
-                        .args(vec![format!("thread{}spawn{}", t, i)])
-                        .cwd("/tmp".to_string())
-                        .flags(0);
-
-                    let start = Instant::now();
-                    match run_command_and_wait(&mut pool, cmd) {
-                        Ok(exit_status) => {
-                            let elapsed = start.elapsed().as_micros();
-                            let mut m = metrics_clone.lock().unwrap();
-                            m.record_success(elapsed);
-                            println!(
-                                "  Thread {} spawn {}: status={}, latency={}μs",
-                                t, i, exit_status, elapsed
-                            );
-                        }
-                        Err(e) => {
-                            let mut m = metrics_clone.lock().unwrap();
-                            m.record_failure(format!("Thread {} spawn {}: {}", t, i, e));
-                        }
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().expect("Thread panicked");
-        }
-
-        let m = metrics.lock().expect("Failed to acquire metrics lock");
-        m.print_summary("Concurrent Spawns Test");
-
-        println!("\nPool state after concurrent test:");
-        println!(
-            "  Pool size: {}",
-            pool.lock()
-                .expect("Failed to acquire pool lock")
-                .pool_size()
-        );
-        println!(
-            "  Available: {}",
-            pool.lock()
-                .expect("Failed to acquire pool lock")
-                .available()
-        );
+        let short = [0u8; MIN_COMMAND_SIZE - 1];
+        let rc = unsafe { phantom_zygote_send_command(1, short.as_ptr(), short.len()) };
+        assert_eq!(rc, -1);
     }
 
     #[test]
-    fn test_pool_exhaustion_and_recovery() {
-        println!("\n--- Test: Pool Exhaustion and Recovery ---");
+    fn pool_zero_size_is_rejected_without_forking() {
+        assert!(ZygotePool::new(0).is_err());
+    }
 
-        let mut pool = ZygotePool::new(4).expect("Failed to create pool");
+    // ------------------------------------------------------------------
+    // Fork-based lifecycle tests. The Zig pool is a process-global
+    // singleton, so these must not run concurrently with each other.
+    // ------------------------------------------------------------------
 
-        println!("Initial available: {}", pool.available());
+    use std::sync::{Mutex, MutexGuard};
 
-        let mut pids = vec![];
+    static POOL_TEST_LOCK: Mutex<()> = Mutex::new(());
 
-        println!("\n--- Exhausting pool (spawning without waiting) ---");
-        for i in 0..4 {
-            match pool.spawn() {
-                Ok(pid) => {
-                    pids.push(pid);
-                    println!("Spawned zygote {}: PID {}", i, pid);
-                }
-                Err(e) => {
-                    println!("Failed to spawn zygote {}: {:?}", i, e);
-                }
-            }
-        }
-
-        println!("\nPool exhausted. Available: {}", pool.available());
-
-        println!("\n--- Testing that spawn fails when pool exhausted ---");
-        let result = pool.spawn();
-        if result.is_err() {
-            println!("Correctly got error when pool exhausted");
-        } else {
-            println!("Warning: Got PID when pool should be exhausted");
-        }
-
-        println!("\n--- Releasing zygotes back to pool ---");
-        for (i, pid) in pids.iter().enumerate() {
-            pool.release(*pid);
-            println!("Released zygote {} (PID {})", i, pid);
-        }
-
-        println!("Available after release: {}", pool.available());
-
-        println!("\n--- Testing spawn after recovery ---");
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(vec!["recovered".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let elapsed = start.elapsed().as_micros();
-                println!(
-                    "After recovery spawn: exit status={}, latency={}μs",
-                    exit_status, elapsed
-                );
-            }
-            Err(e) => {
-                println!("Error after recovery: {}", e);
-            }
-        }
+    fn pool_test_guard() -> MutexGuard<'static, ()> {
+        POOL_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     #[test]
-    fn test_error_cases() {
-        println!("\n--- Test: Error Cases ---");
-
-        let mut pool = ZygotePool::new(4).expect("Failed to create pool");
-        let mut metrics = StressMetrics::new();
-
-        println!("\n1. Testing invalid binary path");
-        let cmd = ZygoteCommand::new("/bin/invalid_binary_xyz123".to_string())
-            .args(vec!["test".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let elapsed = start.elapsed().as_micros();
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}, Latency: {} μs", exit_code, elapsed);
-                if exit_code != 0 {
-                    println!("  (Expected: non-zero exit for invalid binary)");
-                    metrics.record_success(elapsed);
-                }
-            }
-            Err(e) => {
-                metrics.record_failure(format!("Invalid binary: {}", e));
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n2. Testing non-existent path");
-        let cmd = ZygoteCommand::new("/nonexistent/path/to/binary".to_string())
-            .args(vec!["test".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let elapsed = start.elapsed().as_micros();
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}, Latency: {} μs", exit_code, elapsed);
-                if exit_code != 0 {
-                    metrics.record_success(elapsed);
-                }
-            }
-            Err(e) => {
-                metrics.record_failure(format!("Non-existent path: {}", e));
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n3. Testing empty command (should fail in serialization)");
-        let cmd = ZygoteCommand::new("".to_string())
-            .args(vec!["test".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        match cmd.serialize() {
-            Err(e) => {
-                println!("  Correctly rejected empty path: {:?}", e);
-                metrics.record_success(0);
-            }
-            Ok(_) => {
-                println!("  Warning: Empty path was accepted");
-            }
-        }
-
-        println!("\n4. Testing binary that doesn't exist but looks valid");
-        let cmd = ZygoteCommand::new("/usr/bin/thisdoesnotexist987654321".to_string())
-            .args(vec!["arg1".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let elapsed = start.elapsed().as_micros();
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}, Latency: {} μs", exit_code, elapsed);
-                metrics.record_success(elapsed);
-            }
-            Err(e) => {
-                metrics.record_failure(format!("Missing binary: {}", e));
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n5. Testing with large number of arguments");
-        let mut args = vec![];
-        for i in 0..50 {
-            args.push(format!("arg{}", i));
-        }
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(args)
-            .cwd("/".to_string())
-            .flags(0);
-
-        let start = Instant::now();
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let elapsed = start.elapsed().as_micros();
-                println!("  Status: {}, Latency: {} μs", exit_status, elapsed);
-                metrics.record_success(elapsed);
-            }
-            Err(e) => {
-                metrics.record_failure(format!("Many args: {}", e));
-                println!("  Error: {}", e);
-            }
-        }
-
-        metrics.print_summary("Error Cases Test");
+    fn pool_recreate_does_not_deadlock() {
+        let _guard = pool_test_guard();
+        let first = ZygotePool::new(1).expect("first pool");
+        // Re-creating while the global pool is live used to spin forever on
+        // the non-reentrant pool mutex.
+        let second = ZygotePool::new(1).expect("second pool");
+        assert_eq!(second.pool_size(), 1);
+        drop(second);
+        drop(first);
     }
 
     #[test]
-    fn test_high_concurrency_stress() {
-        println!("\n--- Test: High Concurrency Stress ---");
+    fn pool_spawn_release_and_double_release() {
+        let _guard = pool_test_guard();
+        let mut pool = ZygotePool::new(2).expect("pool");
 
-        let pool = Arc::new(Mutex::new(
-            ZygotePool::new(8).expect("Failed to create pool"),
-        ));
-        let metrics = Arc::new(Mutex::new(StressMetrics::new()));
+        let a = pool.spawn().expect("first spawn");
+        let b = pool.spawn().expect("second spawn");
+        assert_ne!(a, b);
+        assert_eq!(pool.in_use_count(), 2);
+        assert_eq!(pool.available(), 0);
 
-        let num_threads = 8;
-        let spawns_per_thread = 20;
+        assert!(pool.release(a));
+        assert_eq!(pool.in_use_count(), 1);
+        assert_eq!(pool.available(), 1);
 
-        println!(
-            "Starting {} threads with {} spawns each",
-            num_threads, spawns_per_thread
-        );
-        println!("Total spawns: {}", num_threads * spawns_per_thread);
+        // Double release must be rejected, not silently accepted.
+        assert!(!pool.release(a));
 
-        let mut handles = vec![];
-        let start_time = Instant::now();
-
-        for t in 0..num_threads {
-            let pool_clone = Arc::clone(&pool);
-            let metrics_clone = Arc::clone(&metrics);
-
-            let handle = thread::spawn(move || {
-                for i in 0..spawns_per_thread {
-                    let mut pool = pool_clone.lock().unwrap();
-
-                    let cmd = ZygoteCommand::new("/bin/echo".to_string())
-                        .args(vec![format!("stress{}x{}", t, i)])
-                        .cwd("/tmp".to_string())
-                        .flags(0);
-
-                    let start = Instant::now();
-                    match run_command_and_wait(&mut pool, cmd) {
-                        Ok(exit_status) => {
-                            let elapsed = start.elapsed().as_micros();
-                            let mut m = metrics_clone.lock().unwrap();
-                            m.record_success(elapsed);
-                        }
-                        Err(e) => {
-                            let mut m = metrics_clone.lock().unwrap();
-                            m.record_failure(format!("Thread {} spawn {}: {}", t, i, e));
-                        }
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        let total_time = start_time.elapsed();
-
-        let m = metrics.lock().unwrap();
-        println!("\n=== High Concurrency Stress Results ===");
-        println!("Total wall time: {} ms", total_time.as_millis());
-        println!("Total spawns attempted: {}", m.total_spawns);
-        println!("Successful spawns: {}", m.successful_spawns);
-        println!("Failed spawns: {}", m.failed_spawns);
-        println!(
-            "Success rate: {:.2}%",
-            (m.successful_spawns as f64 / m.total_spawns as f64) * 100.0
-        );
-        if !m.latencies.is_empty() {
-            println!("Average latency per spawn: {:.2} μs", m.average_latency());
-            println!("Max latency observed: {} μs", m.max_latency);
-
-            let mut sorted_latencies: Vec<u128> = m.latencies.iter().cloned().collect();
-            sorted_latencies.sort();
-            let p50 = sorted_latencies[sorted_latencies.len() / 2];
-            let p95 = sorted_latencies[(sorted_latencies.len() as f64 * 0.95) as usize];
-            let p99 = sorted_latencies[(sorted_latencies.len() as f64 * 0.99) as usize];
-            println!("P50 latency: {} μs", p50);
-            println!("P95 latency: {} μs", p95);
-            println!("P99 latency: {} μs", p99);
-        }
-
-        let throughput = m.successful_spawns as f64 / (total_time.as_secs_f64() * 1000.0);
-        println!("Throughput: {:.2} spawns/sec", throughput * 1000.0);
-
-        if !m.errors.is_empty() {
-            println!("\nErrors encountered:");
-            for (i, err) in m.errors.iter().enumerate().take(5) {
-                println!("  {}. {}", i + 1, err);
-            }
-        }
+        assert!(pool.release(b));
+        assert_eq!(pool.available(), 2);
     }
 
     #[test]
-    fn test_zygote_exec_actually_works() {
-        println!("\n--- Test: Verify Zygote Actually Exec's the Command ---");
+    fn pool_execute_returns_grandchild_status() {
+        let _guard = pool_test_guard();
+        let mut pool = ZygotePool::new(2).expect("pool");
 
-        let mut pool = ZygotePool::new(4).expect("Failed to create pool");
+        let status = pool
+            .execute(
+                ZygoteCommand::new("/bin/sh".to_string())
+                    .args(vec!["-c".to_string(), "exit 0".to_string()])
+                    .cwd("/".to_string()),
+            )
+            .expect("execute");
+        assert_eq!(decode_exit_status(status), 0);
+        // The zygote itself must survive and be recycled.
+        assert_eq!(pool.available(), 2);
 
-        println!("1. Testing echo with specific output");
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec![
-                "-c".to_string(),
-                "echo PHANTOM_TEST_SUCCESS".to_string(),
-            ])
-            .cwd("/".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}", exit_code);
-                if exit_code == 0 {
-                    println!("  SUCCESS: Command executed correctly");
-                } else {
-                    println!("  FAILED: Non-zero exit code");
-                }
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n2. Testing ls with output capture");
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec!["-c".to_string(), "ls /tmp | head -3".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}", exit_code);
-                if exit_code == 0 {
-                    println!("  SUCCESS: ls executed correctly");
-                }
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n3. Testing environment variables");
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec!["-c".to_string(), "echo $TEST_VAR".to_string()])
-            .env("TEST_VAR", "ZYGOTE_TEST_PASSED")
-            .cwd("/".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}", exit_code);
-                println!("  (Check output manually if needed - env should be set)");
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n4. Testing working directory change");
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec!["-c".to_string(), "pwd".to_string()])
-            .cwd("/var".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}", exit_code);
-                println!("  (CWD should be /var - check output manually)");
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n5. Testing exit code propagation");
-        let cmd = ZygoteCommand::new("/bin/sh".to_string())
-            .args(vec!["-c".to_string(), "exit 42".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                let exit_code = exit_status >> 8;
-                println!("  Exit code: {}", exit_code);
-                if exit_code == 42 {
-                    println!("  SUCCESS: Exit code 42 correctly propagated");
-                }
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
-
-        println!("\n--- All verification tests complete ---");
+        let status = pool
+            .execute(
+                ZygoteCommand::new("/bin/sh".to_string())
+                    .args(vec!["-c".to_string(), "exit 42".to_string()])
+                    .cwd("/".to_string()),
+            )
+            .expect("execute");
+        assert_eq!(decode_exit_status(status), 42);
+        assert_eq!(pool.available(), 2);
     }
 
     #[test]
-    fn test_pool_refill() {
-        println!("\n--- Test: Pool Refill ---");
+    fn pool_exec_failure_does_not_leak_slot() {
+        let _guard = pool_test_guard();
+        let mut pool = ZygotePool::new(1).expect("pool");
 
-        let mut pool = ZygotePool::new(4).expect("Failed to create pool");
-
-        println!("Initial pool size: {}", pool.pool_size());
-        println!("Initial available: {}", pool.available());
-
-        println!("\n--- Spawning all zygotes ---");
-        let mut pids = vec![];
-        for i in 0..4 {
-            match pool.spawn() {
-                Ok(pid) => {
-                    pids.push(pid);
-                    println!("  Spawned zygote {}: PID {}", i, pid);
-                }
-                Err(e) => {
-                    println!("  Failed to spawn: {:?}", e);
-                }
-            }
-        }
-
-        println!("\nAvailable after spawning all: {}", pool.available());
-
-        println!("\n--- Releasing all zygotes ---");
-        for pid in &pids {
-            pool.release(*pid);
-        }
-
-        println!("Available after release: {}", pool.available());
-
-        println!("\n--- Testing refill ---");
-        pool.refill().expect("Refill failed");
-
-        println!("Available after refill: {}", pool.available());
-
-        println!("\n--- Spawning after refill ---");
-        let cmd = ZygoteCommand::new("/bin/echo".to_string())
-            .args(vec!["after_refill".to_string()])
-            .cwd("/".to_string())
-            .flags(0);
-
-        match run_command_and_wait(&mut pool, cmd) {
-            Ok(exit_status) => {
-                println!("  Success: exit status={}", exit_status);
-            }
-            Err(e) => {
-                println!("  Error: {}", e);
-            }
-        }
+        let status = pool
+            .execute(ZygoteCommand::new(
+                "/nonexistent/phantom-test-binary".to_string(),
+            ))
+            .expect("execute");
+        // execve failed in the grandchild, which exits 126.
+        assert_eq!(decode_exit_status(status), 126);
+        assert_eq!(pool.available(), 1);
     }
 
     #[test]
-    fn test_sequential_rapid_spawns() {
-        println!("\n--- Test: Sequential Rapid Spawns ---");
+    fn pool_refill_restores_capacity_without_overshooting() {
+        let _guard = pool_test_guard();
+        let mut pool = ZygotePool::new(3).expect("pool");
 
-        let mut pool = ZygotePool::new(6).expect("Failed to create pool");
-        let num_spawns = 50;
+        let pids: Vec<i32> = (0..3).map(|_| pool.spawn().expect("spawn")).collect();
+        assert_eq!(pool.available(), 0);
 
-        let mut latencies = vec![];
+        // All slots are in use; refill must not spawn past capacity.
+        assert_eq!(pool.refill().expect("refill"), 0);
 
-        println!("Executing {} sequential spawns...", num_spawns);
-
-        for i in 0..num_spawns {
-            let cmd = ZygoteCommand::new("/bin/echo".to_string())
-                .args(vec!["test".to_string()])
-                .cwd("/tmp".to_string())
-                .flags(0);
-
-            let start = Instant::now();
-            match run_command_and_wait(&mut pool, cmd) {
-                Ok(exit_status) => {
-                    let elapsed = start.elapsed().as_micros();
-                    latencies.push(elapsed);
-                    if i % 10 == 0 {
-                        println!(
-                            "  Spawn {}: exit status={}, latency={}μs",
-                            i, exit_status, elapsed
-                        );
-                    }
-                }
-                Err(e) => {
-                    println!("  Spawn {} failed: {}", i, e);
-                }
-            }
+        for pid in pids {
+            assert!(pool.release(pid));
         }
+        assert_eq!(pool.available(), 3);
+    }
 
-        println!("\n=== Sequential Spawn Results ===");
-        println!("Total spawns: {}", latencies.len());
+    #[test]
+    fn pool_refill_replaces_dead_zygote() {
+        let _guard = pool_test_guard();
+        let mut pool = ZygotePool::new(2).expect("pool");
 
-        if !latencies.is_empty() {
-            let sum: u128 = latencies.iter().sum();
-            let avg = sum as f64 / latencies.len() as f64;
-            let max = *latencies.iter().max().unwrap();
-            let min = *latencies.iter().min().unwrap();
-
-            println!("Average latency: {:.2} μs", avg);
-            println!("Min latency: {} μs", min);
-            println!("Max latency: {} μs", max);
-
-            let mut sorted = latencies.clone();
-            sorted.sort();
-            let p50 = sorted[sorted.len() / 2];
-            let p95 = sorted[(sorted.len() as f64 * 0.95) as usize];
-            let p99 = sorted[(sorted.len() as f64 * 0.99) as usize];
-            println!("P50 latency: {} μs", p50);
-            println!("P95 latency: {} μs", p95);
-            println!("P99 latency: {} μs", p99);
+        let dead = pool.spawn().expect("spawn");
+        // SAFETY: killing and reaping our own child.
+        unsafe {
+            libc::kill(dead, libc::SIGKILL);
+            libc::waitpid(dead, std::ptr::null_mut(), 0);
         }
+        pool.release(dead);
+
+        let spawned = pool.refill().expect("refill");
+        assert!(spawned >= 1, "refill should replace the dead slot");
+        assert_eq!(pool.pool_size(), 2);
+        assert!(pool.available() >= 1);
     }
 }
