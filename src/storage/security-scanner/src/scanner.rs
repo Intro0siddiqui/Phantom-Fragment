@@ -22,6 +22,13 @@ pub enum ScanDepth {
 
 impl ScanDepth {
     /// Parse from string
+    ///
+    /// Kept as an inherent, infallible constructor rather than a
+    /// `std::str::FromStr` impl: the parser never fails (unknown input falls
+    /// back to `Standard`) and this signature is part of the public API
+    /// consumed by the CLI. Implementing the trait would require changing the
+    /// return type.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "quick" => ScanDepth::Quick,

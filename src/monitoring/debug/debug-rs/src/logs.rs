@@ -48,7 +48,7 @@ impl LogAnalyzer {
         self.filter_logs(&mut logs, filter, level);
 
         // Sort by timestamp (most recent first)
-        logs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        logs.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
 
         // Return requested number of lines
         if lines > 0 && logs.len() > lines {
@@ -385,7 +385,7 @@ impl LogSource for FragmentLogSource {
         }
 
         // Sort by timestamp
-        all_logs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        all_logs.sort_by_key(|a| a.timestamp);
 
         // Apply limit
         if limit > 0 && all_logs.len() > limit {
