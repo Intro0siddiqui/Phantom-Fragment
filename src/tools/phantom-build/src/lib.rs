@@ -114,7 +114,9 @@ pub async fn run(args: Args) -> Result<()> {
         if let Some((id, path)) = secret_arg.split_once('=') {
             context.secrets.insert(id.to_string(), PathBuf::from(path));
         } else {
-            log::warn!("Invalid secret format: {}", secret_arg);
+            // Never echo the value: a malformed `--secret` argument may be a
+            // raw secret rather than the expected `id=path` pair.
+            log::warn!("Invalid secret format (expected ID=PATH); value not logged");
         }
     }
 
@@ -137,7 +139,8 @@ pub async fn run(args: Args) -> Result<()> {
     executor.execute_stage(target_stage).await?;
 
     if let Some(tag) = &args.tag {
-        let simple_name = tag.replace(":", "-").replace("/", "_");
+        // Validate before the installer removes/renames into this path.
+        let simple_name = executor::image_dir_name(tag)?;
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));

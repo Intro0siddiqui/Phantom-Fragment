@@ -148,6 +148,8 @@ impl PhantomService {
         if params.network.unwrap_or(false) {
             cmd.arg("--network");
         }
+        // End of options: keep user-controlled image/command values positional
+        cmd.arg("--");
         cmd.arg(&params.image);
         cmd.args(sanitized_command.split_whitespace());
 

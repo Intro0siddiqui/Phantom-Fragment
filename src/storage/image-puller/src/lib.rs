@@ -32,6 +32,47 @@ pub struct LayerInfo {
     pub media_type: String,
 }
 
+/// Convert an image reference into a safe, single-component directory name.
+///
+/// Rejects empty components, `.`/`..` components and absolute paths so that a
+/// reference like `../../etc` cannot be used to read or delete host paths.
+fn image_dir_name(image_ref: &str) -> Result<String> {
+    let valid_segments = !image_ref.is_empty()
+        && !image_ref.contains('\0')
+        && image_ref
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+
+    let simple_name = image_ref.replace(':', "-").replace('/', "_");
+    let is_single_component = matches!(
+        Path::new(&simple_name).components().next(),
+        Some(std::path::Component::Normal(_))
+    ) && Path::new(&simple_name).components().count() == 1;
+
+    if !valid_segments || !is_single_component {
+        anyhow::bail!("Invalid image reference: {:?}", image_ref);
+    }
+
+    Ok(simple_name)
+}
+
+/// Validate a layer digest and return the hex portion used as a cache file name.
+///
+/// Manifests are remote input, so a digest like `../../etc/cron.d/x` must never
+/// be joined onto the cache directory.
+fn digest_hex(digest: &str) -> Result<&str> {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    if hex.is_empty() || hex.len() > 128 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("Invalid layer digest: {:?}", digest);
+    }
+    Ok(hex)
+}
+
+/// Shorten a digest for logging without risking a non-char-boundary panic.
+fn short_digest(digest: &str) -> String {
+    digest.chars().take(12).collect()
+}
+
 /// Pull configuration with verification options
 #[derive(Debug, Clone, Default)]
 pub struct PullConfig {
@@ -105,7 +146,7 @@ impl ImagePuller {
         log::info!("Pulling image: {}", image_ref);
 
         // Check if already extracted
-        let simple_name = image_ref.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(image_ref)?;
         let rootfs_path = self.rootfs_base.join(&simple_name);
 
         if rootfs_path.exists() {
@@ -162,12 +203,9 @@ impl ImagePuller {
                 let digest = store.store_layer(&layer_data, image_ref)?;
 
                 if was_new {
-                    log::info!("  Layer {} stored (new)", &digest[..12.min(digest.len())]);
+                    log::info!("  Layer {} stored (new)", short_digest(&digest));
                 } else {
-                    log::info!(
-                        "  Layer {} reused (shared)",
-                        &digest[..12.min(digest.len())]
-                    );
+                    log::info!("  Layer {} reused (shared)", short_digest(&digest));
                     reused_layers += 1;
                 }
 
@@ -215,16 +253,10 @@ impl ImagePuller {
         &self,
         layer: &oci_registry_rs::LayerInfo,
     ) -> Result<Vec<u8>> {
-        log::info!(
-            "Downloading layer {}...",
-            &layer.digest[..12.min(layer.digest.len())]
-        );
+        log::info!("Downloading layer {}...", short_digest(&layer.digest));
 
         // Find the blob file in cache (registry client already downloaded it)
-        let digest_without_prefix = layer
-            .digest
-            .strip_prefix("sha256:")
-            .unwrap_or(&layer.digest);
+        let digest_without_prefix = digest_hex(&layer.digest)?;
         let blob_path = self
             .cache_dir
             .join(format!("{}.tar.gzip", digest_without_prefix));
@@ -243,10 +275,7 @@ impl ImagePuller {
             hasher.update(&data);
             let actual_digest = format!("{:x}", hasher.finalize());
 
-            let expected = layer
-                .digest
-                .strip_prefix("sha256:")
-                .unwrap_or(&layer.digest);
+            let expected = digest_hex(&layer.digest)?;
             if actual_digest != expected {
                 anyhow::bail!(
                     "Layer digest mismatch: expected {}, got {}",
@@ -254,10 +283,7 @@ impl ImagePuller {
                     actual_digest
                 );
             }
-            log::info!(
-                "✓ Layer {} verified",
-                &layer.digest[..12.min(layer.digest.len())]
-            );
+            log::info!("✓ Layer {} verified", short_digest(&layer.digest));
         }
 
         Ok(data)
@@ -278,7 +304,7 @@ impl ImagePuller {
 
     /// Get path to a rootfs for an image (manual or automatic)
     pub async fn get_rootfs(&self, image_ref: &str, auto_pull: bool) -> Result<PathBuf> {
-        let simple_name = image_ref.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(image_ref)?;
         let rootfs_path = self.rootfs_base.join(&simple_name);
 
         if rootfs_path.exists() {
@@ -311,7 +337,9 @@ impl ImagePuller {
 
     /// Remove a specific rootfs image
     pub fn remove_image(&self, image_name: &str) -> Result<()> {
-        let simple_name = image_name.replace(":", "-").replace("/", "_");
+        // Validate before touching the filesystem: a name such as `../..`
+        // must never resolve outside of the rootfs directory.
+        let simple_name = image_dir_name(image_name)?;
         let rootfs_path = self.rootfs_base.join(&simple_name);
 
         if rootfs_path.exists() {
@@ -485,7 +513,62 @@ impl Default for ImagePuller {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
 
-    // The original test_compute_hash is removed as compute_image_hash is no longer used.
-    // New tests for pull functionality would be added here in a real scenario.
+    #[test]
+    fn test_image_dir_name_is_safe() {
+        assert_eq!(image_dir_name("alpine:3.18").unwrap(), "alpine-3.18");
+        assert_eq!(
+            image_dir_name("ghcr.io/user/app:v1").unwrap(),
+            "ghcr.io_user_app-v1"
+        );
+        assert_eq!(image_dir_name("nginx").unwrap(), "nginx");
+    }
+
+    #[test]
+    fn test_image_dir_name_rejects_traversal() {
+        for name in [
+            "..",
+            ".",
+            "../..",
+            "../../etc",
+            "/etc/passwd",
+            "foo/../../bar",
+            "",
+            "a\0b",
+        ] {
+            assert!(
+                image_dir_name(name).is_err(),
+                "image reference {:?} should be rejected",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_digest_hex_rejects_traversal() {
+        assert_eq!(digest_hex("sha256:abcdef0123").unwrap(), "abcdef0123");
+        assert_eq!(digest_hex("abcdef0123").unwrap(), "abcdef0123");
+
+        for digest in [
+            "../../etc/passwd",
+            "sha256:../x",
+            "sha256:",
+            "sha256:zzzz",
+            "",
+        ] {
+            assert!(
+                digest_hex(digest).is_err(),
+                "digest {:?} should be rejected",
+                digest
+            );
+        }
+    }
+
+    #[test]
+    fn test_short_digest_handles_multibyte() {
+        // Must not panic on a non-char-boundary slice
+        assert_eq!(short_digest("ééééééééééééééé"), "éééééééééééé");
+        assert_eq!(short_digest("sha256:abc"), "sha256:abc");
+    }
 }

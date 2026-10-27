@@ -2,11 +2,67 @@
 
 use crate::parser::{BuildStage, Instruction};
 use anyhow::{Context, Result};
+use flate2::read::GzDecoder;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+
+/// Resolve a Fragmentfile-supplied path inside `root`.
+///
+/// Absolute paths are treated as relative to `root` (like Docker), and any
+/// `..` component that would escape `root` is rejected instead of being
+/// allowed to reach the host filesystem.
+fn resolve_within(root: &Path, path: &str) -> Result<PathBuf> {
+    let root = root.to_path_buf();
+    let mut out = root.clone();
+
+    for component in Path::new(path).components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::CurDir => {}
+            Component::ParentDir => {
+                if out == root {
+                    anyhow::bail!(
+                        "Path '{}' escapes the build root '{}'",
+                        path,
+                        root.display()
+                    );
+                }
+                out.pop();
+            }
+            Component::Normal(part) => out.push(part),
+        }
+    }
+
+    Ok(out)
+}
+
+/// Convert an image reference or tag into a safe, single-component directory
+/// name below `~/.phantom/rootfs`.
+///
+/// Rejects `.`/`..` and empty path segments so that `FROM ..` or `--tag ..`
+/// cannot resolve outside of the rootfs directory (and be deleted by the
+/// build installer).
+pub(crate) fn image_dir_name(image: &str) -> Result<String> {
+    let valid_segments = !image.is_empty()
+        && !image.contains('\0')
+        && image
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..");
+
+    let simple_name = image.replace(':', "-").replace('/', "_");
+    let is_single_component = matches!(
+        Path::new(&simple_name).components().next(),
+        Some(Component::Normal(_))
+    ) && Path::new(&simple_name).components().count() == 1;
+
+    if !valid_segments || !is_single_component {
+        anyhow::bail!("Invalid image reference: {:?}", image);
+    }
+
+    Ok(simple_name)
+}
 
 /// Image configuration stored with built images
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -185,7 +241,9 @@ impl BuildExecutor {
         let phantom_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("phantom"));
 
         let status = Command::new(phantom_exe)
-            .args(["run", image, "/bin/sh", "-c", "true"])
+            // `--` keeps a hostile `FROM` value (e.g. `--profile`) from being
+            // parsed as a phantom CLI flag.
+            .args(["run", "--", image, "/bin/sh", "-c", "true"])
             .status()
             .context("Failed to pull base image")?;
 
@@ -212,7 +270,7 @@ impl BuildExecutor {
         }
 
         // Find the pulled base image
-        let simple_name = base_image.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(base_image)?;
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
@@ -294,7 +352,7 @@ impl BuildExecutor {
                 log::info!("    WORKDIR {}", path);
                 self.context.workdir = PathBuf::from(&path);
                 // Create the directory in build rootfs
-                let full_path = self.context.build_rootfs.join(path.trim_start_matches('/'));
+                let full_path = resolve_within(&self.context.build_rootfs, &path)?;
                 std::fs::create_dir_all(&full_path)
                     .context(format!("Failed to create WORKDIR: {}", path))?;
                 self.context.image_config.workdir = path;
@@ -306,7 +364,7 @@ impl BuildExecutor {
                 self.context
                     .image_config
                     .env
-                    .push(format!("{}={}", key, &value));
+                    .push(format!("{}={}", key, value));
                 self.context.environment.insert(key.clone(), value);
             }
 
@@ -499,11 +557,8 @@ impl BuildExecutor {
                 )
             })?;
 
-            let source_path = source_dir.join(source.trim_start_matches('/'));
-            let dest_path = self
-                .context
-                .build_rootfs
-                .join(destination.trim_start_matches('/'));
+            let source_path = resolve_within(source_dir, &source)?;
+            let dest_path = resolve_within(&self.context.build_rootfs, &destination)?;
 
             if !source_path.exists() {
                 anyhow::bail!(
@@ -546,14 +601,11 @@ impl BuildExecutor {
         } else {
             log::info!("    COPY {} {}", source, destination);
 
-            // Resolve source path from build context
-            let source_path = self.context.context_path.join(&source);
+            // Resolve source path from build context (must not escape it)
+            let source_path = resolve_within(&self.context.context_path, &source)?;
 
             // Resolve destination in build rootfs
-            let mut dest_path = self
-                .context
-                .build_rootfs
-                .join(destination.trim_start_matches('/'));
+            let mut dest_path = resolve_within(&self.context.build_rootfs, &destination)?;
 
             // If destination ends with /, treat as directory and append source filename
             if destination.ends_with('/') {
@@ -651,10 +703,7 @@ impl BuildExecutor {
             }
 
             // Write to destination
-            let dest_path = self
-                .context
-                .build_rootfs
-                .join(destination.trim_start_matches('/'));
+            let dest_path = resolve_within(&self.context.build_rootfs, &destination)?;
 
             // Create parent directories
             if let Some(parent) = dest_path.parent() {
@@ -672,7 +721,7 @@ impl BuildExecutor {
 
             if is_tarball {
                 log::info!("      Extracting tarball...");
-                self.extract_tar(&data, &dest_path)?;
+                self.extract_tar(&data, &dest_path, &source)?;
             } else {
                 fs::write(&dest_path, &data).context(format!(
                     "Failed to write downloaded file to {}",
@@ -699,43 +748,33 @@ impl BuildExecutor {
     }
 
     /// Extract tarball data to destination directory
-    fn extract_tar(&self, data: &[u8], dest_path: &Path) -> Result<()> {
+    ///
+    /// Uses the `tar` crate rather than shelling out to the system `tar`
+    /// binary. The crate canonicalizes member paths and rejects `..` and
+    /// absolute entries, so an archive fetched by `ADD <url>` cannot write
+    /// outside of the build rootfs (no zip-slip / symlink escape).
+    fn extract_tar(&self, data: &[u8], dest_path: &Path, source: &str) -> Result<()> {
+        use tar::Archive;
+
         // Create destination directory
         fs::create_dir_all(dest_path).context(format!(
             "Failed to create extraction directory: {}",
             dest_path.display()
         ))?;
 
-        // Use tar command to extract
-        let temp_tar = dest_path.with_extension("tar.tmp");
-        fs::write(&temp_tar, data).context("Failed to write temporary tar file")?;
+        let reader: Box<dyn std::io::Read> =
+            if source.ends_with(".tar.gz") || source.ends_with(".tgz") {
+                Box::new(GzDecoder::new(data))
+            } else {
+                Box::new(data)
+            };
 
-        let result = Command::new("tar")
-            .args([
-                "-xzf",
-                temp_tar.to_str().unwrap(),
-                "-C",
-                dest_path.to_str().unwrap(),
-            ])
-            .status();
+        let mut archive = Archive::new(reader);
+        archive
+            .unpack(dest_path)
+            .context("Failed to extract tarball")?;
 
-        // Clean up temp file
-        let _ = fs::remove_file(&temp_tar);
-
-        match result {
-            Ok(status) if status.success() => {
-                log::info!("      ✓ Tarball extracted to {}", dest_path.display());
-            }
-            Ok(status) => {
-                anyhow::bail!("tar command exited with status: {}", status);
-            }
-            Err(e) => {
-                // tar not available, write as-is
-                log::warn!("      ⚠ tar not available, writing as-is: {}", e);
-                fs::write(dest_path, data)?;
-            }
-        }
-
+        log::info!("      ✓ Tarball extracted to {}", dest_path.display());
         Ok(())
     }
 
@@ -750,7 +789,7 @@ impl BuildExecutor {
             .or_else(|| default.map(String::from))
             .unwrap_or_default();
 
-        log::info!("    ARG {}={}", name, &value);
+        log::info!("    ARG {}={}", name, value);
         self.context.build_args.insert(name.to_string(), value);
         Ok(())
     }
@@ -778,10 +817,10 @@ impl BuildExecutor {
     fn finalize_stage(&mut self) -> Result<()> {
         if let Some(stage_name) = self.current_stage.take() {
             // Create stage output path
-            let stage_output = self
-                .context
-                .build_rootfs
-                .join(format!("stages/{}", stage_name));
+            let stage_output = resolve_within(
+                &self.context.build_rootfs,
+                &format!("stages/{}", stage_name),
+            )?;
             fs::create_dir_all(&stage_output).context(format!(
                 "Failed to create stage output directory: {}",
                 stage_output.display()
@@ -791,7 +830,7 @@ impl BuildExecutor {
             copy_dir_recursive(&self.context.build_rootfs, &stage_output)?;
 
             // Register stage
-            log::info!("    ✓ Stage '{}' finalized", &stage_name);
+            log::info!("    ✓ Stage '{}' finalized", stage_name);
             self.stages.insert(stage_name, stage_output);
         }
         Ok(())
@@ -839,7 +878,7 @@ impl BuildExecutor {
         let home = std::env::var("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from("/tmp"));
-        let simple_name = stage.base_image.replace(":", "-").replace("/", "_");
+        let simple_name = image_dir_name(&stage.base_image)?;
         let image_path = home.join(".phantom").join("rootfs").join(&simple_name);
 
         if let Err(e) = self.save_image_config(&image_path) {
@@ -995,5 +1034,117 @@ mod tests {
             result.unwrap_err().to_string(),
             "RUN command cannot be empty"
         );
+    }
+
+    #[test]
+    fn test_resolve_within_allows_absolute_and_normal_paths() {
+        let root = Path::new("/build/rootfs");
+
+        assert_eq!(
+            resolve_within(root, "/usr/bin/app").unwrap(),
+            PathBuf::from("/build/rootfs/usr/bin/app")
+        );
+        assert_eq!(
+            resolve_within(root, "app/./bin").unwrap(),
+            PathBuf::from("/build/rootfs/app/bin")
+        );
+        // Interior ".." that stays inside the root is fine
+        assert_eq!(
+            resolve_within(root, "a/../b").unwrap(),
+            PathBuf::from("/build/rootfs/b")
+        );
+    }
+
+    #[test]
+    fn test_resolve_within_rejects_escaping_paths() {
+        let root = Path::new("/build/rootfs");
+
+        for path in [
+            "../etc/passwd",
+            "/../../etc/passwd",
+            "a/../../etc/passwd",
+            "..",
+        ] {
+            let result = resolve_within(root, path);
+            assert!(result.is_err(), "path '{}' should be rejected", path);
+        }
+    }
+
+    #[test]
+    fn test_extract_tar_does_not_escape_destination() {
+        let base = std::env::temp_dir().join(format!(
+            "phantom-build-tar-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let dest = base.join("rootfs");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&dest).unwrap();
+
+        // Build a tar containing a path-traversal member and an absolute member.
+        // The raw header name is written directly because `Builder::append_data`
+        // refuses to create archives with `..` paths.
+        let mut builder = tar::Builder::new(Vec::new());
+        for (name, contents) in [
+            ("../escaped.txt", &b"pwned"[..]),
+            ("/abs.txt", &b"absolute"[..]),
+        ] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(contents.len() as u64);
+            header.set_mode(0o644);
+            {
+                let raw_name = header.as_old_mut().name.as_mut();
+                raw_name[..name.len()].copy_from_slice(name.as_bytes());
+            }
+            header.set_cksum();
+            builder
+                .append(&header, contents)
+                .expect("failed to append test entry");
+        }
+        let data = builder.into_inner().unwrap();
+
+        let executor = BuildExecutor::new(BuildContext::new("."));
+        executor
+            .extract_tar(&data, &dest, "test.tar")
+            .expect("extraction should succeed while skipping unsafe entries");
+
+        assert!(
+            !base.join("escaped.txt").exists(),
+            "tar entry escaped the destination directory"
+        );
+        assert!(
+            !Path::new("/abs.txt").exists(),
+            "absolute tar entry was written to the filesystem root"
+        );
+        assert!(dest.join("abs.txt").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_image_dir_name_is_safe() {
+        assert_eq!(image_dir_name("alpine:3.18").unwrap(), "alpine-3.18");
+        assert_eq!(
+            image_dir_name("ghcr.io/user/app:v1").unwrap(),
+            "ghcr.io_user_app-v1"
+        );
+    }
+
+    #[test]
+    fn test_image_dir_name_rejects_traversal() {
+        for name in ["..", ".", "../..", "../../etc", "/etc/passwd", "", "a\0b"] {
+            assert!(
+                image_dir_name(name).is_err(),
+                "image reference {:?} should be rejected",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn test_copy_destination_cannot_escape_rootfs() {
+        // Exercise the same resolution used by COPY/ADD destinations.
+        let root = Path::new("/build/rootfs");
+        assert!(resolve_within(root, "../../../home/user/.ssh/authorized_keys").is_err());
     }
 }
