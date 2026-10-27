@@ -1,4 +1,48 @@
+use std::process::Command;
+
+/// Phantom Fragment's Zig sources target the 0.16 std API.
+const MIN_ZIG_MINOR: u32 = 16;
+
+/// Fail early with an actionable message instead of a wall of Zig compile errors.
+fn check_zig_version() {
+    let output = Command::new("zig")
+        .arg("version")
+        .output()
+        .unwrap_or_else(|e| {
+            eprintln!(
+                "error: could not run `zig` ({e}).\n\
+             Phantom Fragment requires Zig 0.16 or newer to build its native libraries.\n\
+             Install it from https://ziglang.org/download/ and make sure `zig` is in PATH."
+            );
+            std::process::exit(1);
+        });
+
+    if !output.status.success() {
+        eprintln!(
+            "error: `zig version` failed with status {}.\n\
+             Phantom Fragment requires Zig 0.16 or newer; check your Zig installation.",
+            output.status
+        );
+        std::process::exit(1);
+    }
+
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let mut parts = version.split('.');
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(0);
+
+    if major == 0 && minor < MIN_ZIG_MINOR {
+        eprintln!(
+            "error: Zig {version} is too old; Phantom Fragment requires Zig 0.16 or newer.\n\
+             Install a supported toolchain from https://ziglang.org/download/ and make sure it is first in PATH."
+        );
+        std::process::exit(1);
+    }
+}
+
 fn main() {
+    check_zig_version();
+
     let out_dir = std::env::var("OUT_DIR").unwrap();
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let zig_file = std::path::Path::new(&manifest_dir).join("../memory-zig/src/main.zig");
@@ -26,7 +70,7 @@ fn main() {
         }
         Err(e) => {
             eprintln!("Error: Failed to execute zig command: {}", e);
-            eprintln!("Make sure Zig 0.14+ is installed and in your PATH.");
+            eprintln!("Make sure Zig 0.16+ is installed and in your PATH.");
             std::process::exit(1);
         }
     }
