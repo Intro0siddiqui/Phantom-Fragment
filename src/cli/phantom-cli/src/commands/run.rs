@@ -702,7 +702,15 @@ fn resolve_in_rootfs(rootfs: &std::path::Path, program: &str) -> Option<String> 
     PATH_DIRS
         .iter()
         .map(|dir| format!("{}/{}", dir, program))
-        .find(|candidate| rootfs.join(candidate.trim_start_matches('/')).exists())
+        // `exists()` follows symlinks, and rootfs binaries are usually absolute
+        // symlinks (`/bin/echo -> /bin/busybox`) that only resolve after the
+        // chroot. lstat the link itself instead.
+        .find(|candidate| {
+            rootfs
+                .join(candidate.trim_start_matches('/'))
+                .symlink_metadata()
+                .is_ok()
+        })
 }
 
 /// Resolve a bare command name against the host filesystem.

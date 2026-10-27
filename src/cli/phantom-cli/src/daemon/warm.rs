@@ -946,12 +946,29 @@ impl WarmDaemon {
                 self.config
                     .rootfs_path
                     .join(cmd_path.strip_prefix("/").unwrap_or(&cmd_path))
-            } else {
+            } else if request.command.contains('/') {
                 self.config.rootfs_path.join(&cmd_path)
+            } else {
+                // Bare name: the child resolves it with execvp inside the
+                // chroot, so validate against a standard PATH here too.
+                ["bin", "usr/bin", "sbin", "usr/sbin"]
+                    .iter()
+                    .map(|dir| self.config.rootfs_path.join(dir).join(&cmd_path))
+                    // Rootfs binaries are absolute symlinks (`/bin/echo ->
+                    // /bin/busybox`) that only resolve after the chroot, so
+                    // `exists()` would reject them; lstat the link itself.
+                    .find(|candidate| candidate.symlink_metadata().is_ok())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "command not found in rootfs PATH: {} (searched {:?})",
+                            request.command,
+                            self.config.rootfs_path
+                        )
+                    })?
             };
 
             // Verify the command exists within rootfs
-            if !full_path.exists() {
+            if full_path.symlink_metadata().is_err() {
                 anyhow::bail!(
                     "command not found in rootfs: {} (looked at {:?})",
                     request.command,
@@ -1918,7 +1935,21 @@ pub fn get_metrics_from_daemon(socket_path: &Path) -> Result<MetricsResponse> {
 
 /// Entry point for running as a warm daemon
 /// Called when --internal-warm-daemon flag is detected in main()
-pub async fn run_daemon_mode(args: &[String]) -> anyhow::Result<()> {
+///
+/// `WarmDaemon::run` builds its own Tokio runtime and blocks on it, which
+/// panics with "Cannot start a runtime from within a runtime" when called from
+/// `#[tokio::main]`. Run it on a dedicated OS thread so it owns a fresh runtime.
+pub fn run_daemon_mode(args: &[String]) -> anyhow::Result<()> {
+    let args = args.to_vec();
+    std::thread::Builder::new()
+        .name("warm-daemon".to_string())
+        .spawn(move || daemon_main(&args))
+        .context("Failed to spawn warm daemon thread")?
+        .join()
+        .map_err(|_| anyhow::anyhow!("Warm daemon thread panicked"))?
+}
+
+fn daemon_main(args: &[String]) -> anyhow::Result<()> {
     use clap::Parser;
 
     #[derive(Parser)]

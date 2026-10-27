@@ -160,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
     // Check for internal daemon mode BEFORE CLI parsing
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--internal-warm-daemon") {
-        return daemon::run_daemon_mode(&args).await;
+        return daemon::run_daemon_mode(&args);
     }
 
     // Try to run the main logic, handling NeedSudo errors
