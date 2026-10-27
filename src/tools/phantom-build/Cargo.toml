@@ -27,6 +27,10 @@ pest_derive = "2.7"
 sha2 = "0.10"
 hex = "0.4"
 
+# Safe tarball extraction (ADD <url>)
+tar = "0.4"
+flate2 = "1.0"
+
 # Progress tracking
 indicatif = "0.17"
 
