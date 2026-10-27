@@ -47,6 +47,17 @@ const PROTOCOL_MAGIC: u32 = 0x50484E54; // "PHNT"
 /// Protocol version
 const PROTOCOL_VERSION: u8 = 1;
 
+/// Size of the fixed message header: [magic:4][version:1][type:1][length:4]
+const HEADER_SIZE: usize = 10;
+
+/// Upper bound for a single message payload.
+///
+/// The length field is attacker-controlled, so it must never be trusted when
+/// allocating a buffer. 1 MiB is far above anything the warm daemon needs
+/// (exec requests are a few KiB at most) while keeping a malformed or
+/// malicious peer from forcing a multi-gigabyte allocation.
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+
 /// Message types
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,7 +182,15 @@ impl Message {
     }
 
     pub fn serialize(&self) -> Result<Vec<u8>> {
-        let mut buf = Vec::with_capacity(10 + self.payload.len());
+        if self.payload.len() > MAX_MESSAGE_SIZE {
+            anyhow::bail!(
+                "Message payload too large: {} bytes (max {})",
+                self.payload.len(),
+                MAX_MESSAGE_SIZE
+            );
+        }
+
+        let mut buf = Vec::with_capacity(HEADER_SIZE + self.payload.len());
         buf.extend_from_slice(&PROTOCOL_MAGIC.to_le_bytes());
         buf.push(PROTOCOL_VERSION);
         buf.push(self.msg_type as u8);
@@ -180,8 +199,13 @@ impl Message {
         Ok(buf)
     }
 
+    /// Decode a message from an in-memory buffer.
+    ///
+    /// Kept for protocol completeness and tests; the daemon and client read
+    /// frames through [`read_message`], which validates before allocating.
+    #[allow(dead_code)]
     pub fn deserialize(data: &[u8]) -> Result<Self> {
-        if data.len() < 10 {
+        if data.len() < HEADER_SIZE {
             anyhow::bail!("Message too short");
         }
 
@@ -198,12 +222,133 @@ impl Message {
         let msg_type = MessageType::from(data[5]);
         let length = u32::from_le_bytes([data[6], data[7], data[8], data[9]]) as usize;
 
-        if data.len() < 10 + length {
+        if length > MAX_MESSAGE_SIZE {
+            anyhow::bail!(
+                "Message payload length {} exceeds maximum {}",
+                length,
+                MAX_MESSAGE_SIZE
+            );
+        }
+
+        if data.len() < HEADER_SIZE + length {
             anyhow::bail!("Incomplete message payload");
         }
 
-        let payload = data[10..10 + length].to_vec();
+        let payload = data[HEADER_SIZE..HEADER_SIZE + length].to_vec();
         Ok(Self { msg_type, payload })
+    }
+}
+
+/// Read and validate a complete message from a stream.
+///
+/// This is the single framing entry point used by both the daemon and the
+/// client. The header is validated (magic, version, bounded length) *before*
+/// the payload buffer is allocated, so a truncated header, a protocol
+/// mismatch, or an absurd length can never trigger a huge allocation or an
+/// out-of-bounds read. `read_exact` loops internally, so partial reads are
+/// handled correctly.
+pub fn read_message<R: Read>(reader: &mut R) -> Result<Message> {
+    let mut header = [0u8; HEADER_SIZE];
+    reader
+        .read_exact(&mut header)
+        .context("Failed to read message header")?;
+
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    if magic != PROTOCOL_MAGIC {
+        anyhow::bail!("Invalid protocol magic: 0x{:08X}", magic);
+    }
+
+    if header[4] != PROTOCOL_VERSION {
+        anyhow::bail!("Unsupported protocol version: {}", header[4]);
+    }
+
+    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
+    if length > MAX_MESSAGE_SIZE {
+        anyhow::bail!(
+            "Message payload length {} exceeds maximum {}",
+            length,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    let mut payload = vec![0u8; length];
+    reader
+        .read_exact(&mut payload)
+        .context("Failed to read message payload")?;
+
+    Ok(Message {
+        msg_type: MessageType::from(header[5]),
+        payload,
+    })
+}
+
+/// Write a framed message to a stream.
+///
+/// `write_all` loops internally, so short writes are handled correctly.
+pub fn write_message<W: Write>(writer: &mut W, message: &Message) -> Result<()> {
+    let data = message.serialize()?;
+    writer.write_all(&data).context("Failed to write message")?;
+    Ok(())
+}
+
+/// Bounds-checked reader for the length-prefixed exec payload.
+///
+/// Every field is validated against the remaining payload before it is
+/// sliced, so malformed input produces an `Err` instead of a panic.
+struct PayloadReader<'a> {
+    data: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> PayloadReader<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        Self { data, offset: 0 }
+    }
+
+    fn take(&mut self, len: usize, what: &str) -> Result<&'a [u8]> {
+        let end = self
+            .offset
+            .checked_add(len)
+            .context("Payload field length overflow")?;
+        if end > self.data.len() {
+            anyhow::bail!(
+                "Malformed payload: {} needs {} byte(s) at offset {} but only {} remain",
+                what,
+                len,
+                self.offset,
+                self.data.len().saturating_sub(self.offset)
+            );
+        }
+        let slice = &self.data[self.offset..end];
+        self.offset = end;
+        Ok(slice)
+    }
+
+    fn read_u8(&mut self, what: &str) -> Result<u8> {
+        Ok(self.take(1, what)?[0])
+    }
+
+    fn read_u16(&mut self, what: &str) -> Result<u16> {
+        let bytes = self.take(2, what)?;
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn read_u32(&mut self, what: &str) -> Result<u32> {
+        let bytes = self.take(4, what)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn read_u64(&mut self, what: &str) -> Result<u64> {
+        let bytes = self.take(8, what)?;
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
+    }
+
+    fn read_string(&mut self, what: &str) -> Result<String> {
+        let len = self.read_u16(&format!("{} length", what))? as usize;
+        let bytes = self.take(len, what)?;
+        Ok(String::from_utf8_lossy(bytes).to_string())
     }
 }
 
@@ -254,9 +399,23 @@ impl WarmDaemon {
                 .with_context(|| format!("Failed to create socket directory: {:?}", parent))?;
         }
 
-        // Remove existing socket file
+        // Remove a stale socket file, but never clobber a live daemon.
+        //
+        // Previously this unconditionally unlinked the path, so starting a
+        // second daemon (or a duplicate supervisor) silently stole the socket
+        // from the running one, leaving the first daemon unreachable.
         if config.socket_path.exists() {
-            fs::remove_file(&config.socket_path).ok();
+            if UnixStream::connect(&config.socket_path).is_ok() {
+                anyhow::bail!(
+                    "A warm daemon is already listening on {:?}; refusing to replace its socket",
+                    config.socket_path
+                );
+            }
+
+            // Nothing is listening: the socket is stale, safe to remove.
+            fs::remove_file(&config.socket_path).with_context(|| {
+                format!("Failed to remove stale socket: {:?}", config.socket_path)
+            })?;
         }
 
         // Bind to socket
@@ -350,6 +509,14 @@ impl WarmDaemon {
 
                 let mut stream = match stream {
                     Ok(s) => s,
+                    // The listener is non-blocking, so `incoming()` reports
+                    // WouldBlock whenever no connection is pending. Sleep
+                    // briefly instead of spinning (this previously burned a
+                    // full CPU core for the daemon's whole lifetime).
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
                     Err(_) => continue,
                 };
 
@@ -468,9 +635,14 @@ impl WarmDaemon {
             .build()?;
 
         rt.block_on(async {
-            self.listener.set_nonblocking(true).unwrap();
-            let async_listener =
-                tokio::net::UnixListener::from_std(self.listener.try_clone().unwrap()).unwrap();
+            // The listener must be registered from inside the runtime: tokio's
+            // `from_std` requires an active reactor.
+            let listener = self
+                .listener
+                .try_clone()
+                .context("Failed to clone daemon listener")?;
+            let async_listener = tokio::net::UnixListener::from_std(listener)
+                .context("Failed to register daemon listener with tokio")?;
             let mut prune_interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
             loop {
@@ -482,8 +654,17 @@ impl WarmDaemon {
                                     break;
                                 }
 
-                                let std_stream = stream.into_std().unwrap();
-                                std_stream.set_nonblocking(false).unwrap();
+                                let std_stream = match stream.into_std() {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        log::error!("Failed to convert client stream: {:?}", e);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = std_stream.set_nonblocking(false) {
+                                    log::error!("Failed to set client stream to blocking: {:?}", e);
+                                    continue;
+                                }
 
                                 // To avoid changing the entire function signature to be static (borrow checker issues),
                                 // we can't easily spawn a task for handle_client since it takes &mut self.
@@ -516,7 +697,9 @@ impl WarmDaemon {
                     break;
                 }
             }
-        });
+
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         // Cleanup
         self.cleanup()?;
@@ -552,22 +735,9 @@ impl WarmDaemon {
             }
         }
 
-        // Read message header
-        let mut header = [0u8; 10];
-        stream
-            .read_exact(&mut header)
-            .context("Failed to read message header")?;
-
-        // Parse header to get payload length
-        let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-
-        // Read payload
-        let mut payload = vec![0u8; length];
-        stream
-            .read_exact(&mut payload)
-            .context("Failed to read message payload")?;
-
-        let msg = Message::deserialize(&[&header[..], &payload[..]].concat())?;
+        // Read and validate the framed request. Header validation (magic,
+        // version, bounded length) happens before any payload allocation.
+        let msg = read_message(stream)?;
 
         match msg.msg_type {
             MessageType::Exec => self.handle_exec(stream, &msg.payload),
@@ -600,71 +770,42 @@ impl WarmDaemon {
     ) -> Result<()> {
         let start = Instant::now();
 
-        // Parse request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1]
-        let mut offset = 0;
+        // Parse request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1][cpu:4][mem:4]
+        //
+        // All reads go through PayloadReader: a truncated or malformed payload
+        // is rejected with an error rather than panicking on slice indexing.
+        let mut reader = PayloadReader::new(payload);
 
-        // Read command
-        let cmd_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-        offset += 2;
-        let command = String::from_utf8_lossy(&payload[offset..offset + cmd_len]).to_string();
-        offset += cmd_len;
+        let command = reader.read_string("command")?;
 
-        // Read args
-        let args_count = payload[offset] as usize;
-        offset += 1;
+        let args_count = reader.read_u8("args count")? as usize;
         let mut args = Vec::with_capacity(args_count);
         for _ in 0..args_count {
-            let arg_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-            offset += 2;
-            let arg = String::from_utf8_lossy(&payload[offset..offset + arg_len]).to_string();
-            offset += arg_len;
-            args.push(arg);
+            args.push(reader.read_string("argument")?);
         }
 
-        // Read env
-        let env_count = payload[offset] as usize;
-        offset += 1;
+        let env_count = reader.read_u8("env count")? as usize;
         let mut env = HashMap::new();
         for _ in 0..env_count {
-            let key_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-            offset += 2;
-            let key = String::from_utf8_lossy(&payload[offset..offset + key_len]).to_string();
-            offset += key_len;
-            let val_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-            offset += 2;
-            let val = String::from_utf8_lossy(&payload[offset..offset + val_len]).to_string();
-            offset += val_len;
+            let key = reader.read_string("env key")?;
+            let val = reader.read_string("env value")?;
             env.insert(key, val);
         }
 
-        // Read cwd
-        let cwd_len = u16::from_le_bytes([payload[offset], payload[offset + 1]]) as usize;
-        offset += 2;
-        let cwd = if cwd_len > 0 {
-            Some(String::from_utf8_lossy(&payload[offset..offset + cwd_len]).to_string())
-        } else {
-            None
+        let cwd = {
+            let cwd = reader.read_string("cwd")?;
+            if cwd.is_empty() {
+                None
+            } else {
+                Some(cwd)
+            }
         };
-        offset += cwd_len;
 
-        // Read hardware profile flag
-        let has_profile = payload[offset] != 0;
-        offset += 1;
+        let has_profile = reader.read_u8("profile flag")? != 0;
         let hardware_profile = if has_profile {
             // Read profile: [cpu_count:4][memory_mb:4]
-            let cpu_count = u32::from_le_bytes([
-                payload[offset],
-                payload[offset + 1],
-                payload[offset + 2],
-                payload[offset + 3],
-            ]) as usize;
-            offset += 4;
-            let memory_mb = u32::from_le_bytes([
-                payload[offset],
-                payload[offset + 1],
-                payload[offset + 2],
-                payload[offset + 3],
-            ]) as usize;
+            let cpu_count = reader.read_u32("cpu count")? as usize;
+            let memory_mb = reader.read_u32("memory mb")? as usize;
             Some(HardwareProfile {
                 cpu_affinity: None,
                 numa_node: None,
@@ -831,19 +972,30 @@ impl WarmDaemon {
         c_args_with_cmd.push(c_cmd.clone());
         c_args_with_cmd.append(&mut c_args);
 
-        // Create cgroup in parent BEFORE fork so we can destroy it after child exits
-        let cgroup: Option<CgroupManager> = if let Some(ref profile) = request.hardware_profile {
+        // Create cgroup in parent BEFORE fork so we can destroy it after child exits.
+        //
+        // The name is computed exactly once, here in the parent, and the child
+        // reuses it. Previously the child recomputed the timestamp after fork,
+        // producing a *different* name: it tried to join a cgroup that did not
+        // exist (so limits were never applied) while the parent destroyed its
+        // empty cgroup. That silently disabled cgroup enforcement.
+        let cgroup_name: Option<String> = request.hardware_profile.as_ref().map(|_| {
             let timestamp = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_millis())
                 .unwrap_or(0) as u64;
 
-            let cgroup_name = format!("phantom_warm_{}_{}", self.daemon_id, timestamp);
-            let cgroup = CgroupManager::new(&cgroup_name);
+            format!("phantom_warm_{}_{}", self.daemon_id, timestamp)
+        });
+
+        let cgroup: Option<CgroupManager> = if let (Some(profile), Some(name)) =
+            (request.hardware_profile.as_ref(), cgroup_name.as_deref())
+        {
+            let cgroup = CgroupManager::new(name);
 
             // Create cgroup
             if let Err(e) = cgroup.create() {
-                log::warn!("Failed to create cgroup {}: {:?}", cgroup_name, e);
+                log::warn!("Failed to create cgroup {}: {:?}", name, e);
                 None
             } else {
                 // Apply memory limit
@@ -905,14 +1057,9 @@ impl WarmDaemon {
 
                     // Apply cgroup limits BEFORE exec - child is still just our code
                     // The cgroup was already created by the parent; we just need to add ourselves
-                    if let Some(ref _profile) = request.hardware_profile {
-                        let timestamp = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis())
-                            .unwrap_or(0) as u64;
-
-                        let cgroup_name = format!("phantom_warm_{}_{}", self.daemon_id, timestamp);
-                        let cgroup = CgroupManager::new(&cgroup_name);
+                    // using the SAME name the parent created.
+                    if let Some(ref name) = cgroup_name {
+                        let cgroup = CgroupManager::new(name);
 
                         // CRITICAL: Add current process (PID 0) to cgroup BEFORE exec
                         // PID 0 means "current process" in the cgroup API
@@ -1125,7 +1272,7 @@ impl WarmDaemon {
         payload.extend_from_slice(&response.total_requests.to_le_bytes());
         payload.extend_from_slice(&response.failed_requests.to_le_bytes());
         payload.extend_from_slice(&response.successful_requests.to_le_bytes());
-        payload.extend_from_slice(&(response.avg_response_time_ms.to_bits() as u64).to_le_bytes());
+        payload.extend_from_slice(&response.avg_response_time_ms.to_bits().to_le_bytes());
         payload.extend_from_slice(&(response.active_children as u32).to_le_bytes());
         payload.push(if response.cgroup_active { 1 } else { 0 });
 
@@ -1175,29 +1322,34 @@ impl WarmDaemon {
     }
 
     /// Prune dead/zombie child processes
-    /// Returns the number of pruned children
+    ///
+    /// A zombie child is still visible to `kill(pid, 0)`, so a pure liveness
+    /// probe never reaps anything. Reap with `waitpid(WNOHANG)` first and drop
+    /// entries that were reaped or are no longer our children. Returns the
+    /// number of pruned children.
     pub fn prune_dead_children(&self) -> usize {
-        let mut pruned = 0;
+        let mut locked_children = self.children.lock().unwrap();
+        let pids: Vec<u32> = locked_children.keys().copied().collect();
         let mut to_remove = Vec::new();
 
-        let mut locked_children = self.children.lock().unwrap();
-        for (pid, _child) in locked_children.iter() {
-            // Check if process is still running using nix
-            match nix::sys::signal::kill(nix::unistd::Pid::from_raw(*pid as i32), None) {
-                Ok(_) => {
-                    // Process is still alive
-                }
-                Err(nix::errno::Errno::ESRCH) => {
-                    // Process doesn't exist, mark for removal
-                    to_remove.push(*pid);
-                }
-                Err(_) => {
-                    // Other error, process likely dead
-                    to_remove.push(*pid);
-                }
+        for pid in pids {
+            match nix::sys::wait::waitpid(
+                nix::unistd::Pid::from_raw(pid as i32),
+                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+            ) {
+                // Child is still running: keep tracking it.
+                Ok(nix::sys::wait::WaitStatus::StillAlive) => {}
+                // Child exited or was signalled and has now been reaped.
+                Ok(_) => to_remove.push(pid),
+                // Not our child anymore (already reaped elsewhere or the PID
+                // was reused): drop the stale tracking entry.
+                Err(nix::errno::Errno::ECHILD) => to_remove.push(pid),
+                // Transient error: retry on the next tick.
+                Err(_) => {}
             }
         }
 
+        let mut pruned = 0;
         for pid in to_remove {
             if let Some(child) = locked_children.remove(&pid) {
                 // Clean up cgroup if present
@@ -1310,11 +1462,34 @@ impl WarmDaemon {
         // Clean up any remaining children
         let mut locked_children = self.children.lock().unwrap();
         for (pid, child) in locked_children.drain() {
+            let raw_pid = nix::unistd::Pid::from_raw(pid as i32);
+
             // Kill child if still running
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid as i32),
-                nix::sys::signal::SIGTERM,
-            );
+            let _ = nix::sys::signal::kill(raw_pid, nix::sys::signal::Signal::SIGTERM);
+
+            // Reap the child so it does not linger as a zombie. Give it a short
+            // grace period, then force-kill and wait for it.
+            let mut reaped = false;
+            for _ in 0..20 {
+                match nix::sys::wait::waitpid(raw_pid, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
+                    Ok(nix::sys::wait::WaitStatus::StillAlive) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    Ok(_) => {
+                        reaped = true;
+                        break;
+                    }
+                    Err(nix::errno::Errno::ECHILD) => {
+                        reaped = true;
+                        break;
+                    }
+                    Err(_) => {}
+                }
+            }
+            if !reaped {
+                let _ = nix::sys::signal::kill(raw_pid, nix::sys::signal::Signal::SIGKILL);
+                let _ = nix::sys::wait::waitpid(raw_pid, None);
+            }
 
             // Destroy cgroup
             if let Some(cgroup) = child.cgroup {
@@ -1348,9 +1523,12 @@ impl WarmDaemon {
             .build()?;
 
         rt.block_on(async {
-            self.listener.set_nonblocking(true).unwrap();
-            let async_listener =
-                tokio::net::UnixListener::from_std(self.listener.try_clone().unwrap()).unwrap();
+            let listener = self
+                .listener
+                .try_clone()
+                .context("Failed to clone daemon listener")?;
+            let async_listener = tokio::net::UnixListener::from_std(listener)
+                .context("Failed to register daemon listener with tokio")?;
             let mut prune_interval = tokio::time::interval(std::time::Duration::from_millis(100)); // faster prune for tests
 
             loop {
@@ -1361,8 +1539,17 @@ impl WarmDaemon {
                                 if !self.running.load(Ordering::SeqCst) {
                                     break;
                                 }
-                                let std_stream = stream.into_std().unwrap();
-                                std_stream.set_nonblocking(false).unwrap();
+                                let std_stream = match stream.into_std() {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        log::error!("Failed to convert client stream: {:?}", e);
+                                        continue;
+                                    }
+                                };
+                                if let Err(e) = std_stream.set_nonblocking(false) {
+                                    log::error!("Failed to set client stream to blocking: {:?}", e);
+                                    continue;
+                                }
                                 tokio::task::block_in_place(|| {
                                     let mut s = std_stream;
                                     if let Err(e) = self.handle_client(&mut s) {
@@ -1391,7 +1578,9 @@ impl WarmDaemon {
                     break;
                 }
             }
-        });
+
+            Ok::<(), anyhow::Error>(())
+        })?;
 
         // Cleanup
         self.cleanup()?;
@@ -1460,12 +1649,19 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
     cmd.stdout(Stdio::null());
     cmd.stderr(Stdio::null());
 
-    let child = cmd.spawn().context("Failed to spawn daemon")?;
+    let mut child = cmd.spawn().context("Failed to spawn daemon")?;
     let pid = child.id();
 
     // Wait for socket to be ready
     for _ in 0..50 {
         std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // If the daemon exited early, reap it and report the failure instead of
+        // waiting the full timeout and leaving a zombie behind.
+        if let Ok(Some(status)) = child.try_wait() {
+            anyhow::bail!("Daemon exited during startup with status: {}", status);
+        }
+
         if socket_path.exists() {
             // Try to connect
             if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
@@ -1474,12 +1670,16 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
         }
     }
 
+    // Startup timed out: do not leave an orphaned daemon or zombie process.
+    let _ = child.kill();
+    let _ = child.wait();
+
     anyhow::bail!("Daemon failed to start (socket not ready)");
 }
 
 /// Ping a running daemon via Unix socket to verify it is responsive
 pub fn ping_daemon(socket_path: &Path) -> Result<bool> {
-    let stream = match std::os::unix::net::UnixStream::connect(socket_path) {
+    let mut stream = match std::os::unix::net::UnixStream::connect(socket_path) {
         Ok(s) => s,
         Err(_) => return Ok(false),
     };
@@ -1491,30 +1691,25 @@ pub fn ping_daemon(socket_path: &Path) -> Result<bool> {
         .set_write_timeout(Some(std::time::Duration::from_secs(1)))
         .ok();
 
-    let mut stream = stream;
     let msg = Message::new(MessageType::HealthCheck, vec![]);
-    let data = msg.serialize()?;
-    if stream.write_all(&data).is_err() {
+    if write_message(&mut stream, &msg).is_err() {
         return Ok(false);
     }
 
-    let mut header = [0u8; 10];
-    if stream.read_exact(&mut header).is_err() {
-        return Ok(false);
+    // read_message validates magic, version and the length bound, so a broken
+    // or malicious peer cannot make us allocate an absurd buffer.
+    match read_message(&mut stream) {
+        Ok(response) => Ok(response.msg_type == MessageType::HealthResponse),
+        Err(_) => Ok(false),
     }
-
-    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-    let mut payload = vec![0u8; length];
-    if stream.read_exact(&mut payload).is_err() {
-        return Ok(false);
-    }
-
-    let msg = Message::deserialize(&[&header[..], &payload[..]].concat())?;
-    Ok(msg.msg_type == MessageType::HealthResponse)
 }
 
 /// Connect to running daemon and send exec request with auto-reconnect retries and timeouts
 pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecResponse> {
+    // Reject requests whose length-prefixed fields cannot be represented by the
+    // wire format instead of silently truncating them with `as u16`/`as u8`.
+    validate_exec_request(request)?;
+
     let mut last_err = None;
 
     // Retry up to 3 times before failing back to cold execution
@@ -1583,69 +1778,90 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
 
         // Send request
         let msg = Message::new(MessageType::Exec, payload);
-        let data = match msg.serialize() {
-            Ok(d) => d,
-            Err(e) => return Err(e),
-        };
-
-        if let Err(e) = stream.write_all(&data) {
+        if let Err(e) = write_message(&mut stream, &msg) {
             last_err = Some(anyhow::anyhow!("Failed to send request to daemon: {}", e));
             std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
             continue;
         }
 
         // Read response
-        let mut header = [0u8; 10];
-        if let Err(e) = stream.read_exact(&mut header) {
-            last_err = Some(anyhow::anyhow!(
-                "Failed to read response header from daemon: {}",
-                e
-            ));
-            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
-            continue;
-        }
-
-        let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-        let mut response_data = vec![0u8; length];
-        if let Err(e) = stream.read_exact(&mut response_data) {
-            last_err = Some(anyhow::anyhow!(
-                "Failed to read response payload from daemon: {}",
-                e
-            ));
-            std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
-            continue;
-        }
-
-        // Parse response: [exit_code:4][pid:4][error_len:2][error]
-        let exit_code = i32::from_le_bytes([
-            response_data[0],
-            response_data[1],
-            response_data[2],
-            response_data[3],
-        ]);
-        let pid = u32::from_le_bytes([
-            response_data[4],
-            response_data[5],
-            response_data[6],
-            response_data[7],
-        ]);
-        let error_len = u16::from_le_bytes([response_data[8], response_data[9]]) as usize;
-
-        let error = if error_len > 0 {
-            Some(String::from_utf8_lossy(&response_data[10..10 + error_len]).to_string())
-        } else {
-            None
+        let response = match read_message(&mut stream) {
+            Ok(msg) => msg,
+            Err(e) => {
+                last_err = Some(anyhow::anyhow!(
+                    "Failed to read response from daemon: {}",
+                    e
+                ));
+                std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                continue;
+            }
         };
 
-        return Ok(ExecResponse {
-            exit_code,
-            pid,
-            error,
-        });
+        if !matches!(
+            response.msg_type,
+            MessageType::ExecResponse | MessageType::Error
+        ) {
+            return Err(anyhow::anyhow!(
+                "Unexpected response type from daemon: {:?}",
+                response.msg_type
+            ));
+        }
+
+        return parse_exec_response(&response.payload);
     }
 
     Err(last_err
         .unwrap_or_else(|| anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")))
+}
+
+/// Validate that an exec request fits the wire format.
+fn validate_exec_request(request: &ExecRequest) -> Result<()> {
+    if request.command.len() > u16::MAX as usize {
+        anyhow::bail!("Command too long: {} bytes", request.command.len());
+    }
+    if request.args.len() > u8::MAX as usize {
+        anyhow::bail!("Too many arguments: {}", request.args.len());
+    }
+    for arg in &request.args {
+        if arg.len() > u16::MAX as usize {
+            anyhow::bail!("Argument too long: {} bytes", arg.len());
+        }
+    }
+    if request.env.len() > u8::MAX as usize {
+        anyhow::bail!("Too many environment variables: {}", request.env.len());
+    }
+    for (key, val) in &request.env {
+        if key.len() > u16::MAX as usize || val.len() > u16::MAX as usize {
+            anyhow::bail!("Environment entry too long: {}={}", key, val);
+        }
+    }
+    if let Some(ref cwd) = request.cwd {
+        if cwd.len() > u16::MAX as usize {
+            anyhow::bail!("Working directory too long: {} bytes", cwd.len());
+        }
+    }
+    Ok(())
+}
+
+/// Parse an `ExecResponse` payload: [exit_code:4][pid:4][error_len:2][error]
+fn parse_exec_response(payload: &[u8]) -> Result<ExecResponse> {
+    let mut reader = PayloadReader::new(payload);
+
+    let exit_code = reader.read_u32("exit code")? as i32;
+    let pid = reader.read_u32("pid")?;
+    let error_len = reader.read_u16("error length")? as usize;
+    let error = if error_len > 0 {
+        let bytes = reader.take(error_len, "error message")?;
+        Some(String::from_utf8_lossy(bytes).to_string())
+    } else {
+        None
+    };
+
+    Ok(ExecResponse {
+        exit_code,
+        pid,
+        error,
+    })
 }
 
 /// Connect to running daemon and get metrics
@@ -1653,99 +1869,40 @@ pub fn get_metrics_from_daemon(socket_path: &Path) -> Result<MetricsResponse> {
     let mut stream = std::os::unix::net::UnixStream::connect(socket_path)
         .with_context(|| format!("Failed to connect to daemon at {:?}", socket_path))?;
 
+    // Without timeouts a wedged daemon makes this call hang forever.
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(5)))
+        .ok();
+
     // Send GetMetrics request (empty payload)
     let msg = Message::new(MessageType::GetMetrics, vec![]);
-    let data = msg.serialize()?;
-    stream.write_all(&data)?;
+    write_message(&mut stream, &msg)?;
 
     // Read response
-    let mut header = [0u8; 10];
-    stream.read_exact(&mut header)?;
-    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
-    let mut response_data = vec![0u8; length];
-    stream.read_exact(&mut response_data)?;
+    let response = read_message(&mut stream).context("Failed to read metrics response")?;
+    if response.msg_type != MessageType::MetricsResponse {
+        anyhow::bail!(
+            "Unexpected response type from daemon: {:?}",
+            response.msg_type
+        );
+    }
 
     // Parse MetricsResponse: [uptime:8][total:8][failed:8][successful:8][avg_ms:8][children:4][cgroup:1][prometheus_len:2][prometheus]
-    let mut offset = 0;
+    let mut reader = PayloadReader::new(&response.payload);
 
-    let uptime_secs = u64::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-        response_data[offset + 4],
-        response_data[offset + 5],
-        response_data[offset + 6],
-        response_data[offset + 7],
-    ]);
-    offset += 8;
-
-    let total_requests = u64::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-        response_data[offset + 4],
-        response_data[offset + 5],
-        response_data[offset + 6],
-        response_data[offset + 7],
-    ]);
-    offset += 8;
-
-    let failed_requests = u64::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-        response_data[offset + 4],
-        response_data[offset + 5],
-        response_data[offset + 6],
-        response_data[offset + 7],
-    ]);
-    offset += 8;
-
-    let successful_requests = u64::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-        response_data[offset + 4],
-        response_data[offset + 5],
-        response_data[offset + 6],
-        response_data[offset + 7],
-    ]);
-    offset += 8;
-
-    let avg_bits = u64::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-        response_data[offset + 4],
-        response_data[offset + 5],
-        response_data[offset + 6],
-        response_data[offset + 7],
-    ]);
-    let avg_response_time_ms = f64::from_bits(avg_bits);
-    offset += 8;
-
-    let active_children = u32::from_le_bytes([
-        response_data[offset],
-        response_data[offset + 1],
-        response_data[offset + 2],
-        response_data[offset + 3],
-    ]) as usize;
-    offset += 4;
-
-    let cgroup_active = response_data[offset] != 0;
-    offset += 1;
-
-    let prometheus_len =
-        u16::from_le_bytes([response_data[offset], response_data[offset + 1]]) as usize;
-    offset += 2;
-
+    let uptime_secs = reader.read_u64("uptime")?;
+    let total_requests = reader.read_u64("total requests")?;
+    let failed_requests = reader.read_u64("failed requests")?;
+    let successful_requests = reader.read_u64("successful requests")?;
+    let avg_response_time_ms = f64::from_bits(reader.read_u64("avg response time")?);
+    let active_children = reader.read_u32("active children")? as usize;
+    let cgroup_active = reader.read_u8("cgroup active")? != 0;
+    let prometheus_len = reader.read_u16("prometheus length")? as usize;
     let prometheus_metrics =
-        String::from_utf8_lossy(&response_data[offset..offset + prometheus_len]).to_string();
+        String::from_utf8_lossy(reader.take(prometheus_len, "prometheus metrics")?).to_string();
 
     Ok(MetricsResponse {
         uptime_secs,

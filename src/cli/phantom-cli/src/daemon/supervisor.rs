@@ -12,9 +12,10 @@
 
 use anyhow::{Context, Result};
 use health_rs::{HealthConfig, HealthMonitor, HealthStatus as HealthRsStatus};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use std::path::PathBuf;
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -50,6 +51,28 @@ pub enum SupervisorState {
     Stopped,
     /// Maximum retries exceeded, supervisor gave up
     Failed,
+}
+
+impl SupervisorState {
+    fn as_u8(self) -> u8 {
+        match self {
+            SupervisorState::Starting => 0,
+            SupervisorState::Running => 1,
+            SupervisorState::Restarting => 2,
+            SupervisorState::Stopped => 3,
+            SupervisorState::Failed => 4,
+        }
+    }
+
+    fn from_u8(value: u8) -> Self {
+        match value {
+            0 => SupervisorState::Starting,
+            1 => SupervisorState::Running,
+            2 => SupervisorState::Restarting,
+            4 => SupervisorState::Failed,
+            _ => SupervisorState::Stopped,
+        }
+    }
 }
 
 /// Statistics about daemon restarts
@@ -115,6 +138,8 @@ pub struct DaemonSupervisor {
     daemon_pid: Option<u32>,
     /// Current state
     state: SupervisorState,
+    /// Shared copy of `state` for `SupervisorHandle` observers
+    state_flag: Arc<AtomicU8>,
     /// Running flag for the supervisor loop
     running: Arc<AtomicBool>,
     /// Current restart attempt count
@@ -148,7 +173,7 @@ impl SupervisorStatsWrapper {
         F: FnOnce(&mut SupervisorStats),
     {
         let mut stats = self.inner.write().unwrap();
-        f(&mut *stats);
+        f(&mut stats);
     }
 
     fn get(&self) -> SupervisorStats {
@@ -167,6 +192,7 @@ impl DaemonSupervisor {
             config,
             daemon_pid: None,
             state: SupervisorState::Stopped,
+            state_flag: Arc::new(AtomicU8::new(SupervisorState::Stopped.as_u8())),
             running: Arc::new(AtomicBool::new(false)),
             restart_attempts: Arc::new(AtomicU32::new(0)),
             current_backoff_ms: Arc::new(AtomicU64::new(INITIAL_BACKOFF_MS)),
@@ -177,7 +203,17 @@ impl DaemonSupervisor {
         }
     }
 
+    /// Update the supervisor state and publish it to observers.
+    fn set_state(&mut self, state: SupervisorState) {
+        self.state = state;
+        self.state_flag.store(state.as_u8(), Ordering::SeqCst);
+    }
+
     /// Get the current state
+    ///
+    /// Retained for callers that own the supervisor directly; background
+    /// supervisors expose the same value through [`SupervisorHandle::state`].
+    #[allow(dead_code)]
     pub fn state(&self) -> SupervisorState {
         self.state
     }
@@ -192,7 +228,7 @@ impl DaemonSupervisor {
     pub fn run(&mut self) -> Result<()> {
         log::info!("Starting daemon supervisor");
         self.running.store(true, Ordering::SeqCst);
-        self.state = SupervisorState::Starting;
+        self.set_state(SupervisorState::Starting);
 
         // Start the daemon initially
         if let Err(e) = self.start_daemon() {
@@ -210,7 +246,7 @@ impl DaemonSupervisor {
                     match self.check_daemon_health() {
                         Ok(healthy) => {
                             if healthy {
-                                self.state = SupervisorState::Running;
+                                self.set_state(SupervisorState::Running);
                                 if self.config.verbose {
                                     log::debug!("Daemon health check passed");
                                 }
@@ -247,7 +283,7 @@ impl DaemonSupervisor {
                     match self.start_daemon() {
                         Ok(_) => {
                             log::info!("Daemon restarted successfully");
-                            self.state = SupervisorState::Running;
+                            self.set_state(SupervisorState::Running);
                             // Reset backoff on successful restart
                             self.current_backoff_ms
                                 .store(INITIAL_BACKOFF_MS, Ordering::Relaxed);
@@ -280,6 +316,7 @@ impl DaemonSupervisor {
         let restart_attempts = Arc::clone(&self.restart_attempts);
         let current_backoff_ms = Arc::clone(&self.current_backoff_ms);
         let stats = Arc::clone(&self.stats);
+        let state_flag = Arc::clone(&self.state_flag);
 
         // Create a channel for communication
         let (tx, rx) = std::sync::mpsc::channel();
@@ -293,6 +330,7 @@ impl DaemonSupervisor {
             supervisor.restart_attempts = restart_attempts;
             supervisor.current_backoff_ms = current_backoff_ms;
             supervisor.stats = stats;
+            supervisor.state_flag = state_flag;
 
             // Run the supervisor
             let result = supervisor.run();
@@ -310,16 +348,17 @@ impl DaemonSupervisor {
         // Wait briefly for daemon to start
         for _ in 0..50 {
             thread::sleep(Duration::from_millis(20));
-            if socket_path.exists() {
-                if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
-                    break;
-                }
+            if socket_path.exists() && std::os::unix::net::UnixStream::connect(&socket_path).is_ok()
+            {
+                break;
             }
         }
 
         Ok(SupervisorHandle {
             _thread: handle,
             _receiver: rx,
+            stats: Arc::clone(&self.stats),
+            state_flag: Arc::clone(&self.state_flag),
         })
     }
 
@@ -327,12 +366,14 @@ impl DaemonSupervisor {
     pub fn stop(&mut self) {
         log::info!("Stopping daemon supervisor");
         self.running.store(false, Ordering::SeqCst);
-        self.state = SupervisorState::Stopped;
+        self.set_state(SupervisorState::Stopped);
 
         // Kill the daemon if running
         if let Some(pid) = self.daemon_pid.take() {
-            let _ = kill_process(pid);
-            log::info!("Killed daemon process {}", pid);
+            match kill_process(pid) {
+                Ok(()) => log::info!("Killed daemon process {}", pid),
+                Err(e) => log::warn!("Failed to kill daemon process {}: {:?}", pid, e),
+            }
         }
 
         // Clean up socket file
@@ -344,7 +385,7 @@ impl DaemonSupervisor {
     /// Start the daemon process
     fn start_daemon(&mut self) -> Result<()> {
         log::info!("Starting warm daemon");
-        self.state = SupervisorState::Starting;
+        self.set_state(SupervisorState::Starting);
 
         // Clean up any existing socket
         if self.config.daemon_config.socket_path.exists() {
@@ -408,6 +449,16 @@ impl DaemonSupervisor {
                 .update(|s| s.total_uptime_secs = self.total_uptime_secs);
         }
 
+        // A hung daemon can fail its health check while still holding its
+        // socket. Terminate it before restarting; otherwise every restart
+        // leaks another orphaned daemon.
+        if let Some(pid) = self.daemon_pid.take() {
+            match kill_process(pid) {
+                Ok(()) => log::info!("Terminated unhealthy daemon PID {}", pid),
+                Err(e) => log::warn!("Could not terminate unhealthy daemon PID {}: {:?}", pid, e),
+            }
+        }
+
         // Check if we've exceeded max restart attempts
         let attempts = self.restart_attempts.load(Ordering::Relaxed);
         if attempts >= self.config.max_restart_attempts {
@@ -416,8 +467,7 @@ impl DaemonSupervisor {
                 self.config.max_restart_attempts
             );
             self.stats.update(|s| s.max_retries_exceeded += 1);
-            self.state = SupervisorState::Failed;
-            self.daemon_pid = None;
+            self.set_state(SupervisorState::Failed);
             return;
         }
 
@@ -438,11 +488,8 @@ impl DaemonSupervisor {
         // Increment restart attempts
         self.restart_attempts.fetch_add(1, Ordering::Relaxed);
 
-        // Clean up old PID
-        self.daemon_pid = None;
-
         // Transition to restarting state
-        self.state = SupervisorState::Restarting;
+        self.set_state(SupervisorState::Restarting);
     }
 
     /// Handle restart failure (when start_daemon fails)
@@ -455,7 +502,7 @@ impl DaemonSupervisor {
                 self.config.max_restart_attempts
             );
             self.stats.update(|s| s.max_retries_exceeded += 1);
-            self.state = SupervisorState::Failed;
+            self.set_state(SupervisorState::Failed);
         } else {
             // Increase backoff and try again
             let backoff_ms = self.current_backoff_ms.load(Ordering::Relaxed);
@@ -463,7 +510,7 @@ impl DaemonSupervisor {
             self.current_backoff_ms
                 .store(next_backoff, Ordering::Relaxed);
             self.restart_attempts.fetch_add(1, Ordering::Relaxed);
-            self.state = SupervisorState::Restarting;
+            self.set_state(SupervisorState::Restarting);
         }
     }
 }
@@ -478,15 +525,45 @@ impl Drop for DaemonSupervisor {
 pub struct SupervisorHandle {
     _thread: thread::JoinHandle<Result<()>>,
     _receiver: std::sync::mpsc::Receiver<(Option<u32>, SupervisorState, SupervisorStats)>,
+    stats: Arc<SupervisorStatsWrapper>,
+    state_flag: Arc<AtomicU8>,
+}
+
+impl SupervisorHandle {
+    /// Live statistics of the background supervisor.
+    ///
+    /// Previously the command layer read these from the (never-run) foreground
+    /// `DaemonSupervisor`, so it always displayed zeroed statistics.
+    pub fn get_stats(&self) -> SupervisorStats {
+        self.stats.get()
+    }
+
+    /// Current state of the background supervisor.
+    pub fn state(&self) -> SupervisorState {
+        SupervisorState::from_u8(self.state_flag.load(Ordering::SeqCst))
+    }
+}
+
+/// Returns true only if `pid` is one of our warm daemons.
+///
+/// The supervisor owns the PID it spawned, but PIDs are recycled once the
+/// daemon dies. Checking `/proc/<pid>/cmdline` before signalling avoids
+/// terminating an unrelated process that inherited a stale PID.
+fn is_warm_daemon_process(pid: u32) -> bool {
+    match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+        Ok(cmdline) => String::from_utf8_lossy(&cmdline).contains("--internal-warm-daemon"),
+        Err(_) => false,
+    }
 }
 
 /// Kill a process
 fn kill_process(pid: u32) -> Result<()> {
-    Command::new("kill")
-        .arg("-TERM")
-        .arg(pid.to_string())
-        .output()
-        .context(format!("Failed to kill process {}", pid))?;
+    if !is_warm_daemon_process(pid) {
+        anyhow::bail!("Refusing to kill PID {}: not a warm daemon", pid);
+    }
+
+    kill(Pid::from_raw(pid as i32), Signal::SIGTERM)
+        .with_context(|| format!("Failed to kill process {}", pid))?;
     Ok(())
 }
 
@@ -596,5 +673,30 @@ mod tests {
         assert_eq!(supervisor.restart_attempts.load(Ordering::SeqCst), 1);
         // Initial backoff was 100, now should be 200
         assert_eq!(supervisor.current_backoff_ms.load(Ordering::SeqCst), 200);
+    }
+
+    #[test]
+    fn test_state_is_mirrored_for_handles() {
+        let mut supervisor = DaemonSupervisor::new(SupervisorConfig::default());
+        supervisor.set_state(SupervisorState::Running);
+
+        assert_eq!(supervisor.state(), SupervisorState::Running);
+        assert_eq!(
+            supervisor.state_flag.load(Ordering::SeqCst),
+            SupervisorState::Running.as_u8()
+        );
+    }
+
+    #[test]
+    fn test_supervisor_state_u8_roundtrip() {
+        for state in [
+            SupervisorState::Starting,
+            SupervisorState::Running,
+            SupervisorState::Restarting,
+            SupervisorState::Stopped,
+            SupervisorState::Failed,
+        ] {
+            assert_eq!(SupervisorState::from_u8(state.as_u8()), state);
+        }
     }
 }
