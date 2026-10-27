@@ -381,64 +381,68 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
 
             ui::info("Using zygote pool:", "for ultra-fast execution");
 
-            // Apply pre-exec security policies (seccomp + landlock) before process handoff
-            if let Some(ref policy) = security_policy {
-                let mut manager = security_rs::SecurityManager::new();
-                let _ =
-                    manager.apply_container_security("zygote-fragment", policy, graceful_security);
-            }
+            // The zygote child cannot apply seccomp/landlock/capabilities, and
+            // applying them here would restrict the CLI itself. Skip the pool
+            // and use the normal fork-exec path when a policy is requested.
+            if security_policy.is_some() {
+                ui::warn(
+                    "Security policy requested: zygote cannot apply seccomp/landlock, using normal execution",
+                );
+            } else {
+                // Try zygote pool execution
+                match ZygotePool::new(4) {
+                    Ok(mut pool) => {
+                        // Build zygote command with rootfs
+                        let mut zygote_cmd = ZygoteCommand::new(
+                            final_command
+                                .first()
+                                .cloned()
+                                .unwrap_or_else(|| "/bin/sh".to_string()),
+                        )
+                        .args(final_command.iter().skip(1).cloned().collect())
+                        .cwd(
+                            std::env::current_dir()
+                                .map(|p| p.to_string_lossy().to_string())
+                                .unwrap_or_else(|_| "/".to_string()),
+                        )
+                        .rootfs(rootfs_path.display().to_string())
+                        .flags(0);
 
-            // Try zygote pool execution
-            match ZygotePool::new(4) {
-                Ok(mut pool) => {
-                    // Build zygote command with rootfs
-                    let mut zygote_cmd = ZygoteCommand::new(
-                        final_command
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "/bin/sh".to_string()),
-                    )
-                    .args(final_command.iter().skip(1).cloned().collect())
-                    .cwd(
-                        std::env::current_dir()
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_else(|_| "/".to_string()),
-                    )
-                    .rootfs(rootfs_path.display().to_string())
-                    .flags(0);
+                        // Inherit environment from parent
+                        for (key, value) in std::env::vars() {
+                            zygote_cmd = zygote_cmd.env(&key, &value);
+                        }
 
-                    // Inherit environment from parent
-                    for (key, value) in std::env::vars() {
-                        zygote_cmd = zygote_cmd.env(&key, &value);
-                    }
-
-                    match pool.execute(zygote_cmd) {
-                        Ok(exit_status) => {
-                            let exit_code = if exit_status >= 0 { exit_status } else { -1 };
-                            if exit_code != 0 {
-                                ui::error_with_prefix(
-                                    "✗",
-                                    &format!("Command exited with code: {}", exit_code),
-                                );
-                                std::process::exit(exit_code);
+                        match pool.execute(zygote_cmd) {
+                            Ok(status) => {
+                                // `execute` returns a raw wait status; decode it
+                                // or exit(42) would surface as 10752.
+                                let exit_code = zygote_rs::decode_exit_status(status);
+                                if exit_code != 0 {
+                                    ui::error_with_prefix(
+                                        "✗",
+                                        &format!("Command exited with code: {}", exit_code),
+                                    );
+                                    std::process::exit(exit_code);
+                                }
+                                return Ok(());
                             }
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            ui::warn(&format!(
-                                "Zygote execution failed: {:?}, falling back to normal execution",
-                                e
-                            ));
-                            // Fall through to normal execution below
+                            Err(e) => {
+                                ui::warn(&format!(
+                                    "Zygote execution failed: {:?}, falling back to normal execution",
+                                    e
+                                ));
+                                // Fall through to normal execution below
+                            }
                         }
                     }
-                }
-                Err(e) => {
-                    ui::warn(&format!(
-                        "Zygote pool unavailable: {:?}, falling back to normal execution",
-                        e
-                    ));
-                    // Fall through to normal execution below
+                    Err(e) => {
+                        ui::warn(&format!(
+                            "Zygote pool unavailable: {:?}, falling back to normal execution",
+                            e
+                        ));
+                        // Fall through to normal execution below
+                    }
                 }
             }
         }
@@ -571,8 +575,10 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                     }
 
                     match pool.execute(zygote_cmd) {
-                        Ok(exit_status) => {
-                            let exit_code = if exit_status >= 0 { exit_status } else { -1 };
+                        Ok(status) => {
+                            // `execute` returns a raw wait status; decode it
+                            // or exit(42) would surface as 10752.
+                            let exit_code = zygote_rs::decode_exit_status(status);
                             if exit_code != 0 {
                                 ui::error_with_prefix(
                                     "✗",
