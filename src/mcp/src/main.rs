@@ -55,6 +55,31 @@ struct RunInFragmentParams {
     network: Option<bool>,
 }
 
+/// Build the argv for `phantom run`.
+///
+/// The `--` separator is mandatory: `image` and `command` are user-controlled,
+/// and without it a value such as `--network` or `--root` would be parsed as a
+/// CLI flag, silently changing the isolation profile of the fragment.
+fn build_run_args(params: &RunInFragmentParams) -> Vec<String> {
+    let mut args = vec!["run".to_string()];
+
+    if let Some(profile) = &params.profile {
+        args.push("--profile".to_string());
+        args.push(profile.clone());
+    }
+
+    if params.network.unwrap_or(false) {
+        args.push("--network".to_string());
+    }
+
+    // End of options: everything after this is positional.
+    args.push("--".to_string());
+    args.push(params.image.clone());
+    args.extend(params.command.split_whitespace().map(str::to_string));
+
+    args
+}
+
 #[derive(Serialize, Deserialize, JsonSchema)]
 struct CreateFragmentParams {
     /// Unique name for the fragment
@@ -146,18 +171,7 @@ impl PhantomService {
         Parameters(params): Parameters<RunInFragmentParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
         let mut cmd = Command::new("phantom");
-        cmd.arg("run");
-
-        if let Some(profile) = params.profile {
-            cmd.args(["--profile", &profile]);
-        }
-
-        if params.network.unwrap_or(false) {
-            cmd.arg("--network");
-        }
-
-        cmd.arg(&params.image);
-        cmd.args(params.command.split_whitespace());
+        cmd.args(build_run_args(&params));
 
         match cmd.output() {
             Ok(result) => {
@@ -342,8 +356,9 @@ impl PhantomService {
         &self,
         Parameters(params): Parameters<SearchImagesParams>,
     ) -> Result<CallToolResult, rmcp::ErrorData> {
+        // `--` keeps a query like `--help` from being parsed as a flag.
         let output = Command::new("phantom")
-            .args(["search", &params.query])
+            .args(["search", "--", &params.query])
             .output();
         match output {
             Ok(result) => Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -449,4 +464,58 @@ async fn main() -> Result<()> {
     tracing::info!("Phantom MCP Server running with full CLI parity tools.");
     server.waiting().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn params(image: &str, command: &str) -> RunInFragmentParams {
+        RunInFragmentParams {
+            image: image.to_string(),
+            command: command.to_string(),
+            profile: None,
+            network: None,
+        }
+    }
+
+    #[test]
+    fn test_build_run_args_uses_option_separator() {
+        let args = build_run_args(&params("alpine", "echo hello"));
+        assert_eq!(args[0], "run");
+        assert_eq!(args[1], "--");
+        assert_eq!(args[2], "alpine");
+        assert_eq!(&args[3..], ["echo", "hello"]);
+    }
+
+    #[test]
+    fn test_build_run_args_image_cannot_inject_flags() {
+        // A hostile image name must stay positional, never become a flag.
+        let args = build_run_args(&params("--network", "alpine /bin/sh"));
+        let separator = args.iter().position(|a| a == "--").expect("missing --");
+        assert_eq!(args[separator + 1], "--network");
+        assert!(!args[..separator].contains(&"--network".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_network_flag_only_from_parameter() {
+        let mut p = params("alpine", "true");
+        p.network = Some(true);
+        let args = build_run_args(&p);
+        let separator = args.iter().position(|a| a == "--").unwrap();
+        assert!(args[..separator].contains(&"--network".to_string()));
+
+        // Default is no network flag at all.
+        let args = build_run_args(&params("alpine", "true"));
+        assert!(!args.contains(&"--network".to_string()));
+    }
+
+    #[test]
+    fn test_build_run_args_profile_is_a_value() {
+        let mut p = params("alpine", "true");
+        p.profile = Some("hardened".to_string());
+        let args = build_run_args(&p);
+        assert_eq!(args[1], "--profile");
+        assert_eq!(args[2], "hardened");
+    }
 }
