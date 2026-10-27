@@ -58,7 +58,6 @@ src/
 ├── memory/           # Memory management (Zig + Rust)
 ├── security/         # Security (seccomp, landlock, capabilities)
 ├── monitoring/       # Metrics and observability
-└── mcp/              # MCP server for AI agents
 ```
 
 ## Coding Guidelines

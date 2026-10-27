@@ -44,15 +44,12 @@ members = [
     "src/tools/integration-tests",
     "src/tools/phantom-build",
     "src/tools/phantom-migrate",
-    
-    # MCP
-    "src/mcp",
 ]
 
 
 [workspace.package]
 # Single source of truth for every crate in the workspace.
-# Release tags, `phantom --version`, `phantom-mcp --version` and the changelog
+# Release tags, `phantom --version` and the changelog
 # must all agree with this value.
 version = "3.1.0"
 

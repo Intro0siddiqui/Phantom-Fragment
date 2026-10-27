@@ -115,21 +115,9 @@ phantom build -t my-image:latest .
 phantom --version  # Shows: phantom 3.1.0
 ```
 
-## 🤖 AI Agent Integration (MCP)
+## 🤖 AI Agent Integration
 
-Phantom Fragment includes first-class support for AI agents (like Claude or Cursor) via the **Model Context Protocol (MCP)**. This allows agents to safely execute code and manage fragments directly.
-
-Add this to your `mcp_config.json`:
-
-```json
-{
-  "mcpServers": {
-    "phantom-fragment": {
-      "command": "phantom-mcp"
-    }
-  }
-}
-```
+Phantom Fragment ships an agent skill at [`.opencode/skills/phantom/SKILL.md`](.opencode/skills/phantom/SKILL.md): a terse Docker-to-`phantom` command mapping that agents load on demand. There is no separate server binary — agents drive the same CLI you do.
 
 ## 📖 Documentation
 

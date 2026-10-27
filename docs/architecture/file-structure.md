@@ -104,7 +104,6 @@ phantom-fragment/
 |-----------|------|--------|
 | **I/O** | Storage layer (`std::fs`, `tokio::fs`) | ~1 GB/s throughput |
 | **CLI** | `src/cli/phantom-cli/` | Complete (Unified) |
-| **MCP Server** | `src/mcp/` | Complete |
 | **Execution Engine** | `src/core/execution/execution-rs/` | Complete |
 | **Zygote Pool** | `src/core/zygote-rs/` | Complete (vfork fallback) |
 | **Profile Management** | `phantom profile list/show` | Complete |

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "watcher": {
+    "ignore": ["target/**", "**/target/**", ".git/**", "node_modules/**"]
+  },
+  "permission": {
+    "lsp": "allow"
+  },
+  "lsp": {
+    "rust-analyzer": {
+      "command": ["/usr/bin/rust-analyzer"],
+      "extensions": [".rs"],
+      "initialization": {
+        "cargo": {
+          "buildScripts": { "enable": false },
+          "features": "all"
+        },
+        "procMacro": { "enable": false },
+        "checkOnSave": { "enable": false }
+      }
+    },
+    "zls": {
+      "command": ["/home/intro/.local/bin/zls"],
+      "extensions": [".zig", ".zon"]
+    }
+  }
+}

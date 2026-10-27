@@ -199,7 +199,6 @@ src/
 │   ├── metrics/metrics-rs        # Prometheus metrics
 │   ├── health/health-rs          # Health checks
 │   └── debug/debug-rs            # Debugging tools
-├── mcp/                          # MCP server for AI agents
 └── tools/
     ├── integration-tests/        # Integration tests
     ├── phantom-build/            # Build tool
@@ -287,7 +286,6 @@ io_uring is NOT implemented - uses standard tokio async I/O.
 | Binary | Size | Location |
 |--------|------|----------|
 | `phantom` | 19MB | `target/release/phantom` |
-| `phantom-mcp` | 3.5M | `target/release/phantom-mcp` |
 
 **Unified CLI**: `phantom` includes all subcommands: `run`, `create`, `list`, `logs`, `destroy`, `health`, `metrics`, `warm`, `clean`, `search`, `images`, `network`, `profile`, `inspect`, `update`, `restart`, `monitor`, `benchmark`, `volume`, `security`, `debug`, `stop`, `build`, `migrate`.
 
@@ -477,7 +475,6 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 | **integration-tests** | ✅ Active | 100+ tests |
 | **phantom-build** | ✅ Active | Multi-stage builds |
 | **phantom-migrate** | ✅ Active | Docker/Podman migration |
-| **phantom-mcp** | ✅ Production | MCP server, 11 tools |
 
 ### Three-Tier Execution Status
 

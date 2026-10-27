@@ -64,13 +64,11 @@ cd Phantom-Fragment
 # Build release binaries (optimized)
 cargo build --release
 
-# Binaries are now in target/release/:
-#   - phantom (Unified CLI: build, migrate, run, warm, etc.)
-#   - phantom-mcp (Dedicated AI service)
+# Binary is now in target/release/phantom
+#   (Unified CLI: build, migrate, run, warm, etc.)
 
 # Optional: Install to PATH
 sudo cp target/release/phantom /usr/local/bin/
-sudo cp target/release/phantom-mcp /usr/local/bin/
 ```
 
 ### Method 2: Quick Install (Script)

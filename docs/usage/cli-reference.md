@@ -6,10 +6,9 @@ This document provides a reference for all Phantom Fragment CLI commands.
 
 ## Overview
 
-Phantom Fragment provides a unified CLI toolset:
+Phantom Fragment ships a single binary:
 
-- **`phantom`** - Main unified binary for management, execution, building, and migration
-- **`phantom-mcp`** - Dedicated AI service binary for Model Context Protocol integration
+- **`phantom`** - Unified binary for management, execution, building, and migration
 
 ## Getting Help
 
