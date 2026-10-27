@@ -131,8 +131,8 @@ struct CleanImagesParams {
 
 #[tool_handler]
 impl ServerHandler for PhantomService {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
     }
 }
 
