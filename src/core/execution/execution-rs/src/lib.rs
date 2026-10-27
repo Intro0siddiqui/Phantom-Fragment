@@ -9,18 +9,13 @@ use types_rs::PhantomError;
 use bpf_lsm_rs::BpfError;
 
 /// Security mode for handling security feature failures
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SecurityMode {
     /// Fail if security features are unavailable (strict security)
     Strict,
     /// Log warning and continue (permissive, backward compatible)
+    #[default]
     Permissive,
-}
-
-impl Default for SecurityMode {
-    fn default() -> Self {
-        SecurityMode::Permissive
-    }
 }
 
 /// Execution modes with varying security/performance trade-offs
@@ -240,62 +235,56 @@ impl AdaptiveEngine {
         // Note: seccomp/landlock/capabilities require pre-exec application, so we use
         // fork-exec for full security. Zygote is used for cgroup/BPF-LSM only.
 
-        // Attempt Zygote pool execution with pre-exec security policy application
-        if let Ok(mut guard) = self.zygote_pool.lock() {
-            if let Some(ref mut pool) = *guard {
-                if pool.available() > 0 {
-                    let mut parts = command.split_whitespace();
-                    if let Some(p) = parts.next() {
-                        let exec_path = p.to_string();
-                        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+        // Attempt Zygote pool execution. The zygote child only applies
+        // namespace-level isolation, so seccomp/landlock/capabilities cannot be
+        // installed there. Those calls must never run in the parent either:
+        // doing so would restrict the CLI itself. Only take the fast path when
+        // no per-container security policy was requested.
+        if security_policy.is_none() {
+            if let Ok(mut guard) = self.zygote_pool.lock() {
+                if let Some(ref mut pool) = *guard {
+                    if pool.available() > 0 {
+                        let mut parts = command.split_whitespace();
+                        if let Some(p) = parts.next() {
+                            let exec_path = p.to_string();
+                            let args: Vec<String> = parts.map(|s| s.to_string()).collect();
 
-                        let mut zygote_cmd = ZygoteCommand::new(exec_path)
-                            .args(args)
-                            .cwd(
-                                std::env::current_dir()
-                                    .map(|p| p.to_string_lossy().to_string())
-                                    .unwrap_or_else(|_| "/".to_string()),
-                            )
-                            .flags(0);
+                            let mut zygote_cmd = ZygoteCommand::new(exec_path)
+                                .args(args)
+                                .cwd(
+                                    std::env::current_dir()
+                                        .map(|p| p.to_string_lossy().to_string())
+                                        .unwrap_or_else(|_| "/".to_string()),
+                                )
+                                .flags(0);
 
-                        for (key, value) in std::env::vars() {
-                            zygote_cmd = zygote_cmd.env(&key, &value);
-                        }
-
-                        // Apply security policies (seccomp + landlock + capabilities) BEFORE handoff
-                        if let Err(e) = self.apply_security_policies(mode) {
-                            log::warn!(
-                                "Failed to pre-apply security policies for zygote execution: {:?}",
-                                e
-                            );
-                        }
-
-                        if let Some(policy) = security_policy {
-                            let mut manager = SecurityManager::new();
-                            let _ =
-                                manager.apply_container_security("zygote-fragment", policy, true);
-                        }
-
-                        log::info!("Executing command via Zygote pool FFI...");
-                        match pool.execute(zygote_cmd) {
-                            Ok(exit_status) => {
-                                let exit_code = if exit_status >= 0 { exit_status } else { 127 };
-                                log::info!(
-                                    "Zygote execution completed with exit code {}",
-                                    exit_code
-                                );
-                                return Ok(exit_code);
+                            for (key, value) in std::env::vars() {
+                                zygote_cmd = zygote_cmd.env(&key, &value);
                             }
-                            Err(e) => {
-                                log::warn!("Zygote pool execution failed: {:?}, falling back to cold start", e);
-                                // Fall through to cold fork-exec below
+
+                            log::info!("Executing command via Zygote pool FFI...");
+                            match pool.execute(zygote_cmd) {
+                                Ok(status) => {
+                                    let exit_code = zygote_rs::decode_exit_status(status);
+                                    log::info!(
+                                        "Zygote execution completed with exit code {}",
+                                        exit_code
+                                    );
+                                    return Ok(exit_code);
+                                }
+                                Err(e) => {
+                                    log::warn!("Zygote pool execution failed: {:?}, falling back to cold start", e);
+                                    // Fall through to cold fork-exec below
+                                }
                             }
                         }
+                    } else {
+                        log::debug!("Zygote pool empty/unavailable, falling back to cold start");
                     }
-                } else {
-                    log::debug!("Zygote pool empty/unavailable, falling back to cold start");
                 }
             }
+        } else {
+            log::debug!("Security policy present; using fork-exec for full policy application");
         }
 
         // Fallback to fork-exec for full security policy application
