@@ -5,11 +5,12 @@
 
 use anyhow::{Context, Result};
 use log::{info, warn};
-use nix::sys::signal::{self, Signal};
+use nix::sys::signal;
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -42,6 +43,43 @@ pub enum FragmentStatus {
     Running,
     Stopped,
     Failed,
+}
+
+/// Exclusive advisory lock guarding registry writes.
+///
+/// Concurrent `phantom` invocations otherwise interleave their `write` calls
+/// and produce a truncated JSON file, which makes every later invocation fail
+/// to parse the registry.
+struct RegistryLock {
+    file: fs::File,
+}
+
+impl RegistryLock {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create lock directory: {:?}", parent))?;
+        }
+
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)
+            .with_context(|| format!("Failed to open registry lock: {:?}", path))?;
+
+        fs2::FileExt::lock_exclusive(&file)
+            .with_context(|| format!("Failed to acquire registry lock: {:?}", path))?;
+
+        Ok(Self { file })
+    }
+}
+
+impl Drop for RegistryLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
 }
 
 /// Fragment Registry - manages persistent fragment tracking
@@ -153,10 +191,11 @@ impl FragmentRegistry {
         self.fragments.contains_key(name)
     }
 
-    /// Validate if a PID is still alive by sending SIGCONT signal
+    /// Validate if a PID is still alive by probing it with signal 0
     ///
-    /// Uses `nix::sys::signal::kill()` with `Signal::SIGCONT` to check process existence.
-    /// - Returns `true` if the process exists (kill succeeds or returns EPERM)
+    /// Uses `kill(pid, 0)`, which performs the kernel's existence and
+    /// permission checks without delivering a signal.
+    /// - Returns `true` if the process exists (probe succeeds or returns EPERM)
     /// - Returns `false` if the process doesn't exist (ESRCH)
     ///
     /// # Arguments
@@ -166,7 +205,9 @@ impl FragmentRegistry {
     /// * `bool` - `true` if process exists, `false` otherwise
     pub fn validate_pid(pid: u32) -> bool {
         let pid = Pid::from_raw(pid as i32);
-        match signal::kill(pid, Signal::SIGCONT) {
+        // Signal 0 is a pure existence check. The previous implementation sent
+        // SIGCONT, which also *resumed* any stopped process as a side effect.
+        match signal::kill(pid, None) {
             Ok(_) => true,                          // Process exists and we can signal it
             Err(nix::errno::Errno::ESRCH) => false, // No such process - definitely dead
             Err(nix::errno::Errno::EPERM) => true,  // Permission denied but process exists
@@ -206,6 +247,7 @@ impl FragmentRegistry {
             .as_secs();
 
         let mut pruned = Vec::new();
+        let mut changed = false;
 
         for (name, fragment) in self.fragments.iter_mut() {
             if fragment.status == FragmentStatus::Running {
@@ -218,17 +260,24 @@ impl FragmentRegistry {
                         fragment.status = FragmentStatus::Stopped;
                         fragment.last_validated = Some(now);
                         pruned.push(name.clone());
+                        changed = true;
                     } else {
                         // Update validation timestamp for alive fragments
                         fragment.last_validated = Some(now);
+                        changed = true;
                     }
                 }
             }
         }
 
+        if changed {
+            // Persist even when nothing was pruned: otherwise the refreshed
+            // `last_validated` timestamps for live fragments are silently lost.
+            self.save()?;
+        }
+
         if !pruned.is_empty() {
             info!("Pruned {} stale fragment(s): {:?}", pruned.len(), pruned);
-            self.save()?;
         }
 
         Ok(pruned)
@@ -277,11 +326,33 @@ impl FragmentRegistry {
     }
 
     /// Save registry to disk
+    ///
+    /// Writes to a temporary file, fsyncs it, then renames it over the
+    /// registry. Readers therefore always see either the old or the new
+    /// complete file, never a partially written one.
     fn save(&self) -> Result<()> {
         let data = serde_json::to_string_pretty(&self.fragments)
             .context("Failed to serialize registry")?;
-        fs::write(&self.registry_path, data)
-            .with_context(|| format!("Failed to write registry: {:?}", self.registry_path))
+
+        let lock_path = self.registry_path.with_extension("json.lock");
+        let _lock = RegistryLock::acquire(&lock_path)?;
+
+        let temp_path = self.registry_path.with_extension("json.tmp");
+        {
+            let mut file = fs::File::create(&temp_path)
+                .with_context(|| format!("Failed to create temporary registry: {:?}", temp_path))?;
+            file.write_all(data.as_bytes())
+                .with_context(|| format!("Failed to write registry: {:?}", temp_path))?;
+            file.sync_all()
+                .with_context(|| format!("Failed to sync registry: {:?}", temp_path))?;
+        }
+
+        fs::rename(&temp_path, &self.registry_path).with_context(|| {
+            format!(
+                "Failed to publish registry {:?} -> {:?}",
+                temp_path, self.registry_path
+            )
+        })
     }
 }
 

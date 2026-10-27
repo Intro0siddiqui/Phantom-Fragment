@@ -1,13 +1,14 @@
 use anyhow::{Context, Result};
 use colored::*;
 use health_rs::is_process_alive;
-use std::path::PathBuf;
-use std::time::Instant;
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-use crate::config::PhantomPaths;
 use crate::daemon::{start_daemon_background, DaemonConfig};
 use crate::daemon::{DaemonSupervisor, SupervisorConfig};
-use crate::fragment_pool::FragmentPool;
+use crate::fragment_pool::{pool_dir, FragmentPool};
 use crate::ui::{info, print_divider_full, print_header, success};
 use execution_rs::HardwareProfile;
 
@@ -59,25 +60,27 @@ pub enum WarmCommands {
 
 use crate::commands::CommandContext;
 
-fn sanitize_image_name(image: &str) -> String {
-    image
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+/// Returns true only if `pid` is one of our warm daemons.
+///
+/// PID files outlive their daemons, and PIDs get reused. Killing whatever now
+/// owns a stale PID (an editor, a shell, ...) is unacceptable, so verify the
+/// command line before signalling.
+fn is_warm_daemon_process(pid: u32) -> bool {
+    let cmdline = match std::fs::read(format!("/proc/{}/cmdline", pid)) {
+        Ok(cmdline) => cmdline,
+        Err(_) => return false,
+    };
+
+    let cmdline = String::from_utf8_lossy(&cmdline);
+    cmdline.contains("--internal-warm-daemon")
 }
 
-fn kill_existing_daemons(pid_file_dir: &std::path::Path) -> Result<usize> {
+fn kill_existing_daemons(pid_file_dir: &Path) -> Result<usize> {
     if !pid_file_dir.exists() {
         return Ok(0);
     }
 
-    let mut killed_count = 0;
+    let mut killed_pids = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(pid_file_dir) {
         for entry in entries.flatten() {
@@ -85,12 +88,9 @@ fn kill_existing_daemons(pid_file_dir: &std::path::Path) -> Result<usize> {
             if path.extension().and_then(|s| s.to_str()) == Some("pid") {
                 if let Ok(pid_str) = std::fs::read_to_string(&path) {
                     if let Ok(pid) = pid_str.trim().parse::<u32>() {
-                        if is_process_alive(pid) {
-                            let _ = std::process::Command::new("kill")
-                                .arg("-9")
-                                .arg(pid.to_string())
-                                .output();
-                            killed_count += 1;
+                        if is_warm_daemon_process(pid) {
+                            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                            killed_pids.push(pid);
                         }
                     }
                 }
@@ -99,7 +99,28 @@ fn kill_existing_daemons(pid_file_dir: &std::path::Path) -> Result<usize> {
         }
     }
 
-    Ok(killed_count)
+    // Wait for the daemons to actually die before the caller binds new
+    // sockets: a still-exiting daemon keeps its socket answering, which makes
+    // the replacement daemon refuse to start ("already listening").
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for pid in &killed_pids {
+        while is_process_alive(*pid) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    Ok(killed_pids.len())
+}
+
+/// Write a file atomically (temp file + rename) so readers never observe a
+/// partially written PID or socket path.
+fn write_file_atomic(path: &Path, contents: &str) -> Result<()> {
+    let temp_path = path.with_extension("tmp");
+    std::fs::write(&temp_path, contents)
+        .with_context(|| format!("Failed to write {:?}", temp_path))?;
+    std::fs::rename(&temp_path, path)
+        .with_context(|| format!("Failed to rename {:?} -> {:?}", temp_path, path))?;
+    Ok(())
 }
 
 pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
@@ -131,8 +152,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("{}", "Done".green());
             info("Rootfs:", &rootfs_path.display().to_string());
 
-            let paths = PhantomPaths::new();
-            let pid_file_dir = paths.fragment_pools().join(sanitize_image_name(&image));
+            let pid_file_dir = pool_dir(&image);
             std::fs::create_dir_all(&pid_file_dir).ok();
 
             let killed = kill_existing_daemons(&pid_file_dir)?;
@@ -147,7 +167,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             for i in 0..size {
                 let pid_file = pid_file_dir.join(format!("daemon_{}.pid", i));
 
-                match start_daemon_in_rootfs(&rootfs_path, &pid_file, &image) {
+                match start_daemon_in_rootfs(&rootfs_path, &pid_file) {
                     Ok(pid) => {
                         println!("  {} Daemon {} started (PID: {})", "✓".green(), i, pid);
                         registered_pids.push(pid);
@@ -213,7 +233,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                     image
                 );
             }
-            return Ok(());
+            Ok(())
         }
         WarmCommands::List => {
             print_header("Fragment Pools (beta/experimental)");
@@ -239,7 +259,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                     println!();
                 }
             }
-            return Ok(());
+            Ok(())
         }
         WarmCommands::Remove { image } => {
             print_header("Remove Fragment Pool (beta/experimental)");
@@ -247,7 +267,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("\n{} Removing fragment pool for: {}", "→".yellow(), image);
             FragmentPool::remove(&image)?;
             println!("{} Fragment pool removed.", "✓".green().bold());
-            return Ok(());
+            Ok(())
         }
         WarmCommands::RemoveAll => {
             print_header("Remove All Fragment Pools (beta/experimental)");
@@ -255,11 +275,11 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("\n{} Removing all fragment pools...", "→".yellow());
             FragmentPool::remove_all()?;
             println!("{} All fragment pools removed.", "✓".green().bold());
-            return Ok(());
+            Ok(())
         }
         WarmCommands::Benchmark { iterations, size } => {
             run_benchmark(iterations, size).await?;
-            return Ok(());
+            Ok(())
         }
         WarmCommands::Supervise { image } => {
             print_header("Start Daemon Supervision (beta/experimental)");
@@ -271,16 +291,15 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             let pool_meta = pool.get_pool();
 
             // Read socket path from socket.path file
-            let paths = PhantomPaths::new();
-            let pool_dir = paths.fragment_pools().join(sanitize_image_name(&image));
-            let socket_path_file = pool_dir.join("socket.path");
+            let pool_path = pool_dir(&image);
+            let socket_path_file = pool_path.join("socket.path");
 
             let socket_path = if socket_path_file.exists() {
                 let socket_path_str = std::fs::read_to_string(&socket_path_file)?;
                 std::path::PathBuf::from(socket_path_str.trim())
             } else {
-                // Fallback to default naming
-                pool_dir.join(format!("{}.sock", sanitize_image_name(&image)))
+                // Fallback to the first daemon's per-daemon socket
+                pool_path.join("daemon_0.sock")
             };
 
             // Create supervisor config
@@ -308,7 +327,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             let mut supervisor = DaemonSupervisor::new(supervisor_config);
 
             println!("{} Starting supervisor...", "→".yellow());
-            let _handle = supervisor.start_background()?;
+            let handle = supervisor.start_background()?;
 
             println!("{} Supervisor started successfully", "✓".green());
             println!("{} Monitoring daemon at: {:?}", "→".cyan(), socket_path);
@@ -318,12 +337,14 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             );
             println!("{} Press Ctrl+C to stop supervision.", "ℹ".cyan());
 
-            // Keep running until interrupted
+            // Keep running until interrupted. Read the shared state/stats from
+            // the handle: the foreground supervisor object is never run, so
+            // querying it reported "Stopped" and zeroed counters forever.
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
-                let stats = supervisor.get_stats();
-                let state = supervisor.state();
+                let stats = handle.get_stats();
+                let state = handle.state();
 
                 print!(
                     "\r{} State: {:?} | Restarts: {} | Health checks: {} succeeded, {} failed",
@@ -341,11 +362,10 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             print_divider_full();
             println!("\n{} Checking status for: {}", "→".yellow(), image);
 
-            let paths = PhantomPaths::new();
-            let pool_dir = paths.fragment_pools().join(sanitize_image_name(&image));
+            let pool_path = pool_dir(&image);
 
             // Read socket path from the socket.path file
-            let socket_path_file = pool_dir.join("socket.path");
+            let socket_path_file = pool_path.join("socket.path");
             if !socket_path_file.exists() {
                 println!(
                     "{} No socket path file found. Pool may not exist or daemon not started.",
@@ -402,7 +422,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             }
 
             // Check for PID files
-            let pid_files: Vec<_> = std::fs::read_dir(&pool_dir)
+            let pid_files: Vec<_> = std::fs::read_dir(&pool_path)
                 .ok()
                 .into_iter()
                 .flat_map(|entries| entries.filter_map(|e| e.ok()))
@@ -426,7 +446,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                 }
             }
 
-            return Ok(());
+            Ok(())
         }
     }
 }
@@ -509,16 +529,20 @@ async fn run_benchmark(iterations: usize, size: usize) -> Result<()> {
 /// - Safe command execution (no eval, uses Command::new directly)
 /// - Cgroup integration (applied before exec)
 /// - Proper cleanup on exit
-fn start_daemon_in_rootfs(
-    rootfs_path: &std::path::Path,
-    pid_file: &std::path::Path,
-    image_name: &str,
-) -> Result<u32> {
-    let pool_dir = pid_file.parent().unwrap();
-    std::fs::create_dir_all(pool_dir).ok();
+fn start_daemon_in_rootfs(rootfs_path: &Path, pid_file: &Path) -> Result<u32> {
+    let pool_path = pid_file
+        .parent()
+        .context("Daemon PID file has no parent directory")?;
+    std::fs::create_dir_all(pool_path).ok();
 
-    // Create socket path in the pool directory
-    let socket_path = pool_dir.join(format!("{}.sock", sanitize_image_name(image_name)));
+    // Give every daemon its own socket. Sharing a single path meant each new
+    // daemon unlinked the previous daemon's socket, so all but the last were
+    // unreachable while still being listed as available in the pool.
+    let daemon_name = pid_file
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("daemon");
+    let socket_path = pool_path.join(format!("{}.sock", daemon_name));
 
     // Create hardware profile with default limits
     let hardware_profile = Some(HardwareProfile {
@@ -539,13 +563,17 @@ fn start_daemon_in_rootfs(
     let daemon_pid =
         start_daemon_background(config).context("Failed to start warm fragment daemon")?;
 
-    // Write PID file
-    std::fs::write(pid_file, daemon_pid.to_string()).context("Failed to write daemon PID file")?;
+    // Write PID file atomically so a concurrent reader never sees a partial PID
+    write_file_atomic(pid_file, &daemon_pid.to_string())
+        .context("Failed to write daemon PID file")?;
 
-    // Write socket path to a file for the client to find
-    let socket_path_file = pool_dir.join("socket.path");
-    std::fs::write(&socket_path_file, socket_path.to_string_lossy().as_bytes())
-        .context("Failed to write socket path")?;
+    // Keep a legacy default socket pointer for `warm status`/`warm supervise`.
+    // Only the first daemon writes it so it keeps pointing at a stable socket.
+    let socket_path_file = pool_path.join("socket.path");
+    if !socket_path_file.exists() {
+        write_file_atomic(&socket_path_file, &socket_path.to_string_lossy())
+            .context("Failed to write socket path")?;
+    }
 
     Ok(daemon_pid)
 }

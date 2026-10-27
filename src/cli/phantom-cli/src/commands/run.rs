@@ -314,32 +314,41 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                         match FragmentPool::load(image_ref) {
                             Ok(mut pool) => {
                                 if let Some(pid) = pool.acquire_pid() {
-                                    let paths = PhantomPaths::new();
-                                    let pool_path = paths.fragment_pools().join(image_ref);
-                                    match fork_from_daemon(
-                                        pid,
-                                        &final_command,
-                                        &pool_path,
-                                        hardware_profile.as_ref(),
-                                    ) {
-                                        Ok(exit_code) => {
-                                            let _ = pool.release_pid(pid);
-                                            if exit_code != 0 {
-                                                ui::error_with_prefix(
-                                                    "✗",
-                                                    &format!(
-                                                        "Command exited with code: {}",
-                                                        exit_code
-                                                    ),
-                                                );
-                                                std::process::exit(exit_code);
+                                    match pool.socket_path_for_pid(pid) {
+                                        Some(socket_path) => {
+                                            match fork_from_daemon(
+                                                pid,
+                                                &final_command,
+                                                &socket_path,
+                                                hardware_profile.as_ref(),
+                                            ) {
+                                                Ok(exit_code) => {
+                                                    let _ = pool.release_pid(pid);
+                                                    if exit_code != 0 {
+                                                        ui::error_with_prefix(
+                                                            "✗",
+                                                            &format!(
+                                                                "Command exited with code: {}",
+                                                                exit_code
+                                                            ),
+                                                        );
+                                                        std::process::exit(exit_code);
+                                                    }
+                                                    return Ok(());
+                                                }
+                                                Err(e) => {
+                                                    ui::warn(&format!(
+                                                        "Warm execution failed: {:?}, falling back to cold",
+                                                        e
+                                                    ));
+                                                    let _ = pool.purge_pid(pid);
+                                                }
                                             }
-                                            return Ok(());
                                         }
-                                        Err(e) => {
+                                        None => {
                                             ui::warn(&format!(
-                                                "Warm execution failed: {:?}, falling back to cold",
-                                                e
+                                                "No socket found for warm daemon PID {}, purging and falling back to cold",
+                                                pid
                                             ));
                                             let _ = pool.purge_pid(pid);
                                         }
@@ -662,21 +671,10 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
 fn fork_from_daemon(
     _daemon_pid: u32,
     command: &[String],
-    pool_path: &std::path::Path,
+    socket_path: &std::path::Path,
     hardware_profile: Option<&execution_rs::HardwareProfile>,
 ) -> anyhow::Result<i32> {
     use crate::daemon::{exec_in_daemon, ExecRequest};
-    use std::path::Path;
-
-    // Read socket path from file
-    let socket_path_file = pool_path.join("socket.path");
-    if !socket_path_file.exists() {
-        anyhow::bail!("Socket path file not found - daemon may not be running");
-    }
-
-    let socket_path_str =
-        std::fs::read_to_string(&socket_path_file).context("Failed to read socket path")?;
-    let socket_path = Path::new(socket_path_str.trim());
 
     if !socket_path.exists() {
         anyhow::bail!("Socket file not found - daemon may have crashed");

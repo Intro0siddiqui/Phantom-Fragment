@@ -24,7 +24,7 @@ impl PoolLock {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(path)
             .with_context(|| format!("Failed to open lock file: {:?}", path))?;
 
@@ -66,8 +66,7 @@ pub struct FragmentPool {
 
 impl FragmentPool {
     pub fn new_with_pids(image: String, rootfs_path: String, pids: Vec<u32>) -> Result<Self> {
-        let paths = PhantomPaths::new();
-        let pool_path = paths.fragment_pools().join(sanitize_image_name(&image));
+        let pool_path = pool_dir(&image);
 
         if let Some(parent) = pool_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -98,8 +97,7 @@ impl FragmentPool {
     }
 
     pub fn load(image: &str) -> Result<Self> {
-        let paths = PhantomPaths::new();
-        let pool_path = paths.fragment_pools().join(sanitize_image_name(image));
+        let pool_path = pool_dir(image);
         let meta_path = pool_path.join("meta.json");
 
         if !meta_path.exists() {
@@ -151,28 +149,62 @@ impl FragmentPool {
         Ok(())
     }
 
-    pub fn acquire_pid(&mut self) -> Option<u32> {
-        let socket_path_file = self.pool_path.join("socket.path");
-        let socket_path = if socket_path_file.exists() {
-            fs::read_to_string(&socket_path_file)
-                .map(|s| PathBuf::from(s.trim()))
-                .ok()
+    /// Resolve the Unix socket belonging to the daemon that owns `pid`.
+    ///
+    /// Each daemon started by `phantom warm create` gets its own socket
+    /// (`daemon_<n>.sock`) next to its PID file. Pools created by older
+    /// versions have a single shared `socket.path`, so fall back to that.
+    pub fn socket_path_for_pid(&self, pid: u32) -> Option<PathBuf> {
+        if let Ok(entries) = fs::read_dir(&self.pool_path) {
+            for entry in entries.flatten() {
+                let pid_file = entry.path();
+                if pid_file.extension().and_then(|s| s.to_str()) != Some("pid") {
+                    continue;
+                }
+                let recorded = match fs::read_to_string(&pid_file) {
+                    Ok(recorded) => recorded,
+                    Err(_) => continue,
+                };
+                if recorded.trim().parse::<u32>().ok() != Some(pid) {
+                    continue;
+                }
+                let socket = pid_file.with_extension("sock");
+                if socket.exists() {
+                    return Some(socket);
+                }
+            }
+        }
+
+        // Legacy single-socket layout.
+        let legacy = fs::read_to_string(self.pool_path.join("socket.path")).ok()?;
+        let socket = PathBuf::from(legacy.trim());
+        if socket.exists() {
+            Some(socket)
         } else {
             None
-        };
+        }
+    }
 
-        // Try to acquire a live PID whose socket is healthy
+    pub fn acquire_pid(&mut self) -> Option<u32> {
+        // Try to acquire a live PID whose own socket is healthy
         while let Some(pid) = self.meta.available_pids.pop() {
             let mut is_healthy = is_process_alive(pid);
 
+            // Health-check *this* daemon's socket. The previous code always
+            // pinged the single `socket.path`, i.e. it validated whichever
+            // daemon owned that path rather than the PID being handed out.
             if is_healthy {
-                if let Some(ref sock) = socket_path {
-                    if sock.exists() {
-                        if let Ok(responsive) = crate::daemon::ping_daemon(sock) {
+                match self.socket_path_for_pid(pid) {
+                    Some(socket) => {
+                        if let Ok(responsive) = crate::daemon::ping_daemon(&socket) {
                             if !responsive {
                                 is_healthy = false;
                             }
                         }
+                    }
+                    None => {
+                        log::warn!("No socket found for daemon PID {}, purging from pool", pid);
+                        is_healthy = false;
                     }
                 }
             }
@@ -195,8 +227,7 @@ impl FragmentPool {
     }
 
     pub fn list() -> Result<Vec<FragmentPoolMeta>> {
-        let paths = PhantomPaths::new();
-        let pools_dir = paths.fragment_pools();
+        let pools_dir = PhantomPaths::new().fragment_pools();
 
         if !pools_dir.exists() {
             return Ok(Vec::new());
@@ -208,10 +239,23 @@ impl FragmentPool {
             let entry = entry?;
             let meta_path = entry.path().join("meta.json");
 
-            if meta_path.exists() {
-                let data = fs::read_to_string(&meta_path)?;
-                let meta: FragmentPoolMeta = serde_json::from_str(&data)?;
-                pools.push(meta);
+            if !meta_path.exists() {
+                continue;
+            }
+
+            // A single corrupt pool must not hide every other pool.
+            let data = match fs::read_to_string(&meta_path) {
+                Ok(data) => data,
+                Err(e) => {
+                    log::warn!("Skipping unreadable fragment pool {:?}: {}", meta_path, e);
+                    continue;
+                }
+            };
+            match serde_json::from_str::<FragmentPoolMeta>(&data) {
+                Ok(meta) => pools.push(meta),
+                Err(e) => {
+                    log::warn!("Skipping corrupt fragment pool {:?}: {}", meta_path, e);
+                }
             }
         }
 
@@ -219,12 +263,11 @@ impl FragmentPool {
     }
 
     pub fn remove(image: &str) -> Result<()> {
-        let paths = PhantomPaths::new();
-        let pool_dir = paths.fragment_pools().join(sanitize_image_name(image));
+        let dir = pool_dir(image);
 
-        if pool_dir.exists() {
-            fs::remove_dir_all(&pool_dir)
-                .with_context(|| format!("Failed to remove fragment pool: {:?}", pool_dir))?;
+        if dir.exists() {
+            fs::remove_dir_all(&dir)
+                .with_context(|| format!("Failed to remove fragment pool: {:?}", dir))?;
         }
 
         Ok(())
@@ -277,6 +320,11 @@ impl FragmentPool {
             .unwrap()
             .as_secs();
     }
+
+    #[cfg(test)]
+    fn with_meta(pool_path: PathBuf, meta: FragmentPoolMeta) -> Self {
+        Self { pool_path, meta }
+    }
 }
 
 fn sanitize_image_name(image: &str) -> String {
@@ -290,4 +338,118 @@ fn sanitize_image_name(image: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Directory containing a pool's metadata, PID files and sockets.
+///
+/// Image references such as `library/alpine:latest` must be sanitized the same
+/// way everywhere; callers that build the path by hand end up looking in the
+/// wrong directory and silently fall back to cold execution.
+pub(crate) fn pool_dir(image: &str) -> PathBuf {
+    PhantomPaths::new()
+        .fragment_pools()
+        .join(sanitize_image_name(image))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn test_meta(available_pids: Vec<u32>) -> FragmentPoolMeta {
+        FragmentPoolMeta {
+            image: "alpine".to_string(),
+            rootfs_path: "/tmp/rootfs".to_string(),
+            pool_size: available_pids.len(),
+            available_pids,
+            busy_pids: Vec::new(),
+            created_at: 0,
+            last_used: 0,
+            zygote_enabled: false,
+        }
+    }
+
+    /// Spawn and reap a child, returning a PID that is known to be dead.
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("failed to spawn helper process");
+        let pid = child.id();
+        child.wait().expect("failed to reap helper process");
+        pid
+    }
+
+    #[test]
+    fn socket_path_for_pid_uses_per_daemon_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        fs::write(dir.join("daemon_0.pid"), "1234").unwrap();
+        fs::write(dir.join("daemon_0.sock"), "").unwrap();
+        fs::write(dir.join("daemon_1.pid"), "5678").unwrap();
+        fs::write(dir.join("daemon_1.sock"), "").unwrap();
+
+        let pool = FragmentPool::with_meta(dir.clone(), test_meta(vec![1234, 5678]));
+
+        assert_eq!(
+            pool.socket_path_for_pid(1234),
+            Some(dir.join("daemon_0.sock"))
+        );
+        assert_eq!(
+            pool.socket_path_for_pid(5678),
+            Some(dir.join("daemon_1.sock"))
+        );
+        assert_eq!(pool.socket_path_for_pid(9999), None);
+    }
+
+    #[test]
+    fn socket_path_for_pid_falls_back_to_legacy_socket_path() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+        let legacy_socket = dir.join("legacy.sock");
+        fs::write(&legacy_socket, "").unwrap();
+        fs::write(
+            dir.join("socket.path"),
+            legacy_socket.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+
+        let pool = FragmentPool::with_meta(dir, test_meta(vec![42]));
+
+        assert_eq!(pool.socket_path_for_pid(42), Some(legacy_socket));
+    }
+
+    #[test]
+    fn save_writes_complete_meta_atomically() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+        let pool = FragmentPool::with_meta(dir.clone(), test_meta(vec![7, 8]));
+
+        pool.save().unwrap();
+
+        let data = fs::read_to_string(dir.join("meta.json")).unwrap();
+        let parsed: FragmentPoolMeta = serde_json::from_str(&data).unwrap();
+        assert_eq!(parsed.available_pids, vec![7, 8]);
+
+        // The temporary file must not be left behind.
+        assert!(!dir.join("meta.json.tmp").exists());
+    }
+
+    #[test]
+    fn acquire_pid_purges_dead_pid_without_socket() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+        let pid = dead_pid();
+
+        let mut pool = FragmentPool::with_meta(dir.clone(), test_meta(vec![pid]));
+
+        assert_eq!(pool.acquire_pid(), None);
+        assert!(pool.meta.available_pids.is_empty());
+        assert!(pool.meta.busy_pids.is_empty());
+
+        // The purge must be persisted, not just applied in memory.
+        let data = fs::read_to_string(dir.join("meta.json")).unwrap();
+        let parsed: FragmentPoolMeta = serde_json::from_str(&data).unwrap();
+        assert!(parsed.available_pids.is_empty());
+    }
 }

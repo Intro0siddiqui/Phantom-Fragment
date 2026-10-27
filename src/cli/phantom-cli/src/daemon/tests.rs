@@ -8,6 +8,7 @@
 //! are marked with #[ignore]. Run with `cargo test -- --ignored` to execute them.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use crate::daemon::warm::{
         exec_in_daemon, is_safe_command, DaemonConfig, ExecRequest, ExecResponse, Message,
@@ -488,8 +489,8 @@ mod tests {
         // Number of concurrent clients
         let num_clients = 10;
         let barrier = Arc::new(Barrier::new(num_clients));
-        let results: Arc<std::sync::Mutex<Vec<(usize, i32, Option<String>)>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
+        type ClientResults = Arc<std::sync::Mutex<Vec<(usize, i32, Option<String>)>>>;
+        let results: ClientResults = Arc::new(std::sync::Mutex::new(Vec::new()));
 
         // Spawn concurrent clients
         let mut handles = Vec::new();
