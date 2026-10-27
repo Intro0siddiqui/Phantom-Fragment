@@ -114,7 +114,9 @@ pub async fn run(args: Args) -> Result<()> {
         if let Some((id, path)) = secret_arg.split_once('=') {
             context.secrets.insert(id.to_string(), PathBuf::from(path));
         } else {
-            log::warn!("Invalid secret format: {}", secret_arg);
+            // Never echo the value: a malformed `--secret` argument may be a
+            // raw secret rather than the expected `id=path` pair.
+            log::warn!("Invalid secret format (expected ID=PATH); value not logged");
         }
     }
 
