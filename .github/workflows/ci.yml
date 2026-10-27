@@ -9,6 +9,13 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
+# Cancel superseded pull-request runs, but never cancel a tag build that is
+# already publishing a release.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Least privilege by default; the release job opts into `contents: write`.
 permissions:
   contents: read
 
@@ -16,14 +23,17 @@ env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-  RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+  # Setting RUSTFLAGS overrides .cargo/config.toml, so repeat its
+  # `--cfg tokio_unstable` here to keep the CI build identical to local builds.
+  RUSTFLAGS: "--cfg tokio_unstable -C link-arg=-fuse-ld=mold"
   RUSTC_WRAPPER: sccache
 
 jobs:
-  # Build job - compiles the project
+  # Build job - compiles every workspace member (including phantom-mcp)
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -41,7 +51,7 @@ jobs:
           version: 0.16.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -53,20 +63,28 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build (release)
-        run: cargo build --release --locked --workspace --exclude phantom-mcp
+        run: cargo build --release --locked --workspace
 
-      - name: Upload build artifact
+      - name: Upload phantom
         uses: actions/upload-artifact@v6
         with:
           name: phantom-linux
           path: target/release/phantom
           retention-days: 7
 
-  # Test job - runs all tests
+      - name: Upload phantom-mcp
+        uses: actions/upload-artifact@v6
+        with:
+          name: phantom-mcp-linux
+          path: target/release/phantom-mcp
+          retention-days: 7
+
+  # Test job - runs the full workspace test suite
   test:
     name: Test
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 45
     permissions:
       contents: read
     steps:
@@ -84,7 +102,7 @@ jobs:
           version: 0.16.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
 
@@ -99,14 +117,22 @@ jobs:
         with:
           tool: cargo-nextest
 
+      # `.config/nextest.toml` caps every test with slow-timeout/terminate-after,
+      # so the known zygote-pool hangs fail the job instead of hanging it.
+      # `--no-fail-fast` makes sure one failure does not hide the rest.
       - name: Run tests
-        run: cargo nextest run --locked --workspace --exclude phantom-mcp
+        run: cargo nextest run --locked --workspace --profile ci --no-fail-fast
 
-  # Lint job - checks code quality
+      # nextest does not run doctests, so keep them in a separate step.
+      - name: Run doctests
+        run: cargo test --locked --workspace --doc
+
+  # Lint job - formatting and static analysis
   lint:
     name: Lint
     runs-on: ubuntu-latest
     needs: build
+    timeout-minutes: 40
     permissions:
       contents: read
     steps:
@@ -124,7 +150,7 @@ jobs:
           version: 0.16.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-action@stable
+        uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: rustfmt, clippy
@@ -135,11 +161,33 @@ jobs:
       - name: Setup rust-cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Check formatting
+      - name: Check Rust formatting
         run: cargo fmt --all --check
 
+      - name: Check Zig formatting
+        run: zig fmt --check $(git ls-files '*.zig')
+
+      # --all-targets also lints tests and benches, not just lib/bin targets.
       - name: Run Clippy
-        run: cargo clippy --workspace --exclude phantom-mcp -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  # Dependency review - only runs on pull requests, needs no secrets
+  dependency-review:
+    name: Dependency Review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
 
   # Release job - publishes on tags
   release:
@@ -147,21 +195,29 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, test, lint]
     if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Download build artifact
+      - name: Download phantom
         uses: actions/download-artifact@v6
         with:
           name: phantom-linux
 
+      - name: Download phantom-mcp
+        uses: actions/download-artifact@v6
+        with:
+          name: phantom-mcp-linux
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: phantom
+          files: |
+            phantom
+            phantom-mcp
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

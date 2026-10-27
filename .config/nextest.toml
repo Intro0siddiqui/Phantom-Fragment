@@ -1,0 +1,37 @@
+# nextest configuration for Phantom Fragment.
+#
+# CI uses nextest instead of `cargo test` because several tests around the
+# zygote pool can block forever when the pool cannot be initialised. nextest's
+# per-test `slow-timeout` turns those hangs into deterministic failures instead
+# of consuming the whole job's wall-clock budget.
+#
+# See https://nexte.st/docs/configuration/ for the full schema.
+
+[profile.default]
+# Report every failing test instead of stopping at the first one.
+fail-fast = false
+# Warn after 60s without progress, kill the test after 2 periods (120s).
+slow-timeout = { period = "60s", terminate-after = 2 }
+leak-timeout = "500ms"
+failure-output = "immediate-final"
+success-output = "never"
+
+# Profile used by CI (`cargo nextest run --profile ci`). Custom profiles
+# inherit from `default`, so only the differences are listed here.
+[profile.ci]
+fail-fast = false
+retries = 0
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# Known hanging tests: `cargo test -p zygote-rs` never returns from these when
+# the pool cannot be created. Fail them quickly (15s) rather than waiting for
+# the default timeout, and never retry them.
+[[profile.ci.overrides]]
+filter = 'test(~test_pool_create) | test(~test_pool_spawn_and_execute) | test(~stress_tests::)'
+slow-timeout = { period = "15s", terminate-after = 1 }
+retries = 0
+
+# The 1 GB storage integration test legitimately needs more than a unit test.
+[[profile.ci.overrides]]
+filter = 'test(~test_1gb_os_image_storage)'
+slow-timeout = { period = "120s", terminate-after = 2 }
