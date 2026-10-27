@@ -28,6 +28,26 @@ impl Default for DownloaderConfig {
     }
 }
 
+/// Build the cache file name for a layer digest.
+///
+/// The digest comes from a remote manifest, so it is validated as hex before
+/// being used as a path component (prevents `../../x` style traversal).
+fn digest_file_name(digest: &str) -> Result<String> {
+    let hex = digest.strip_prefix("sha256:").unwrap_or(digest);
+    if hex.is_empty() || hex.len() > 128 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(RegistryError::Other(format!(
+            "Invalid layer digest: {:?}",
+            digest
+        )));
+    }
+    Ok(format!("{}.tar.gzip", hex))
+}
+
+/// Shorten a digest for logging without a non-char-boundary panic.
+fn short_digest(digest: &str) -> String {
+    digest.chars().take(12).collect()
+}
+
 /// Layer download task
 #[derive(Debug, Clone)]
 pub struct DownloadTask {
@@ -84,7 +104,7 @@ impl Downloader {
         task: DownloadTask,
         mp: Arc<MultiProgress>,
     ) -> Result<PathBuf> {
-        let file_name = format!("{}.tar.gzip", task.digest.replace("sha256:", ""));
+        let file_name = digest_file_name(&task.digest)?;
         let file_path = config.cache_dir.join(&file_name);
 
         // Create parent directory if needed
@@ -110,7 +130,7 @@ impl Downloader {
             .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {bytes}/{total_bytes} ({eta}) {msg}")
             .unwrap()
             .progress_chars("#>-"));
-        pb.set_message(format!("Layer {}", &task.digest[..12]));
+        pb.set_message(format!("Layer {}", short_digest(&task.digest)));
         pb.set_position(current_size);
 
         // Open file for appending
@@ -162,5 +182,44 @@ impl Downloader {
         }
 
         Ok(file_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_digest_file_name_accepts_hex() {
+        assert_eq!(
+            digest_file_name("sha256:abcdef0123456789").unwrap(),
+            "abcdef0123456789.tar.gzip"
+        );
+        assert_eq!(
+            digest_file_name("abcdef0123456789").unwrap(),
+            "abcdef0123456789.tar.gzip"
+        );
+    }
+
+    #[test]
+    fn test_digest_file_name_rejects_traversal() {
+        for digest in [
+            "sha256:../../etc/cron.d/evil",
+            "../../etc/cron.d/evil",
+            "sha256:",
+            "sha256:zz",
+            "",
+        ] {
+            assert!(
+                digest_file_name(digest).is_err(),
+                "digest {:?} should be rejected",
+                digest
+            );
+        }
+    }
+
+    #[test]
+    fn test_short_digest_multibyte() {
+        assert_eq!(short_digest("éééééééééééééé"), "éééééééééééé");
     }
 }
