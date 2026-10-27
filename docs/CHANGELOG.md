@@ -7,8 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Zig 0.16 migration**: Native memory and zygote libraries now target the Zig 0.16 std API; build scripts fail fast with an actionable message when Zig is missing or older than 0.16
+- **Versioning**: `[workspace.package] version` is now the single source of truth, so `phantom --version`, the workspace crates, and this changelog agree
+
 ### Fixed
 - **network-rs**: Implemented automatic loopback interface startup when creating network namespaces
+- **phantom-build**: Fixed command injection when constructing `bwrap` arguments for build steps
 
 ## [3.1.0] - 2025-12-09
 

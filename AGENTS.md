@@ -18,9 +18,8 @@ cargo build --package execution-rs
 # Check without building
 cargo check --workspace
 
-# Build Zig components
+# Build Zig components (build.rs invokes zig automatically; standalone memory build below)
 cd src/memory/discipline/memory-zig && zig build
-cd src/core/zygote-rs && zig build
 ```
 
 ## Test Commands
@@ -253,7 +252,8 @@ Use Conventional Commits:
 ## Requirements
 
 - Rust 1.75+ (stable)
-- Zig 0.14+
+- Zig 0.16+
+- libseccomp development headers (`libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL)
 - Linux kernel 5.13+ (for Landlock), 6.5+ recommended (for BPF-LSM)
 
 ## Languages Used
@@ -359,11 +359,11 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 - **Status**: 🚧 **Beta/Experimental** - Currently has significant limitations (daemon stability, IPC issues)
 
 ### Tier 3: Zygote Pool (Fastest)
-- **Command**: Currently `phantom warm --benchmark` (for testing); future: integrated with run command
+- **Command**: `phantom run --zygote alpine <cmd>`
 - **Mechanism**: Pre-forked processes via Zig zygote pool using clone3/vfork syscalls
 - **Performance**: Sub-millisecond (<1ms) target
 - **Use Case**: High-frequency execution, serverless workloads, maximum performance
-- **Status**: 🚧 **Partial** - Low-level implementation complete, not yet integrated with run command
+- **Status**: 🚧 **Beta/Experimental** - Wired into `phantom run --zygote`; falls back to cold execution if the pool is unavailable
 
 ### Current Implementation Status
 
@@ -371,9 +371,9 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~45ms |
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
-| **Zygote** | `phantom warm --benchmark` | 🚧 Benchmark only | <1ms (in benchmarks) |
+| **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | <1ms in benchmarks; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) exists as a low-level Zig implementation but is not yet connected to the `phantom run` command. The warm fragment daemon (Tier 2) is in beta/experimental status with significant limitations.
+**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status with significant limitations.
 
 See `docs/architecture/components/warm-fragment-roadmap.md` for full implementation details.
 
@@ -419,9 +419,9 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 |-----------|--------|-------|
 | **execution-rs** | ✅ Complete | Adaptive engine, 3 modes (Sandbox/Hardened/Wasm) |
 | **types-rs** | ✅ Complete | FFI-safe types, no_std crate |
-| **zygote-rs** | ✅ Complete | Zig pool, <1ms in benchmarks, not fully integrated with run |
+| **zygote-rs** | ✅ Complete | Zig pool, <1ms in benchmarks, available via `phantom run --zygote` |
 | **task-analyzer-rs** | ✅ Complete | Component detection, memory estimation |
-| **network-rs** | ⚠️ Partial | Loopback auto-start NOT implemented |
+| **network-rs** | ✅ Complete | Loopback auto-start implemented for new network namespaces |
 | **compression-rs** | ✅ Complete | Zstd/Gzip/LZ4 |
 | **wasm-rs** | ✅ Complete | Wasmtime, limited network isolation |
 | **config-rs** | ✅ Complete | TOML config, minimal validation |
@@ -485,16 +485,14 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~45ms |
 | **Warm** | `phantom run --warm` | ⚠️ Beta | Unreliable, falls back to cold |
-| **Zygote** | `phantom warm --benchmark` | ⚠️ Bench only | <1ms (benchmarks) |
+| **Zygote** | `phantom run --zygote` | ⚠️ Beta | <1ms (benchmarks), falls back to cold |
 
 ### Known Issues
 
-1. **network-rs**: Loopback interface not auto-started
-2. **bpf-lsm-rs**: Requires kernel 5.7+ and CAP_SYS_ADMIN
-3. **debug-rs**: GDB/Delve attachment are stubs
-4. **warm**: Daemon stability issues, IPC problems
-5. **zygote**: Not connected to `phantom run` command
-6. **execution-rs**: Tests may hang due to zygote pool init
+1. **bpf-lsm-rs**: Requires kernel 5.7+ and CAP_SYS_ADMIN
+2. **debug-rs**: GDB/Delve attachment are stubs
+3. **warm**: Daemon stability issues, IPC problems
+4. **execution-rs**: Tests may hang due to zygote pool init
 
 ### Performance Reality
 

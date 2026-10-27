@@ -130,7 +130,7 @@ Mutex-based pools outperformed complex lock-free designs due to better cache loc
 ## Reproducing the Build
 
 ```bash
-# 1. Verify Zig version (must be 0.15.x)
+# 1. Verify Zig version (must be 0.16.x)
 zig version
 
 # 2. Build memory library
@@ -163,6 +163,6 @@ cargo build --release
 
 ## References
 
-- [Zig 0.15.1 Release Notes - I/O Changes](https://ziglang.org/download/0.15.1/release-notes.html)
+- [Zig 0.16.0 Release Notes](https://ziglang.org/download/0.16.0/release-notes.html)
 - [Linux sched_setaffinity(2)](https://man7.org/linux/pages/man2/sched_setaffinity.2.html)
 - [Kernel Samepage Merging (KSM)](https://www.kernel.org/doc/html/latest/admin-guide/mm/ksm.html)

@@ -84,7 +84,8 @@ phantom --version
 
 ### 🛠️ Build from Source
 
-Requires **Rust 1.75+** and **Zig 0.14+**.
+Requires **Rust 1.75+** and **Zig 0.16+**, plus the libseccomp development
+headers (`libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL).
 
 ```bash
 git clone https://github.com/Intro0siddiqui/Phantom-Fragment
@@ -111,7 +112,7 @@ phantom search ubuntu
 phantom build -t my-image:latest .
 
 # Check version
-phantom --version  # Shows: phantom 1.0.0
+phantom --version  # Shows: phantom 3.1.0
 ```
 
 ## 🤖 AI Agent Integration (MCP)

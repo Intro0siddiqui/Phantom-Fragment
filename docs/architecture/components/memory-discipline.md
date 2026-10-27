@@ -12,7 +12,7 @@ The **Memory Discipline Fragment** achieves <10MB memory per container through z
 | KSM Deduplication | ✅ Complete | Working (requires root) |
 | CPU Affinity | ✅ Complete | Verified with stress test |
 | NUMA Support | ⚠️ Stub | Requires libnuma |
-| Zig Core | ✅ Complete | Built with Zig 0.15.2 |
+| Zig Core | ✅ Complete | Built with Zig 0.16.0 |
 
 ## Verified Performance (Stress Test Results)
 
@@ -309,7 +309,7 @@ The memory discipline module integrates with:
 ### Environment Requirements
 
 - Linux kernel 3.x+ (6.5+ for Landlock/BPF)
-- Zig 0.15.x
+- Zig 0.16.x
 - Rust 1.70+
 - 4+ CPU cores recommended for multi-threaded tests
 

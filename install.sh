@@ -26,7 +26,7 @@ else
 fi
 
 BINARY_NAME="${BINARY_NAME:-phantom}"  # Default binary name
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-3.1.0}"
 
 # Architecture detection
 detect_arch() {
@@ -236,7 +236,7 @@ show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo
     echo "Options:"
-    echo "  --binary-name NAME    Set binary name (default: 1.0.0)"
+    echo "  --binary-name NAME    Set binary name (default: phantom)"
     echo "  --install-dir DIR     Set installation directory (default: \$HOME/bin)"
     echo "  --version VERSION     Specify version to install (default: latest)"
     echo "  --github              Prefer GitHub over Codeberg"
@@ -248,7 +248,7 @@ show_usage() {
     echo "  $0                              # Install system-wide (requires sudo)"
     echo "  sudo $0                         # Recommended: system-wide install"
     echo "  $0 --binary-name phantom        # Install as 'phantom'"
-    echo "  $0 --version 0.9.0              # Install specific version"
+    echo "  $0 --version 3.1.0              # Install specific version"
     echo "  $0 --install-dir \$HOME/bin     # User-only install"
     echo
 }

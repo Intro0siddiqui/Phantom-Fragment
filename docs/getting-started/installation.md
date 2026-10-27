@@ -8,6 +8,8 @@ This guide provides detailed installation instructions for Phantom Fragment acro
 
 ### Minimum Requirements
 - **Rust Version**: 1.75.0 or later (with Cargo)
+- **Zig Version**: 0.16.0 or later (builds the memory and zygote libraries)
+- **libseccomp headers**: `libseccomp-dev` (Debian/Ubuntu) or `libseccomp-devel` (Fedora/RHEL)
 - **Kernel**: Linux 3.x+ (6.5+ recommended for security features)
 - **Memory**: 256MB RAM (2GB recommended)
 - **Disk Space**: 100MB free space
@@ -42,7 +44,14 @@ rustc --version  # Should show 1.75+
 cargo --version
 
 # Install Zig (required for core performance components)
+# Phantom Fragment requires Zig 0.16 or newer.
 # See: https://ziglang.org/learn/getting-started/#installing-zig
+
+# Install libseccomp development headers (required by seccomp-rs)
+# Debian/Ubuntu:
+sudo apt-get install -y libseccomp-dev pkg-config
+# Fedora/RHEL:
+# sudo dnf install -y libseccomp-devel pkgconf
 ```
 
 #### Build Process
