@@ -3626,6 +3626,7 @@ dependencies = [
  "anyhow",
  "clap 4.6.7",
  "env_logger",
+ "flate2",
  "hex",
  "image-store-rs",
  "indicatif",
@@ -3636,6 +3637,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tar",
  "tokio",
  "types-rs",
 ]
