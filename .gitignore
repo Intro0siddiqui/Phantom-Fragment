@@ -26,6 +26,7 @@
 **/*test*
 !**/*test*.rs
 !**/*test*.zig
+!.config/nextest.toml
 *.test
 
 # Temporary files
