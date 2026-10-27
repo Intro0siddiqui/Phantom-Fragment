@@ -81,7 +81,7 @@ src/core/execution/kvm-zig/
 
 ## Dependencies
 
-- Zig 0.14+
+- Zig 0.16+
 - Linux kernel with KVM support (/dev/kvm)
 - Kernel image (vmlinuz or bzImage)
 - Root filesystem image (ext4, squashfs)

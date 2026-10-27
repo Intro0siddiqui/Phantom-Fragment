@@ -1,5 +1,8 @@
 # Implementation Plan: Zig 0.15.2 I/O Fast-Path (Proactor Model)
 
+> **Toolchain note (2026-10):** the project now targets Zig 0.16. The `0.15.2`
+> references below are historical; the I/O fast path is still unimplemented.
+
 **Status**: ❌ NOT IMPLEMENTED - ARCHIVED  
 **Target Version**: Phantom Fragment v0.5.0+  
 **Primary Goal**: Achieve 8GB/s+ throughput using io_uring while avoiding unstable Zig 0.16 language features.
