@@ -9,7 +9,6 @@ use tempfile::TempDir;
 /// Test environment for isolated testing
 /// These helpers are kept for future CLI integration tests
 #[allow(dead_code)]
-#[allow(dead_code)]
 pub struct TestEnv {
     pub temp_dir: TempDir,
     pub phantom_cli: PathBuf,

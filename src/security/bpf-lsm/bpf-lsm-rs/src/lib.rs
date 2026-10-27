@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = BpfLsmConfig::default();
-        assert_eq!(config.enable_bpf_lsm, true);
+        assert!(config.enable_bpf_lsm);
         assert_eq!(config.cache_size, 1000);
     }
 

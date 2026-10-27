@@ -530,12 +530,12 @@ mod tests {
     fn test_executor_creation() {
         let executor = RootfsExecutor::new(PathBuf::from("/tmp/test-rootfs"));
         assert_eq!(executor.rootfs_path, PathBuf::from("/tmp/test-rootfs"));
-        assert_eq!(executor.enable_network, false);
+        assert!(!executor.enable_network);
     }
 
     #[test]
     fn test_with_network() {
         let executor = RootfsExecutor::new(PathBuf::from("/tmp/test-rootfs")).with_network(true);
-        assert_eq!(executor.enable_network, true);
+        assert!(executor.enable_network);
     }
 }

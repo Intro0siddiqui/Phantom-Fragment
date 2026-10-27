@@ -582,7 +582,9 @@ mod tests {
     #[tokio::test]
     async fn test_push_layer_zero_max_concurrent_fallback() {
         let tasks = (0..3).map(|id| async move { id });
-        let max_concurrent = 0usize.max(1);
+        // Mirror `Pusher::push_layer`'s fallback for a configured value of 0.
+        let configured: usize = 0;
+        let max_concurrent = configured.max(1);
         let results: Vec<usize> = stream::iter(tasks).buffered(max_concurrent).collect().await;
         assert_eq!(results, vec![0, 1, 2]);
     }

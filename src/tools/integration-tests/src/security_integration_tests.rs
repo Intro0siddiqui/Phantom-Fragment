@@ -5,7 +5,6 @@
 mod tests {
     use crate::test_helpers::has_kernel_feature;
     use landlock_rs::LandlockContext;
-    use seccomp_rs;
     use std::fs;
     use std::io::Write;
     use tempfile::NamedTempFile;
@@ -195,7 +194,6 @@ mod tests {
         // Test network namespace isolation
         if !has_kernel_feature("user_namespaces") {
             println!("Skipping: User namespaces not available");
-            return;
         }
 
         // In a real test, we would:

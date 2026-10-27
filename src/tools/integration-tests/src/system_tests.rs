@@ -2,7 +2,6 @@
 mod tests {
     use landlock_rs::LandlockContext;
     use memory_rs::BufferPool;
-    use network_rs;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
