@@ -250,7 +250,7 @@ Use Conventional Commits:
 
 ## Requirements
 
-- Rust 1.75+ (stable)
+- Rust 1.99.1 (pinned in `rust-toolchain.toml`)
 - Zig 0.16+
 - libseccomp development headers (`libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL)
 - Linux kernel 5.13+ (for Landlock), 6.5+ recommended (for BPF-LSM)

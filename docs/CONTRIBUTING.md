@@ -20,7 +20,7 @@ cargo test --workspace
 
 ### Prerequisites
 
-- **Rust**: 1.75+ (stable)
+- **Rust**: 1.99.1 (pinned in `rust-toolchain.toml`)
 - **Zig**: 0.16+ (for memory modules and the zygote pool)
 - **libseccomp headers**: `libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL
 - **Linux**: Kernel 3.x+ (6.5+ for Landlock/BPF)

@@ -7,6 +7,10 @@
 #
 # See https://nexte.st/docs/configuration/ for the full schema.
 
+# Refuse to run under an older binary. 0.9.150 fixes GHSA-vc25-qg58-w57c
+# (arbitrary code execution via a malicious portable run recording + --rerun).
+nextest-version = { required = "0.9.150" }
+
 [profile.default]
 # Report every failing test instead of stopping at the first one.
 fail-fast = false

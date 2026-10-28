@@ -84,7 +84,7 @@ phantom --version
 
 ### 🛠️ Build from Source
 
-Requires **Rust 1.75+** and **Zig 0.16+**, plus the libseccomp development
+Requires **Rust 1.99.1** and **Zig 0.16+**, plus the libseccomp development
 headers (`libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL).
 
 ```bash

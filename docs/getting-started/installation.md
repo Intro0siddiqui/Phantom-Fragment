@@ -7,7 +7,7 @@ This guide provides detailed installation instructions for Phantom Fragment acro
 ## System Requirements
 
 ### Minimum Requirements
-- **Rust Version**: 1.75.0 or later (with Cargo)
+- **Rust Version**: 1.99.1 (pinned in `rust-toolchain.toml`)
 - **Zig Version**: 0.16.0 or later (builds the memory and zygote libraries)
 - **libseccomp headers**: `libseccomp-dev` (Debian/Ubuntu) or `libseccomp-devel` (Fedora/RHEL)
 - **Kernel**: Linux 3.x+ (6.5+ recommended for security features)
@@ -40,7 +40,7 @@ Phantom Fragment is **Linux-native first**, with experimental support for other 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Verify Rust installation
-rustc --version  # Should show 1.75+
+rustc --version  # Should show 1.99.1
 cargo --version
 
 # Install Zig (required for core performance components)
