@@ -143,6 +143,12 @@ non-numeric `user`. Pre-existing: the last change to `rootfs_executor.rs` was a 
 (`4d0e8d7`), and nothing in the warm work touches it. Fix by resolving the name to a uid
 (or omitting `--uid` when it is not numeric) before building the bwrap argv.
 
+> **Fixed.** `rootfs_executor.rs` now resolves `user[:group]` before building the bwrap
+> argv: numeric ids pass through, names are looked up against the **image's**
+> `/etc/passwd` and `/etc/group` (not the host's), and a user-only spec defaults the gid
+> to that user's primary group instead of the user string. If a name cannot be resolved
+> the flags are omitted with a warning, leaving bwrap to keep the invoking user.
+
 ## 2. Non-goals
 
 Explicitly out of scope for this plan, so they stop being conflated with it:

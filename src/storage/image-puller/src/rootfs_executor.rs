@@ -316,18 +316,27 @@ impl RootfsExecutor {
 
         // User handling
         if let Some(ref user) = self.user {
-            // Parse user:group format
-            let parts: Vec<&str> = user.split(':').collect();
-            let uid_str = parts[0];
-            let gid_str = parts.get(1).unwrap_or(&uid_str);
-
-            log::info!("Running as UID={}, GID={}", uid_str, gid_str);
-            bwrap_args.extend_from_slice(&[
-                "--uid".to_string(),
-                uid_str.to_string(),
-                "--gid".to_string(),
-                gid_str.to_string(),
-            ]);
+            // bwrap only accepts numeric ids, so names must be resolved against
+            // the image's own user database before building the argv.
+            match resolve_uid_gid(&self.rootfs_path, user) {
+                Some((uid, gid)) => {
+                    log::info!("Running as UID={}, GID={}", uid, gid);
+                    bwrap_args.extend_from_slice(&[
+                        "--uid".to_string(),
+                        uid.to_string(),
+                        "--gid".to_string(),
+                        gid.to_string(),
+                    ]);
+                }
+                None => {
+                    // Keeping the invoking user is the safe rootless default.
+                    log::warn!(
+                        "Cannot resolve user '{}' in the image's /etc/passwd or /etc/group; \
+                         running as the invoking user",
+                        user
+                    );
+                }
+            }
         } else if self.run_as_root {
             // When running as root, use uid/gid 0 inside container
             bwrap_args.extend_from_slice(&[
@@ -522,6 +531,89 @@ impl RootfsExecutor {
     }
 }
 
+/// Resolve a `user[:group]` spec to numeric `(uid, gid)` ids.
+///
+/// Numeric components are used as-is. Names are looked up in the rootfs' own
+/// `/etc/passwd` and `/etc/group`, since the image's user database (not the
+/// host's) is what applies inside the container. When only a user is given, the
+/// gid defaults to that user's primary group from `/etc/passwd`, falling back to
+/// the uid. Returns `None` when a name cannot be resolved.
+fn resolve_uid_gid(rootfs: &Path, spec: &str) -> Option<(u32, u32)> {
+    let (user_part, group_part) = match spec.split_once(':') {
+        Some((user, group)) => (user, Some(group)),
+        None => (spec, None),
+    };
+    let user_part = user_part.trim();
+    if user_part.is_empty() {
+        return None;
+    }
+
+    let (uid, primary_gid) = match user_part.parse::<u32>() {
+        Ok(uid) => (uid, None),
+        Err(_) => lookup_passwd(rootfs, user_part)?,
+    };
+
+    let gid = match group_part.map(str::trim) {
+        None | Some("") => primary_gid.unwrap_or(uid),
+        Some(group) => match group.parse::<u32>() {
+            Ok(gid) => gid,
+            Err(_) => lookup_group(rootfs, group)?,
+        },
+    };
+
+    Some((uid, gid))
+}
+
+/// Look up `name` in the rootfs' `/etc/passwd`, returning `(uid, primary_gid)`.
+fn lookup_passwd(rootfs: &Path, name: &str) -> Option<(u32, Option<u32>)> {
+    let content = std::fs::read_to_string(rootfs.join("etc/passwd")).ok()?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = line.split(':');
+        if fields.next() != Some(name) {
+            continue;
+        }
+
+        // name:passwd:uid:gid:...
+        let _passwd = fields.next();
+        let Some(uid) = fields.next().and_then(|f| f.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        let gid = fields.next().and_then(|f| f.trim().parse::<u32>().ok());
+        return Some((uid, gid));
+    }
+
+    None
+}
+
+/// Look up `name` in the rootfs' `/etc/group`, returning its gid.
+fn lookup_group(rootfs: &Path, name: &str) -> Option<u32> {
+    let content = std::fs::read_to_string(rootfs.join("etc/group")).ok()?;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = line.split(':');
+        if fields.next() != Some(name) {
+            continue;
+        }
+
+        // name:passwd:gid:members
+        let _passwd = fields.next();
+        return fields.next().and_then(|f| f.trim().parse::<u32>().ok());
+    }
+
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,5 +629,116 @@ mod tests {
     fn test_with_network() {
         let executor = RootfsExecutor::new(PathBuf::from("/tmp/test-rootfs")).with_network(true);
         assert!(executor.enable_network);
+    }
+
+    /// Minimal throwaway rootfs with an `etc/` directory.
+    struct TempRootfs {
+        path: PathBuf,
+    }
+
+    impl TempRootfs {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "phantom-rootfs-executor-test-{}-{}",
+                std::process::id(),
+                n
+            ));
+            std::fs::create_dir_all(path.join("etc")).expect("create temp rootfs");
+            Self { path }
+        }
+
+        fn write_etc(&self, file: &str, content: &str) {
+            std::fs::write(self.path.join("etc").join(file), content).expect("write etc file");
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TempRootfs {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    const PASSWD_ROOT: &str = "root:x:0:0:root:/root:/bin/sh\n";
+    const PASSWD_APP: &str = "root:x:0:0:root:/root:/bin/sh\napp:x:1000:1000::/home/app:/bin/sh\n";
+
+    #[test]
+    fn resolves_root_name() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_ROOT);
+        assert_eq!(resolve_uid_gid(rootfs.path(), "root"), Some((0, 0)));
+    }
+
+    #[test]
+    fn resolves_user_name_to_primary_gid() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_APP);
+        assert_eq!(resolve_uid_gid(rootfs.path(), "app"), Some((1000, 1000)));
+    }
+
+    #[test]
+    fn resolves_user_and_group_names() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_APP);
+        rootfs.write_etc("group", "root:x:0:\napp:x:1000:\n");
+        assert_eq!(
+            resolve_uid_gid(rootfs.path(), "app:app"),
+            Some((1000, 1000))
+        );
+    }
+
+    #[test]
+    fn passes_numeric_ids_through() {
+        let rootfs = TempRootfs::new();
+        assert_eq!(
+            resolve_uid_gid(rootfs.path(), "1000:1001"),
+            Some((1000, 1001))
+        );
+    }
+
+    #[test]
+    fn falls_back_to_uid_without_group_entry() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_APP);
+        rootfs.write_etc("group", "root:x:0:\n");
+        assert_eq!(resolve_uid_gid(rootfs.path(), "app"), Some((1000, 1000)));
+    }
+
+    #[test]
+    fn unknown_user_is_none() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_APP);
+        assert_eq!(resolve_uid_gid(rootfs.path(), "ghost"), None);
+    }
+
+    #[test]
+    fn unknown_group_is_none() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc("passwd", PASSWD_APP);
+        rootfs.write_etc("group", "root:x:0:\n");
+        assert_eq!(resolve_uid_gid(rootfs.path(), "app:ghosts"), None);
+    }
+
+    #[test]
+    fn malformed_passwd_does_not_panic() {
+        let rootfs = TempRootfs::new();
+        rootfs.write_etc(
+            "passwd",
+            "\nnot-enough-fields\napp:x:not-a-number:1000::/home/app:/bin/sh\n",
+        );
+        assert_eq!(resolve_uid_gid(rootfs.path(), "app"), None);
+    }
+
+    #[test]
+    fn missing_passwd_is_none() {
+        let rootfs = TempRootfs::new();
+        assert_eq!(resolve_uid_gid(rootfs.path(), "app"), None);
     }
 }
