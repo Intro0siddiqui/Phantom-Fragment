@@ -367,6 +367,14 @@ exist**; it is only reachable by measuring the RPC directly or adding a resident
 Our CI is currently dead: Node 20 was removed from GitHub runners on 2026-09-16 and every
 action we pin is Node 20.
 
+> **Done in `12df12a`.** All actions moved to their Node 24 generations, `sccache-action`
+> pinned exactly, `cargo-nextest` pinned to 0.9.150 with `nextest-version` required in
+> `.config/nextest.toml`, and Rust pinned to 1.99.1 in `rust-toolchain.toml` and CI.
+> `dependency-review-action@v5` and `dtolnay/rust-toolchain@1.99.1` resolve as branches,
+> not tags — that is how both actions ship a floating version.
+> Note: `download-artifact@v8` turns digest mismatches into hard errors, so any drift
+> between the upload and release jobs now fails the release instead of warning.
+
 | File | Change |
 |---|---|
 | `.github/workflows/ci.yml` | `checkout@v6→v7`, `upload-artifact@v6→v7`, `download-artifact@v6→v8` (digest mismatch now **errors**), `dependency-review@v4→v5`, `action-gh-release@v2→v3`, pin `sccache-action@v0.0.11` exactly (no floating major exists), pin nextest `0.9.150` (GHSA-vc25-qg58-w57c: arbitrary code execution via malicious run recordings) |
