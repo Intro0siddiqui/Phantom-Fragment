@@ -38,6 +38,19 @@ mod tests {
         (temp_dir, socket_path)
     }
 
+    /// Send the shutdown message and wait for the daemon thread to finish.
+    fn shutdown_daemon(socket_path: &Path, handle: thread::JoinHandle<Result<(), anyhow::Error>>) {
+        {
+            let mut stream = UnixStream::connect(socket_path).expect("Failed to connect");
+            let shutdown_msg = Message::new(MessageType::Shutdown, vec![]);
+            let data = shutdown_msg.serialize().expect("Failed to serialize");
+            stream.write_all(&data).expect("Failed to send shutdown");
+        }
+
+        thread::sleep(Duration::from_millis(100));
+        let _ = handle.join();
+    }
+
     /// Create a default daemon configuration for testing
     fn create_test_config(socket_path: PathBuf, rootfs_path: PathBuf) -> DaemonConfig {
         DaemonConfig {
@@ -89,11 +102,42 @@ mod tests {
         exec_in_daemon(socket_path, &request)
     }
 
-    /// Create a simple test rootfs directory with basic executables
+    /// Copy a host file into the test rootfs at the same absolute path,
+    /// creating parent directories and marking the copy executable.
+    fn copy_host_file(rootfs: &Path, source: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let destination = rootfs.join(source.strip_prefix("/").expect("source must be absolute"));
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .unwrap_or_else(|e| panic!("Failed to create {:?}: {}", parent, e));
+        }
+        fs::copy(source, &destination)
+            .unwrap_or_else(|e| panic!("Failed to copy {:?} to {:?}: {}", source, destination, e));
+
+        let mut perms = fs::metadata(&destination).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&destination, perms).unwrap();
+    }
+
+    /// Create a simple test rootfs directory with basic executables.
+    ///
+    /// The mock commands are `#!/bin/sh` scripts, so the rootfs needs a real
+    /// interpreter: after chroot(2) the host's /bin/sh is no longer reachable.
+    /// Copy dash plus the dynamic loader and libc at their absolute paths.
     fn create_test_rootfs(temp_dir: &TempDir) -> PathBuf {
         let rootfs = temp_dir.path().join("rootfs");
         fs::create_dir_all(&rootfs).expect("Failed to create rootfs");
         fs::create_dir_all(rootfs.join("bin")).expect("Failed to create bin");
+
+        // Real /bin/sh and its runtime dependencies. `ldd /bin/sh` on this
+        // glibc box reports libc.so.6 and the /lib64 loader; glibc's built-in
+        // search path here is /usr/lib64, while ldd reports /usr/lib, so install
+        // libc under both names.
+        copy_host_file(&rootfs, Path::new("/bin/sh"));
+        copy_host_file(&rootfs, Path::new("/lib64/ld-linux-x86-64.so.2"));
+        copy_host_file(&rootfs, Path::new("/usr/lib64/libc.so.6"));
+        copy_host_file(&rootfs, Path::new("/usr/lib/libc.so.6"));
 
         // Create /bin/true mock
         let bin_true = rootfs.join("bin/true");
@@ -103,24 +147,34 @@ mod tests {
         let bin_false = rootfs.join("bin/false");
         fs::write(&bin_false, "#!/bin/sh\nexit 1\n").expect("Failed to write /bin/false");
 
-        // Create /bin/echo mock
+        // Create /bin/echo mock. The marker argument proves that this script
+        // (not the host's /bin/echo) ran.
         let bin_echo = rootfs.join("bin/echo");
-        fs::write(&bin_echo, "#!/bin/sh\necho \"$@\"\nexit 0\n")
-            .expect("Failed to write /bin/echo");
+        fs::write(
+            &bin_echo,
+            "#!/bin/sh\nif [ \"$1\" = \"__phantom_rootfs_probe__\" ]; then\n  exit 42\nfi\necho \"$@\"\nexit 0\n",
+        )
+        .expect("Failed to write /bin/echo");
 
-        // Create /bin/pwd mock
+        // Create /bin/pwd mock: records the cwd inside the chroot.
         let bin_pwd = rootfs.join("bin/pwd");
-        fs::write(&bin_pwd, "#!/bin/sh\npwd\nexit 0\n").expect("Failed to write /bin/pwd");
+        fs::write(&bin_pwd, "#!/bin/sh\npwd > /cwd.txt\nexit 0\n")
+            .expect("Failed to write /bin/pwd");
 
-        // Create /bin/sh mock (just a copy of bin_true for basic testing)
-        let bin_sh = rootfs.join("bin/sh");
-        fs::copy(&bin_true, &bin_sh).expect("Failed to copy /bin/sh");
+        // Create /bin/fs-probe mock: succeeds only when host-only files are
+        // invisible, i.e. when the process really is chrooted.
+        let bin_fs_probe = rootfs.join("bin/fs-probe");
+        fs::write(
+            &bin_fs_probe,
+            "#!/bin/sh\nif [ -e /etc/os-release ]; then\n  exit 1\nfi\nexit 0\n",
+        )
+        .expect("Failed to write /bin/fs-probe");
 
         // Make them executable
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for bin in &[&bin_true, &bin_false, &bin_echo, &bin_pwd, &bin_sh] {
+            for bin in &[&bin_true, &bin_false, &bin_echo, &bin_pwd, &bin_fs_probe] {
                 let mut perms = fs::metadata(bin).unwrap().permissions();
                 perms.set_mode(0o755);
                 fs::set_permissions(bin, perms).unwrap();
@@ -769,6 +823,152 @@ mod tests {
 
         thread::sleep(Duration::from_millis(100));
         let _ = handle.join();
+    }
+
+    // ========================================================================
+    // Chroot isolation tests
+    // ========================================================================
+
+    /// Regression test: the binary inside the rootfs must be the one that runs.
+    ///
+    /// A bare `echo` must resolve through the rootfs PATH after chroot, so the
+    /// rootfs script (which exits 42 for the marker argument) runs instead of
+    /// the host's /bin/echo (which would exit 0).
+    #[test]
+    fn test_rootfs_binary_is_executed() {
+        let (temp_dir, socket_path) = setup_test_env("test_rootfs_binary");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request(
+            &socket_path,
+            "echo",
+            vec!["__phantom_rootfs_probe__".to_string()],
+        )
+        .expect("Failed to send exec request");
+
+        assert_eq!(
+            response.exit_code, 42,
+            "bare `echo` must execute the rootfs script, not the host binary"
+        );
+        assert!(
+            response.error.is_none(),
+            "successful rootfs exec should not report an error: {:?}",
+            response.error
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// An absolute path that exists on the host but not in the rootfs must not
+    /// be executable.
+    #[test]
+    fn test_host_only_binary_is_unreachable() {
+        let (temp_dir, socket_path) = setup_test_env("test_host_only_binary");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        // /usr/bin/true exists on the host; the synthetic rootfs has no
+        // /usr/bin directory at all.
+        assert!(
+            Path::new("/usr/bin/true").exists(),
+            "test assumption: host must provide /usr/bin/true"
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request(&socket_path, "/usr/bin/true", vec![])
+            .expect("Failed to send exec request");
+
+        assert_eq!(
+            response.exit_code, 127,
+            "a host-only binary must not be executable"
+        );
+        assert!(
+            response.error.is_some(),
+            "a host-only binary must be reported as an error"
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// chdir(2) must happen after chroot(2), so the cwd observed by the child
+    /// is the path inside the image, not the host path.
+    #[test]
+    fn test_exec_cwd_is_inside_chroot() {
+        let (temp_dir, socket_path) = setup_test_env("test_exec_cwd_chroot");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let subdir = rootfs.join("subdir");
+        fs::create_dir_all(&subdir).expect("Failed to create subdir");
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        // The rootfs /bin/pwd mock records its cwd in /cwd.txt, which lands in
+        // the rootfs on the host.
+        let request = ExecRequest {
+            command: "/bin/pwd".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            cwd: Some(subdir.to_string_lossy().to_string()),
+            hardware_profile: None,
+        };
+
+        let response =
+            exec_in_daemon(&socket_path, &request).expect("Request with cwd should succeed");
+        assert_eq!(response.exit_code, 0);
+
+        let recorded = fs::read_to_string(rootfs.join("cwd.txt"))
+            .expect("child should have written /cwd.txt inside the rootfs");
+        assert_eq!(
+            recorded.trim(),
+            "/subdir",
+            "cwd must be the path inside the chroot"
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// Files that only exist on the host must not be visible in the child.
+    #[test]
+    fn test_host_filesystem_not_visible() {
+        let (temp_dir, socket_path) = setup_test_env("test_host_fs_not_visible");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        // The probe exits 1 if the host's /etc/os-release is visible.
+        assert!(
+            Path::new("/etc/os-release").exists(),
+            "test assumption: host must provide /etc/os-release"
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request(&socket_path, "/bin/fs-probe", vec![])
+            .expect("Failed to send exec request");
+
+        assert_eq!(
+            response.exit_code, 0,
+            "host-only files must not be visible inside the rootfs"
+        );
+        assert!(
+            response.error.is_none(),
+            "probe should run successfully: {:?}",
+            response.error
+        );
+
+        shutdown_daemon(&socket_path, handle);
     }
 
     // ========================================================================

@@ -914,8 +914,12 @@ impl WarmDaemon {
             .collect();
         final_env.extend(env_vars);
 
-        // Determine and validate working directory
-        let target_cwd = if let Some(ref cwd) = request.cwd {
+        // Determine and validate working directory.
+        //
+        // `request.cwd` arrives as a host path under the rootfs, but the child
+        // chdir()s after chroot(2), where that host prefix no longer exists.
+        // Strip it so the stored value is absolute inside the new root.
+        let chroot_cwd = if let Some(ref cwd) = request.cwd {
             let cwd_path = PathBuf::from(cwd);
 
             // Canonicalize to resolve symlinks and ..
@@ -926,9 +930,17 @@ impl WarmDaemon {
                 anyhow::bail!("cwd escapes rootfs boundary: {}", cwd);
             }
 
-            cwd.clone()
+            let relative = canonical_cwd
+                .strip_prefix(&self.config.rootfs_path)
+                .expect("cwd boundary checked above");
+
+            if relative.as_os_str().is_empty() {
+                "/".to_string()
+            } else {
+                format!("/{}", relative.display())
+            }
         } else {
-            self.config.rootfs_path.to_string_lossy().to_string()
+            "/".to_string()
         };
 
         // Validate command path - ensure it exists within rootfs
@@ -1035,11 +1047,26 @@ impl WarmDaemon {
             None
         };
 
+        // Fail-closed status pipe.
+        //
+        // The daemon is spawned with `Stdio::null()`, so anything the child
+        // prints is lost. The child reports setup/exec failures through this
+        // pipe instead. The write end is CLOEXEC, so the parent reads EOF with
+        // no bytes only when execvp() actually succeeded.
+        let (status_read, status_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
+            .context("Failed to create exec status pipe")?;
+
+        // Build child-only paths before fork to keep the post-fork window small.
+        let c_rootfs = CString::new(self.config.rootfs_path.to_string_lossy().as_bytes())
+            .context("rootfs path contains a NUL byte")?;
+        let c_chroot_cwd =
+            CString::new(chroot_cwd.as_str()).context("working directory contains a NUL byte")?;
+
         // Fork-exec pattern: apply cgroup BETWEEN fork and exec
         // SAFETY: Signal masking is critical before fork to prevent race conditions.
         // In multi-threaded programs, signals could be delivered to the child process
         // before it can establish its own signal handlers, causing undefined behavior.
-        let pid = unsafe {
+        let (pid, exec_error) = unsafe {
             let mut sigmask: libc::sigset_t = std::mem::zeroed();
             let mut old_sigmask: libc::sigset_t = std::mem::zeroed();
 
@@ -1049,6 +1076,8 @@ impl WarmDaemon {
             // Block all signals before fork
             let mask_ret = libc::pthread_sigmask(libc::SIG_SETMASK, &sigmask, &mut old_sigmask);
             if mask_ret != 0 {
+                let _ = nix::unistd::close(status_read);
+                let _ = nix::unistd::close(status_write);
                 return Err(anyhow::anyhow!(
                     "Failed to block signals before fork: errno {}",
                     mask_ret
@@ -1063,14 +1092,27 @@ impl WarmDaemon {
 
             match fork_result {
                 Ok(ForkResult::Child) => {
-                    // CRITICAL: Child must restore signals before any non-async-signal-safe operations
-                    if restore_ret != 0 {
-                        // Use _exit(127) which is async-signal-safe, NOT exit()
-                        libc::_exit(127);
-                    }
                     // === IN CHILD PROCESS ===
                     // At this point, we are a copy of the parent but before exec.
                     // This is the ONLY safe place to apply cgroups.
+
+                    // Only the parent consumes the status pipe.
+                    let _ = nix::unistd::close(status_read);
+
+                    // Report a setup failure to the parent and fail closed.
+                    // `_exit` is async-signal-safe and skips atexit handlers.
+                    let fail = |msg: String| -> ! {
+                        let _ = nix::unistd::write(status_write, msg.as_bytes());
+                        libc::_exit(127);
+                    };
+
+                    // CRITICAL: Child must restore signals before any non-async-signal-safe operations
+                    if restore_ret != 0 {
+                        fail(format!(
+                            "Failed to restore signal mask after fork: errno {}",
+                            restore_ret
+                        ));
+                    }
 
                     // Apply cgroup limits BEFORE exec - child is still just our code
                     // The cgroup was already created by the parent; we just need to add ourselves
@@ -1086,43 +1128,117 @@ impl WarmDaemon {
                         }
                     }
 
+                    // Capture credentials before entering the user namespace:
+                    // the mapping itself is written with the caller's host ids.
+                    let uid = libc::getuid();
+                    let gid = libc::getgid();
+
                     // ENFORCE NAMESPACE PURITY
-                    // Unshare mount namespace
-                    if libc::unshare(libc::CLONE_NEWNS) == 0 {
-                        // Make all mounts private so they don't propagate to parent
-                        let c_none = std::ffi::CString::new("none").unwrap();
-                        libc::mount(
-                            c_none.as_ptr(),
-                            std::ptr::null(),
-                            c_none.as_ptr(),
-                            libc::MS_PRIVATE | libc::MS_REC,
-                            std::ptr::null(),
-                        );
+                    // A user namespace is required first: without it the daemon
+                    // (unprivileged uid 1000) has no CAP_SYS_CHROOT/CAP_SYS_ADMIN
+                    // and both chroot(2) and mount(2) would fail with EPERM.
+                    // The mount namespace is owned by the new user namespace.
+                    if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
+                        fail(format!(
+                            "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed: {}",
+                            std::io::Error::last_os_error()
+                        ));
+                    }
 
-                        let c_tmp = std::ffi::CString::new("/tmp").unwrap();
-                        let c_tmpfs = std::ffi::CString::new("tmpfs").unwrap();
-                        libc::mount(
-                            c_tmpfs.as_ptr(),
-                            c_tmp.as_ptr(),
-                            c_tmpfs.as_ptr(),
-                            0,
-                            std::ptr::null(),
-                        );
+                    // `setgroups` does not exist on older kernels; anything else
+                    // is fatal because gid_map would then be unusable.
+                    if let Err(e) = write_proc_file("/proc/self/setgroups", b"deny") {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            fail(format!("Failed to write /proc/self/setgroups: {}", e));
+                        }
+                    }
+                    if let Err(e) = write_proc_file(
+                        "/proc/self/uid_map",
+                        format!("{} {} 1", uid, uid).as_bytes(),
+                    ) {
+                        fail(format!("Failed to write /proc/self/uid_map: {}", e));
+                    }
+                    if let Err(e) = write_proc_file(
+                        "/proc/self/gid_map",
+                        format!("{} {} 1", gid, gid).as_bytes(),
+                    ) {
+                        fail(format!("Failed to write /proc/self/gid_map: {}", e));
+                    }
 
-                        let c_devshm = std::ffi::CString::new("/dev/shm").unwrap();
+                    // Make all mounts private so they don't propagate to parent
+                    let c_root =
+                        CString::new("/").expect("Static string cannot contain null bytes");
+                    if libc::mount(
+                        std::ptr::null(),
+                        c_root.as_ptr(),
+                        std::ptr::null(),
+                        libc::MS_PRIVATE | libc::MS_REC,
+                        std::ptr::null(),
+                    ) != 0
+                    {
+                        fail(format!(
+                            "mount(/, MS_PRIVATE|MS_REC) failed: {}",
+                            std::io::Error::last_os_error()
+                        ));
+                    }
+
+                    // The image may not have a usable /dev/null, so open the
+                    // host's before the root switch.
+                    let null_fd = match nix::fcntl::open(
+                        "/dev/null",
+                        nix::fcntl::OFlag::O_RDONLY,
+                        nix::sys::stat::Mode::empty(),
+                    ) {
+                        Ok(fd) => fd,
+                        Err(e) => fail(format!("Failed to open /dev/null: {}", e)),
+                    };
+
+                    // Enter the image. Everything from here on runs inside the
+                    // rootfs, so the command validated above is now the file
+                    // execvp() will actually execute.
+                    if libc::chroot(c_rootfs.as_ptr()) != 0 {
+                        fail(format!(
+                            "chroot({}) failed: {}",
+                            self.config.rootfs_path.display(),
+                            std::io::Error::last_os_error()
+                        ));
+                    }
+
+                    // Change to target directory inside the new root
+                    if libc::chdir(c_chroot_cwd.as_ptr()) != 0 {
+                        fail(format!(
+                            "chdir({}) failed: {}",
+                            chroot_cwd,
+                            std::io::Error::last_os_error()
+                        ));
+                    }
+
+                    // tmpfs hygiene inside the new root. These mounts are not a
+                    // security boundary; failures are ignored.
+                    for dir in ["/tmp", "/dev/shm"] {
+                        if !Path::new(dir).is_dir() {
+                            continue;
+                        }
+                        let c_dir = match CString::new(dir) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
+                        let c_tmpfs =
+                            CString::new("tmpfs").expect("Static string cannot contain null bytes");
                         libc::mount(
                             c_tmpfs.as_ptr(),
-                            c_devshm.as_ptr(),
+                            c_dir.as_ptr(),
                             c_tmpfs.as_ptr(),
                             0,
                             std::ptr::null(),
                         );
                     }
 
-                    // Change to target directory
-                    if nix::unistd::chdir(target_cwd.as_str()).is_err() {
-                        eprintln!("Failed to change directory to {}", target_cwd);
-                        std::process::exit(127);
+                    // Redirect stdin from the host's /dev/null opened above.
+                    // stdout/stderr stay inherited.
+                    let _ = nix::unistd::dup2(null_fd, 0);
+                    if null_fd != 0 {
+                        let _ = nix::unistd::close(null_fd);
                     }
 
                     // Set environment variables using libc::setenv
@@ -1130,8 +1246,7 @@ impl WarmDaemon {
                         let env_str = match env_var.to_str() {
                             Ok(s) => s,
                             Err(_) => {
-                                eprintln!("Invalid environment variable encoding");
-                                std::process::exit(127);
+                                fail("Invalid environment variable encoding".to_string());
                             }
                         };
                         if let Some(eq_pos) = env_str.find('=') {
@@ -1139,30 +1254,14 @@ impl WarmDaemon {
                             let val = &env_str[eq_pos + 1..];
                             let c_key = match CString::new(key) {
                                 Ok(c) => c,
-                                Err(_) => {
-                                    eprintln!("Invalid environment variable key");
-                                    std::process::exit(127);
-                                }
+                                Err(_) => fail("Invalid environment variable key".to_string()),
                             };
                             let c_val = match CString::new(val) {
                                 Ok(c) => c,
-                                Err(_) => {
-                                    eprintln!("Invalid environment variable value");
-                                    std::process::exit(127);
-                                }
+                                Err(_) => fail("Invalid environment variable value".to_string()),
                             };
                             libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1);
                         }
-                    }
-
-                    // Redirect I/O: stdin from /dev/null, stdout/stderr inherited
-                    if let Ok(null_fd) = nix::fcntl::open(
-                        "/dev/null",
-                        nix::fcntl::OFlag::O_RDONLY,
-                        nix::sys::stat::Mode::empty(),
-                    ) {
-                        let _ = nix::unistd::dup2(null_fd, 0);
-                        let _ = nix::unistd::close(null_fd);
                     }
 
                     // NOW exec - child is already restricted by cgroup
@@ -1170,15 +1269,20 @@ impl WarmDaemon {
                     // command ever starts executing
                     let exec_result = execvp(&c_cmd, &c_args_with_cmd);
 
-                    // If execvp returns, it failed
+                    // If execvp returns, it failed.
                     // SAFETY: Use _exit(127) instead of exit() to avoid flushing stdio buffers
                     // twice (once in child, once in parent), which could cause duplicate output.
-                    eprintln!("Failed to exec {}: {:?}", request.command, exec_result);
-                    libc::_exit(127);
+                    fail(format!(
+                        "execvp({}) failed: {:?}",
+                        validated_command, exec_result
+                    ));
                 }
                 Ok(ForkResult::Parent { child }) => {
                     // === IN PARENT PROCESS ===
                     // child is the PID of the forked process
+
+                    // Close the write end or the read below would never see EOF.
+                    let _ = nix::unistd::close(status_write);
 
                     // Log if signal restoration failed (only safe to do in parent)
                     if restore_ret != 0 {
@@ -1188,10 +1292,32 @@ impl WarmDaemon {
                         );
                     }
 
-                    child.as_raw() as u32
+                    // Read to EOF: bytes mean the child failed before exec,
+                    // while a clean EOF means execvp() succeeded.
+                    let mut status = Vec::new();
+                    let mut chunk = [0u8; 256];
+                    loop {
+                        match nix::unistd::read(status_read, &mut chunk) {
+                            Ok(0) => break,
+                            Ok(n) => status.extend_from_slice(&chunk[..n]),
+                            Err(nix::errno::Errno::EINTR) => continue,
+                            Err(_) => break,
+                        }
+                    }
+                    let _ = nix::unistd::close(status_read);
+
+                    let error = if status.is_empty() {
+                        None
+                    } else {
+                        Some(String::from_utf8_lossy(&status).into_owned())
+                    };
+
+                    (child.as_raw() as u32, error)
                 }
                 Err(e) => {
                     // Signal restoration already attempted above, but fork failed
+                    let _ = nix::unistd::close(status_read);
+                    let _ = nix::unistd::close(status_write);
                     return Err(anyhow::anyhow!("Fork failed: {:?}", e));
                 }
             }
@@ -1232,7 +1358,7 @@ impl WarmDaemon {
         Ok(ExecResponse {
             exit_code,
             pid,
-            error: None,
+            error: exec_error,
         })
     }
 
@@ -1630,6 +1756,17 @@ pub fn is_safe_command(cmd: &str) -> bool {
             || c == '+'
             || c == '='
     })
+}
+
+/// Write a single value to a procfs control file.
+///
+/// Used for `/proc/self/{setgroups,uid_map,gid_map}` after entering a user
+/// namespace. The kernel requires the mapping to be written in one call.
+fn write_proc_file(path: &str, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+
+    let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
+    file.write_all(data)
 }
 
 /// Set up Ctrl+C handler
