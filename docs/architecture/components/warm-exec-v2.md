@@ -54,6 +54,15 @@ Consequences:
 This is an escape primitive, not a missing feature: a user who expects isolation from
 `--warm` gets the host's binaries with the host's filesystem.
 
+> **Fixed in `9bfb691`.** The child now enters a user namespace
+> (`CLONE_NEWUSER|CLONE_NEWNS`), maps the caller's uid/gid, chroots, then execs. Failures
+> are reported to the parent over a CLOEXEC pipe and the child fails closed with 127.
+> Verified live: `--warm alpine sh -c 'ls /'` lists the image root, and a host-only binary
+> is not reachable. Residual risk: the child still allocates (`format!`) on the failure
+> path after `fork()` in a 31-thread daemon — not async-signal-safe in principle. Worth
+> replacing with preallocated buffers and raw `write(2)` if the daemon ever forks under
+> load.
+
 ### D2 — warm output is discarded
 
 `start_daemon_background` spawns the daemon with `Stdio::null()` ×3
@@ -117,6 +126,23 @@ the fix is one method call.
 > `RestrictionStatus::all_threads`; on ABI < 8 it logs a warning and keeps the previous
 > thread-scoped behaviour. See `docs/security/security-line-rate.md` for the scope table.
 
+### D10 — cold execution passes a non-numeric user to bwrap (found 2026-10-28)
+
+`phantom-config.json` in the pulled rootfs contains `"user": "root"`. The cold path
+(`storage/image-puller/src/rootfs_executor.rs`) forwards that string verbatim as
+`bwrap --uid root`, and bubblewrap requires a numeric uid:
+
+```
+$ phantom run alpine true
+Running as user: root
+bwrap: Invalid uid: root
+```
+
+Cold execution is therefore completely broken for any image whose config carries a
+non-numeric `user`. Pre-existing: the last change to `rootfs_executor.rs` was a clippy fix
+(`4d0e8d7`), and nothing in the warm work touches it. Fix by resolving the name to a uid
+(or omitting `--uid` when it is not numeric) before building the bwrap argv.
+
 ## 2. Non-goals
 
 Explicitly out of scope for this plan, so they stop being conflated with it:
@@ -140,7 +166,7 @@ Ship these first. They are small, independently testable, and D1 is a security b
 | 1.4 | Rewrite the health probe to use the real `Message` codec instead of the hardcoded 10-byte buffer. Add a test that changes `PROTOCOL_VERSION` and asserts the probe still works. | `health-rs/src/lib.rs:92-101` | unit test + supervisor health check against a live daemon |
 | 1.5 | `.all_threads(true)` on the Landlock ruleset, with `HardRequirement` compatibility so it fails loudly rather than silently under-enforcing. | `landlock-rs/src/lib.rs:122` | existing landlock tests + a threaded-process test that asserts a sibling thread is restricted |
 
-> **Progress:** 1.4 (`1802f71`) and 1.5 (`717b708`) landed. 1.1, 1.2 and 1.3 are open.
+> **Progress:** 1.1 (`9bfb691`), 1.4 (`1802f71`) and 1.5 (`717b708`) landed. 1.2 and 1.3 are open.
 
 Phase 1 makes `--warm` *correct*. It does not make it fast, and it will make it slightly
 slower (it now does the security setup it was skipping).
