@@ -1,6 +1,10 @@
 # Warm Fragment / Zygote Pool Implementation Roadmap
 
 > **Status**: BETA/EXPERIMENTAL - IN ACTIVE DEVELOPMENT | **Last Updated**: March 2026
+>
+> ⚠️ **Stale.** Socket IPC now exists, the pool is connected to execution, and the daemon
+> no longer exits immediately. For the current state and the protocol design, see
+> [`warm-exec-v2.md`](./warm-exec-v2.md).
 
 ---
 
