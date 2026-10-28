@@ -1,5 +1,6 @@
 use landlock::{
-    Access, AccessFs, BitFlags, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetError, ABI,
+    Access, AccessFs, BitFlags, RestrictSelfAttr, Ruleset, RulesetAttr, RulesetCreatedAttr,
+    RulesetError, RulesetStatus, ABI,
 };
 use parking_lot::Mutex;
 use std::path::Path;
@@ -119,13 +120,107 @@ impl LandlockContext {
         let mut ruleset_guard = self.ruleset.lock();
 
         if let Some(ruleset) = ruleset_guard.take() {
+            // Request process-wide enforcement (LANDLOCK_RESTRICT_SELF_TSYNC,
+            // available since ABI v8). The crate's default CompatLevel is
+            // BestEffort, so older kernels drop the flag instead of failing,
+            // which preserves the previous thread-scoped behaviour.
+            let ruleset = match ruleset.all_threads(true) {
+                Ok(ruleset) => ruleset,
+                Err(e) => {
+                    return Err(format!(
+                        "Failed to request all-thread Landlock restriction: {}",
+                        e
+                    ))
+                }
+            };
+
             // restrict_self consumes RulesetCreated
             match ruleset.restrict_self() {
-                Ok(_) => Ok(()),
+                Ok(status) => {
+                    if status.ruleset == RulesetStatus::NotEnforced {
+                        log::warn!("Landlock ruleset was not enforced by the kernel");
+                    } else if !status.all_threads {
+                        log::warn!(
+                            "Landlock TSYNC unavailable (kernel ABI < 8); \
+                             only the calling thread is restricted"
+                        );
+                    }
+                    Ok(())
+                }
                 Err(e) => Err(format!("Failed to apply Landlock restriction: {}", e)),
             }
         } else {
             Err("Ruleset already applied or invalid".to_string())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Temporary directory that removes itself when dropped.
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            let path =
+                std::env::temp_dir().join(format!("landlock-rs-{}-{}", label, std::process::id()));
+            fs::create_dir_all(&path).expect("failed to create temporary directory");
+            Self(path)
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn all_threads_flag_is_accepted() {
+        let dir = TempDir::new("all-threads");
+        let file = fs::File::open(&dir.0).expect("failed to open temporary directory");
+
+        // Never call restrict_self() in a test: applying a ruleset would
+        // restrict the test process (and, with TSYNC, every test thread).
+        //
+        // RulesetCreated does not expose requested_restrict_self_flags /
+        // actual_restrict_self_flags, so the strongest available assertion is
+        // that the builder accepts the request. On this kernel (ABI >= 8) the
+        // TSYNC bit is recorded as applicable; on older kernels BestEffort
+        // drops it instead of failing.
+        let ruleset = Ruleset::default()
+            .handle_access(AccessFs::Execute | AccessFs::ReadFile)
+            .expect("failed to configure handled accesses")
+            .create()
+            .expect("failed to create ruleset")
+            .add_rule(landlock::PathBeneath::new(file, AccessFs::ReadFile))
+            .expect("failed to add rule")
+            .all_threads(true)
+            .expect("all_threads(true) should be accepted with BestEffort");
+
+        drop(ruleset);
+    }
+
+    #[test]
+    fn context_add_rule_succeeds() {
+        let dir = TempDir::new("context-add-rule");
+        let context = LandlockContext::new().expect("Landlock should be available on this kernel");
+
+        context
+            .add_rule(
+                dir.0.to_str().expect("temporary directory is not UTF-8"),
+                ACCESS_EXECUTE,
+            )
+            .expect("failed to add rule");
+    }
+
+    #[test]
+    fn access_rights_map_to_flags() {
+        assert!(access_rights_to_flags(0).contains(AccessFs::ReadFile));
+        assert!(access_rights_to_flags(ACCESS_EXECUTE).contains(AccessFs::Execute));
+        assert!(access_rights_to_flags(ACCESS_WRITE).contains(AccessFs::WriteFile));
     }
 }
