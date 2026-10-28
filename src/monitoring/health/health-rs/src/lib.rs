@@ -4,9 +4,70 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+// Warm-daemon wire protocol constants.
+//
+// Source of truth: `src/cli/phantom-cli/src/daemon/warm.rs`
+// (`PROTOCOL_MAGIC`, `PROTOCOL_VERSION`, `HEADER_SIZE`, `MAX_MESSAGE_SIZE`,
+// `MessageType`, and `Message::serialize`). They are duplicated here because
+// `phantom-cli` depends on `health-rs`, not the other way around.
+const PROTOCOL_MAGIC: u32 = 0x50484E54; // "PHNT"
+const PROTOCOL_VERSION: u8 = 1;
+/// [magic:4][version:1][type:1][length:4]
+const HEADER_SIZE: usize = 10;
+const MAX_MESSAGE_SIZE: usize = 1024 * 1024;
+const MSG_TYPE_HEALTH_CHECK: u8 = 0x04;
+const MSG_TYPE_HEALTH_RESPONSE: u8 = 0x05;
+
+/// Serialize a `HealthCheck` frame exactly like `warm.rs::Message::serialize`:
+/// `[magic:4 LE][version:1][type:1][payload length:4 LE][payload]`.
+fn health_check_frame() -> [u8; HEADER_SIZE] {
+    let mut frame = [0u8; HEADER_SIZE];
+    frame[0..4].copy_from_slice(&PROTOCOL_MAGIC.to_le_bytes());
+    frame[4] = PROTOCOL_VERSION;
+    frame[5] = MSG_TYPE_HEALTH_CHECK;
+    frame[6..10].copy_from_slice(&0u32.to_le_bytes()); // empty payload
+    frame
+}
+
+/// Read and validate the daemon's reply frame.
+///
+/// Mirrors `warm.rs::read_message`: the header is validated (magic, version,
+/// bounded length) before the payload is allocated, then the full payload is
+/// read. Returns `true` only for a well-formed `HealthResponse` whose payload
+/// starts with `OK` (see `warm.rs::handle_health_check`). An `Error` frame, a
+/// wrong version, a truncated read, or any other frame is not healthy.
+fn read_health_reply(stream: &mut UnixStream) -> std::io::Result<bool> {
+    let mut header = [0u8; HEADER_SIZE];
+    stream.read_exact(&mut header)?;
+
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    if magic != PROTOCOL_MAGIC {
+        return Ok(false);
+    }
+    if header[4] != PROTOCOL_VERSION {
+        return Ok(false);
+    }
+
+    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
+    if length > MAX_MESSAGE_SIZE {
+        return Ok(false);
+    }
+
+    let mut payload = vec![0u8; length];
+    stream.read_exact(&mut payload)?;
+
+    if header[5] != MSG_TYPE_HEALTH_RESPONSE {
+        return Ok(false);
+    }
+
+    Ok(payload.starts_with(b"OK"))
+}
 
 /// Check if a process is alive by checking /proc/{pid}
 pub fn is_process_alive(pid: u32) -> bool {
@@ -89,28 +150,34 @@ impl HealthMonitor {
                 // Set read timeout
                 stream.set_read_timeout(Some(timeout)).ok();
 
-                // Send a simple health check probe (empty message)
-                let probe = b"\x00\x00\x00\x00\x01\x04\x00\x00\x00\x00";
-                if stream.write_all(probe).is_err() {
+                // Send a real HealthCheck frame (see `health_check_frame`)
+                if stream.write_all(&health_check_frame()).is_err() {
                     self.update_component("socket", HealthStatus::Degraded, "Socket write failed");
                     return Ok(HealthStatus::Degraded);
                 }
 
-                // Try to read response
-                let mut header = [0u8; 10];
-                match stream.read_exact(&mut header) {
-                    Ok(_) => {
+                // Read and validate the full reply frame
+                match read_health_reply(&mut stream) {
+                    Ok(true) => {
                         self.update_component("socket", HealthStatus::Healthy, "Socket responsive");
                         *self.last_check.lock().unwrap() = Some(Instant::now());
                         Ok(HealthStatus::Healthy)
                     }
+                    Ok(false) => {
+                        self.update_component(
+                            "socket",
+                            HealthStatus::Unhealthy,
+                            "Unexpected health response",
+                        );
+                        Ok(HealthStatus::Unhealthy)
+                    }
                     Err(_) => {
                         self.update_component(
                             "socket",
-                            HealthStatus::Degraded,
+                            HealthStatus::Unhealthy,
                             "Socket not responding",
                         );
-                        Ok(HealthStatus::Degraded)
+                        Ok(HealthStatus::Unhealthy)
                     }
                 }
             }
@@ -201,12 +268,14 @@ impl Default for HealthMonitor {
     }
 }
 
-// Required imports for UnixStream operations
-use std::io::{Read, Write};
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_SOCKET_ID: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
     fn test_health_aggregation() {
@@ -230,5 +299,122 @@ mod tests {
 
         monitor.update("test", HealthStatus::Healthy, "Test passed");
         assert_eq!(monitor.check_system(), HealthStatus::Healthy);
+    }
+
+    /// The probe request must match `Message::new(MessageType::HealthCheck,
+    /// vec![]).serialize()` in `src/cli/phantom-cli/src/daemon/warm.rs`:
+    /// magic 0x50484E54 little-endian, version 1, type 0x04, length 0.
+    #[test]
+    fn test_health_check_frame_bytes() {
+        let expected = [
+            0x54, 0x4E, 0x48, 0x50, // 0x50484E54 as little-endian ("PHNT")
+            0x01, // PROTOCOL_VERSION
+            0x04, // MessageType::HealthCheck
+            0x00, 0x00, 0x00, 0x00, // empty payload length
+        ];
+        assert_eq!(health_check_frame(), expected);
+    }
+
+    /// Build a reply frame by hand, mirroring `warm.rs::Message::serialize`.
+    fn reply_frame(msg_type: u8, payload: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&[0x54, 0x4E, 0x48, 0x50]); // 0x50484E54 LE
+        frame.push(0x01); // PROTOCOL_VERSION
+        frame.push(msg_type);
+        frame.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
+    /// Start a one-shot server that reads the probe request and writes `reply`.
+    /// Returns the temp directory, the socket path, and the server thread.
+    fn spawn_reply_server(reply: Vec<u8>) -> (PathBuf, PathBuf, std::thread::JoinHandle<()>) {
+        let id = NEXT_SOCKET_ID.fetch_add(1, Ordering::Relaxed);
+        let dir =
+            std::env::temp_dir().join(format!("health-rs-test-{}-{}", std::process::id(), id));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let socket_path = dir.join("daemon.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind unix listener");
+
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept connection");
+            let mut request = [0u8; HEADER_SIZE];
+            stream.read_exact(&mut request).expect("read probe request");
+            assert_eq!(
+                request,
+                health_check_frame(),
+                "probe must send a real HealthCheck frame"
+            );
+            stream.write_all(&reply).expect("write reply");
+        });
+
+        (dir, socket_path, handle)
+    }
+
+    fn monitor() -> HealthMonitor {
+        HealthMonitor::with_config(HealthConfig {
+            timeout_ms: 2000,
+            verbose: false,
+        })
+    }
+
+    #[test]
+    fn test_probe_accepts_health_response() {
+        let (dir, socket_path, handle) =
+            spawn_reply_server(reply_frame(0x05, b"OK pid=1234 children=0"));
+
+        let status = monitor().check_health(&socket_path).expect("probe runs");
+        handle.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_probe_rejects_error_frame() {
+        let (dir, socket_path, handle) =
+            spawn_reply_server(reply_frame(0xFF, b"Invalid protocol magic"));
+
+        let status = monitor().check_health(&socket_path).expect("probe runs");
+        handle.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_probe_rejects_non_ok_payload() {
+        let (dir, socket_path, handle) = spawn_reply_server(reply_frame(0x05, b"BUSY"));
+
+        let status = monitor().check_health(&socket_path).expect("probe runs");
+        handle.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_probe_rejects_garbage_reply() {
+        let (dir, socket_path, handle) = spawn_reply_server(vec![
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05,
+        ]);
+
+        let status = monitor().check_health(&socket_path).expect("probe runs");
+        handle.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(status, HealthStatus::Unhealthy);
+    }
+
+    #[test]
+    fn test_probe_rejects_truncated_reply() {
+        // Valid magic/version but the frame ends after four header bytes.
+        let (dir, socket_path, handle) = spawn_reply_server(vec![0x54, 0x4E, 0x48, 0x50]);
+
+        let status = monitor().check_health(&socket_path).expect("probe runs");
+        handle.join().expect("server thread");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(status, HealthStatus::Unhealthy);
     }
 }
