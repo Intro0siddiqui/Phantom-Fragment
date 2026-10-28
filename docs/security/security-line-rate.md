@@ -105,6 +105,18 @@ impl BpfLsmManager {
 }
 ```
 
+## Landlock Enforcement Scope
+
+`LandlockContext::restrict_self()` requests `LANDLOCK_RESTRICT_SELF_TSYNC` (Landlock ABI 8, kernel 6.7+), so the ruleset covers every thread in the process rather than only the thread that applied it.
+
+| Kernel | Behaviour |
+|--------|-----------|
+| ABI >= 8 | Ruleset applies to all threads. `RestrictionStatus::all_threads` is `true`. |
+| ABI < 8 | `CompatLevel::BestEffort` drops the flag instead of failing. Only the applying thread and its children are restricted, and a warning is logged. |
+| Ruleset not enforced | `RestrictionStatus::ruleset == NotEnforced` logs a warning; the caller still sees `Ok` because the rest of the sandbox (seccomp, capabilities, namespaces) remains in effect. |
+
+**Why this matters:** a thread-scoped ruleset is a silent under-enforcement if Landlock is ever applied inside a threaded runtime. Phantom currently applies it in a freshly forked single-threaded child, where the two scopes are equivalent — TSYNC is defence in depth for future call sites. Test the behaviour by checking `RestrictionStatus::all_threads`, not by inspecting the requested flags (`RulesetCreated` keeps those private).
+
 ## Security Levels
 
 ### Minimal (Direct Mode)

@@ -93,6 +93,11 @@ part of the "daemon stability issues" recorded in the roadmap.
 works because the daemon answers with an `Error` frame. Any header or version change
 silently breaks every supervisor health check. It must use the real codec.
 
+> **Fixed in `1802f71`.** The probe now builds a real `HealthCheck` frame, validates the
+> full reply, and requires a `HealthResponse` with an `OK` payload. Verified against a live
+> daemon. Behaviour change: a non-responding daemon reports `Unhealthy` (restart) rather
+> than `Degraded` (alive with issues).
+
 ### D8 — the per-request fsync
 
 `FragmentPool::acquire_pid`/`release_pid` rewrite `meta.json` and `sync_all()`
@@ -107,6 +112,10 @@ daemon already holds in memory.
 it the ruleset covers only the calling thread. **Not a live bug** — the call site is a
 freshly forked single-threaded child — but it is one refactor away from becoming one, and
 the fix is one method call.
+
+> **Fixed in `717b708`.** The ruleset now requests TSYNC and inspects
+> `RestrictionStatus::all_threads`; on ABI < 8 it logs a warning and keeps the previous
+> thread-scoped behaviour. See `docs/security/security-line-rate.md` for the scope table.
 
 ## 2. Non-goals
 
@@ -130,6 +139,8 @@ Ship these first. They are small, independently testable, and D1 is a security b
 | 1.3 | `setsid()` + `SIGHUP` ignore + `PR_SET_PDEATHSIG=0` in `daemon_main` before the accept loop. | `warm.rs:1942-1991` | `Ctrl+C` the launching shell; daemon and children survive; `phantom warm list` still works |
 | 1.4 | Rewrite the health probe to use the real `Message` codec instead of the hardcoded 10-byte buffer. Add a test that changes `PROTOCOL_VERSION` and asserts the probe still works. | `health-rs/src/lib.rs:92-101` | unit test + supervisor health check against a live daemon |
 | 1.5 | `.all_threads(true)` on the Landlock ruleset, with `HardRequirement` compatibility so it fails loudly rather than silently under-enforcing. | `landlock-rs/src/lib.rs:122` | existing landlock tests + a threaded-process test that asserts a sibling thread is restricted |
+
+> **Progress:** 1.4 (`1802f71`) and 1.5 (`717b708`) landed. 1.1, 1.2 and 1.3 are open.
 
 Phase 1 makes `--warm` *correct*. It does not make it fast, and it will make it slightly
 slower (it now does the security setup it was skipping).
