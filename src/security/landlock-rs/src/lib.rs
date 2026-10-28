@@ -22,13 +22,23 @@ const ACCESS_WRITE: u64 = 0x2;
 const ACCESS_EXECUTE: u64 = 0x4;
 
 fn access_rights_to_flags(access_rights: u64) -> BitFlags<AccessFs> {
-    let mut access: BitFlags<AccessFs> = AccessFs::ReadFile.into();
+    let mut access: BitFlags<AccessFs> = AccessFs::ReadFile | AccessFs::ReadDir;
 
     if access_rights & ACCESS_EXECUTE != 0 {
         access |= AccessFs::Execute;
     }
     if access_rights & ACCESS_WRITE != 0 {
-        access |= AccessFs::WriteFile;
+        // "Write" has to include the creation and removal rights: the ruleset
+        // handles every ABI v1 access type, so a rule that only grants
+        // WriteFile would still deny open(O_CREAT) and unlink(2).
+        access |= AccessFs::WriteFile
+            | AccessFs::RemoveDir
+            | AccessFs::RemoveFile
+            | AccessFs::MakeDir
+            | AccessFs::MakeReg
+            | AccessFs::MakeSock
+            | AccessFs::MakeFifo
+            | AccessFs::MakeSym;
     }
 
     if access.is_empty() {

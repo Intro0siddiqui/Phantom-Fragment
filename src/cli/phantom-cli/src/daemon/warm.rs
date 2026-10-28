@@ -50,6 +50,34 @@ const PROTOCOL_VERSION: u8 = 1;
 /// Size of the fixed message header: [magic:4][version:1][type:1][length:4]
 const HEADER_SIZE: usize = 10;
 
+/// Reserved environment variable that carries the security-profile name.
+///
+/// `ExecRequest` has no profile field and the v1 wire format must not change,
+/// so the client piggybacks the name on the existing env map. The daemon reads
+/// it, strips it from the child environment and resolves it through
+/// `crate::config`. This is a temporary v1-compatible carrier; `ExecV2` gets a
+/// real field (see `docs/architecture/components/warm-exec-v2.md`).
+pub const PROFILE_ENV: &str = "PHANTOM_PROFILE";
+
+/// Profile applied when a request does not carry [`PROFILE_ENV`].
+///
+/// Matches the `--profile` default in `commands::run`, so a warm exec without an
+/// explicit profile enforces the same policy as the cold path.
+const DEFAULT_PROFILE: &str = "sandbox";
+
+/// Landlock access flags understood by `landlock-rs`'s rule encoding
+/// (`0x2` = write, `0x4` = execute; read is always implied).
+const LL_ACCESS_WRITE: u64 = 0x2;
+const LL_ACCESS_EXECUTE: u64 = 0x4;
+
+/// `prctl(2)` options that `libc` does not export for linux-gnu.
+const PR_SET_PDEATHSIG: libc::c_int = 1;
+const PR_CAPBSET_DROP: libc::c_int = 24;
+const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
+
+/// `_LINUX_CAPABILITY_VERSION_3`: two 32-bit words per capability set.
+const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
 /// Upper bound for a single message payload.
 ///
 /// The length field is attacker-controlled, so it must never be trusted when
@@ -367,6 +395,147 @@ struct ChildProcess {
     cgroup: Option<CgroupManager>,
 }
 
+/// Security policy enforced by the warm child, resolved from a config profile.
+#[derive(Debug, Clone, Copy)]
+struct ChildPolicy {
+    /// Whether the profile allows writes under the rootfs.
+    file_write: bool,
+    /// `seccomp-rs` filter to install before exec.
+    seccomp: &'static str,
+}
+
+/// Resolve a profile name through the same config the CLI uses.
+///
+/// An unknown name is a hard error: silently running the command unconfined
+/// when the caller asked for a profile would defeat the point of the profile.
+fn resolve_child_policy(name: &str) -> Result<ChildPolicy> {
+    let config = crate::config::Config::load().unwrap_or_else(|e| {
+        log::warn!(
+            "Failed to load phantom config while resolving warm profile '{}': {}",
+            name,
+            e
+        );
+        crate::config::Config::default()
+    });
+
+    let profile = config
+        .get_profile(name)
+        .ok_or_else(|| anyhow::anyhow!("unknown security profile: {}", name))?;
+
+    Ok(ChildPolicy {
+        file_write: profile.file_write,
+        seccomp: seccomp_profile_for(profile),
+    })
+}
+
+/// Map a config profile to the `seccomp-rs` filter for its isolation level,
+/// mirroring the mode → profile mapping in `execution-rs`.
+fn seccomp_profile_for(profile: &crate::config::Profile) -> &'static str {
+    match profile.to_execution_mode() {
+        execution_rs::ExecutionMode::Sandbox => "default",
+        execution_rs::ExecutionMode::Hardened => "hardened",
+        execution_rs::ExecutionMode::Wasm => "strict",
+    }
+}
+
+/// Confine the calling process (the forked warm child) with Landlock.
+///
+/// Rules use paths as seen *after* `chroot(2)`, i.e. `/` is the image root and
+/// `/tmp` / `/dev/shm` are the tmpfs mounts created just before this call. A
+/// rule on `/` does not cover a separate mount, so the tmpfs roots get their own
+/// rule.
+fn apply_child_landlock(file_write: bool) -> std::result::Result<(), String> {
+    let ctx = match landlock_rs::LandlockContext::new() {
+        Some(ctx) => ctx,
+        None => {
+            // Kernel without Landlock (< 5.13): nothing can be enforced, but
+            // that must not stop the command from running.
+            log::warn!("Landlock unavailable; warm child runs without filesystem confinement");
+            return Ok(());
+        }
+    };
+
+    let access = if file_write {
+        LL_ACCESS_WRITE | LL_ACCESS_EXECUTE
+    } else {
+        LL_ACCESS_EXECUTE
+    };
+
+    for path in ["/", "/tmp", "/dev/shm"] {
+        if !Path::new(path).is_dir() {
+            continue;
+        }
+        ctx.add_rule(path, access)
+            .map_err(|e| format!("Landlock rule for {} failed: {}", path, e))?;
+    }
+
+    ctx.apply()
+        .map_err(|e| format!("Landlock restrict_self failed: {}", e))
+}
+
+/// Drop the capability bounding set and clear the capability sets, then set
+/// `no_new_privs`.
+///
+/// Defence in depth: the child is already unprivileged in the parent namespace,
+/// so a kernel or namespace that refuses these calls must not fail the exec.
+fn drop_child_capabilities() {
+    /// `struct __user_cap_header_struct`
+    #[repr(C)]
+    struct CapHeader {
+        version: u32,
+        pid: i32,
+    }
+
+    /// `struct __user_cap_data_struct`
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct CapData {
+        effective: u32,
+        permitted: u32,
+        inheritable: u32,
+    }
+
+    // A capability dropped from the bounding set cannot be regained across
+    // execve. EINVAL (unknown to this kernel) and EPERM (already absent) are
+    // both expected and harmless.
+    let last_cap = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
+        .ok()
+        .and_then(|s| s.trim().parse::<libc::c_int>().ok())
+        .unwrap_or(63);
+    for cap in 0..=last_cap {
+        // SAFETY: prctl with PR_CAPBSET_DROP takes the capability number as arg2.
+        unsafe { libc::prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) };
+    }
+
+    // Clear the calling thread's sets. The child is single-threaded here, so a
+    // per-thread capset covers the whole process.
+    let header = CapHeader {
+        version: LINUX_CAPABILITY_VERSION_3,
+        pid: 0,
+    };
+    let data = [CapData {
+        effective: 0,
+        permitted: 0,
+        inheritable: 0,
+    }; 2];
+    // SAFETY: capset takes a header and an array of two data words, matching
+    // _LINUX_CAPABILITY_VERSION_3.
+    let ret =
+        unsafe { libc::syscall(libc::SYS_capset, &header as *const CapHeader, data.as_ptr()) };
+    if ret != 0 {
+        log::warn!("capset(clear) failed: {}", std::io::Error::last_os_error());
+    }
+
+    // no_new_privs is what makes the drop stick across execve.
+    // SAFETY: prctl with PR_SET_NO_NEW_PRIVS takes the flag value as arg2.
+    if unsafe { libc::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) } != 0 {
+        log::warn!(
+            "PR_SET_NO_NEW_PRIVS failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// Socket-based warm fragment daemon
 pub struct WarmDaemon {
     config: DaemonConfig,
@@ -615,6 +784,11 @@ impl WarmDaemon {
             self.pid(),
             self.socket_path()
         );
+
+        // Leave the launcher's session before accepting anything, so a Ctrl+C
+        // aimed at the shell that ran `phantom warm create` cannot signal the
+        // daemon or its children.
+        detach_daemon_session();
 
         // Apply cgroup to daemon itself if profile specified
         if let Some(ref profile) = self.config.hardware_profile {
@@ -869,6 +1043,15 @@ impl WarmDaemon {
             anyhow::bail!("Invalid command: contains unsafe characters");
         }
 
+        // Resolve the security profile before forking. An unknown profile is a
+        // normal exec error, not a child setup failure.
+        let profile_name = request
+            .env
+            .get(PROFILE_ENV)
+            .map(String::as_str)
+            .unwrap_or(DEFAULT_PROFILE);
+        let child_policy = resolve_child_policy(profile_name)?;
+
         // Prepare command and arguments for execvp
         // Note: c_cmd is created after path validation below
         let mut c_args: Vec<CString> = Vec::with_capacity(request.args.len() + 2);
@@ -885,6 +1068,11 @@ impl WarmDaemon {
 
         // Add custom environment from request
         for (key, val) in &request.env {
+            // `PHANTOM_PROFILE` is the v1 carrier for the profile name: the
+            // daemon consumes it, the child must never see it.
+            if key == PROFILE_ENV {
+                continue;
+            }
             let env_str = format!("{}={}", key, val);
             let c_env = CString::new(env_str)
                 .with_context(|| format!("Invalid environment variable: {}", key))?;
@@ -910,6 +1098,7 @@ impl WarmDaemon {
 
         // Preserve current environment and merge with custom vars
         let mut final_env: Vec<CString> = std::env::vars()
+            .filter(|(k, _)| k != PROFILE_ENV)
             .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
             .collect();
         final_env.extend(env_vars);
@@ -1239,6 +1428,30 @@ impl WarmDaemon {
                     let _ = nix::unistd::dup2(null_fd, 0);
                     if null_fd != 0 {
                         let _ = nix::unistd::close(null_fd);
+                    }
+
+                    // === Security stack ===
+                    // Order: landlock -> caps/no_new_privs -> seccomp -> exec.
+                    // Landlock and the capability drop need no privileges; the
+                    // seccomp filter goes last so it cannot block our own setup
+                    // syscalls.
+                    if let Err(e) = apply_child_landlock(child_policy.file_write) {
+                        // Fail closed: the profile's filesystem policy could
+                        // not be enforced, so the command must not run.
+                        fail(e);
+                    }
+
+                    // Defence in depth only: the child is already unprivileged
+                    // in the parent namespace, so this never fails the exec.
+                    drop_child_capabilities();
+
+                    // Fail closed: a profile that asks for a filter must not
+                    // run without one.
+                    if let Err(e) = seccomp_rs::apply_profile(child_policy.seccomp) {
+                        fail(format!(
+                            "seccomp profile '{}' could not be installed: {}",
+                            child_policy.seccomp, e
+                        ));
                     }
 
                     // Set environment variables using libc::setenv
@@ -1654,6 +1867,10 @@ impl WarmDaemon {
             self.socket_path()
         );
 
+        // Same detachment as the production loop; the test harness process is
+        // the "daemon", so this is observable via /proc/<pid>/stat.
+        detach_daemon_session();
+
         // Apply cgroup to daemon itself if profile specified
         if let Some(ref profile) = self.config.hardware_profile {
             if let Err(e) = self.apply_daemon_cgroup(profile) {
@@ -1775,6 +1992,39 @@ where
     F: FnMut() + Send + 'static,
 {
     ctrlc::set_handler(f).context("Failed to set Ctrl+C handler")
+}
+
+/// Detach the daemon from the session of the process that launched it.
+///
+/// `start_daemon_background` spawns the daemon with a plain `Command`, so it
+/// inherits the launcher's session and process group: a `Ctrl+C` in the shell
+/// that ran `phantom warm create` would signal the daemon and every warm child.
+fn detach_daemon_session() {
+    // SAFETY: setsid(2) takes no arguments.
+    if unsafe { libc::setsid() } < 0 {
+        let err = std::io::Error::last_os_error();
+        // EPERM means the caller already leads a session: nothing to detach.
+        if err.raw_os_error() != Some(libc::EPERM) {
+            log::warn!("setsid() failed: {}", err);
+        }
+    }
+
+    // A detached daemon has no controlling terminal, but an explicit SIGHUP
+    // (supervisor restart, shell job cleanup) must not take it down.
+    // SAFETY: signal(2) with SIG_IGN and a valid signal number.
+    unsafe {
+        libc::signal(libc::SIGHUP, libc::SIG_IGN);
+    }
+
+    // The launcher exits as soon as the socket is ready; clear any inherited
+    // parent-death signal so that does not kill the daemon.
+    // SAFETY: prctl with PR_SET_PDEATHSIG takes the signal number (0 = none).
+    if unsafe { libc::prctl(PR_SET_PDEATHSIG, 0, 0, 0, 0) } != 0 {
+        log::warn!(
+            "PR_SET_PDEATHSIG(0) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 /// Start daemon in background

@@ -139,6 +139,38 @@ pub fn apply_profile(name: &str) -> Result<(), SeccompError> {
                 "sigaltstack",
                 "uname",
                 "getrandom",
+                // Startup path of a dynamically linked libc. Without these a
+                // whitelist filter cannot even exec /bin/sh: ld.so reads the
+                // shared objects with pread64 and looks them up with
+                // newfstatat, and glibc's stat/fstat wrappers use newfstatat
+                // on every modern architecture.
+                "newfstatat",
+                "fstatat64",
+                "statx",
+                "pread64",
+                "readv",
+                "writev",
+                "lseek",
+                "madvise",
+                "mremap",
+                "prlimit64",
+                "getrlimit",
+                "setrlimit",
+                "getrusage",
+                "rseq",
+                "sched_getaffinity",
+                "sched_yield",
+                "faccessat",
+                "faccessat2",
+                "rt_sigreturn",
+                "sigreturn",
+                "umask",
+                "sysinfo",
+                "membarrier",
+                "close_range",
+                // glibc's fork()/posix_spawn() try clone3 before falling back
+                // to clone; EPERM is not a fallback errno.
+                "clone3",
             ];
 
             for syscall_name in allowed.iter() {

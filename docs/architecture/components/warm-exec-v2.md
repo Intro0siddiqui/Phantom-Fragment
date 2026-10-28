@@ -95,6 +95,9 @@ other client, including health checks.
 that ran `phantom warm create` signals the daemon and all its children. This is a large
 part of the "daemon stability issues" recorded in the roadmap.
 
+> **Fixed in Phase 1.3.** The daemon calls `setsid()`, ignores `SIGHUP` and clears
+> `PR_SET_PDEATHSIG` before the accept loop; see §3.
+
 ### D7 — the health probe hardcodes the wire format
 
 `monitoring/health/health-rs/src/lib.rs:92-101` sends a literal 10-byte buffer
@@ -172,7 +175,48 @@ Ship these first. They are small, independently testable, and D1 is a security b
 | 1.4 | Rewrite the health probe to use the real `Message` codec instead of the hardcoded 10-byte buffer. Add a test that changes `PROTOCOL_VERSION` and asserts the probe still works. | `health-rs/src/lib.rs:92-101` | unit test + supervisor health check against a live daemon |
 | 1.5 | `.all_threads(true)` on the Landlock ruleset, with `HardRequirement` compatibility so it fails loudly rather than silently under-enforcing. | `landlock-rs/src/lib.rs:122` | existing landlock tests + a threaded-process test that asserts a sibling thread is restricted |
 
-> **Progress:** 1.1 (`9bfb691`), 1.4 (`1802f71`) and 1.5 (`717b708`) landed. 1.2 and 1.3 are open.
+> **Progress:** 1.1 (`9bfb691`), 1.2, 1.3, 1.4 (`1802f71`) and 1.5 (`717b708`)
+> landed. Phase 1 is complete.
+>
+> **1.2 — security stack in the warm child (landed).** The child now applies the
+> profile after `chroot(2)`, in this order:
+>
+> ```
+> cgroup → unshare → chroot → landlock → caps/no_new_privs → seccomp → setenv → execvp
+> ```
+>
+> - **Landlock** (`landlock-rs::LandlockContext`) with rules written in the
+>   post-chroot namespace (`/`, plus `/tmp` and `/dev/shm`, which are separate
+>   tmpfs mounts and therefore need their own rule). `file_write == false` grants
+>   read+execute only; `file_write == true` also grants write/create/remove.
+>   `landlock-rs`'s write flag was extended to include the creation/removal
+>   rights — a `WriteFile`-only rule still denies `open(O_CREAT)`.
+> - **Capabilities**: bounding set dropped for every capability, capability sets
+>   cleared via `capset`, then `PR_SET_NO_NEW_PRIVS`. Best effort by design: the
+>   child is already unprivileged in the parent namespace, so a refusal is logged
+>   and the exec proceeds.
+> - **Seccomp** (`seccomp-rs::apply_profile`) last, so the filter cannot block
+>   the child's own setup syscalls. Fail closed: if the profile's filter cannot
+>   be installed, the child reports it over the CLOEXEC status pipe and
+>   `_exit(127)`s instead of exec'ing unfiltered. The hardened whitelist gained
+>   the libc startup syscalls (`newfstatat`, `pread64`, `statx`, `prlimit64`,
+>   `rseq`, `clone3`, …) it needs to exec a dynamically linked `/bin/sh` at all.
+>
+> **How the profile name reaches the daemon.** `ExecRequest` has no profile field
+> and `PROTOCOL_VERSION` stays 1, so the client (`commands/run.rs::
+> fork_from_daemon`) sends the resolved `--profile` name in the **existing env
+> map** under the reserved variable `PHANTOM_PROFILE` — the default `sandbox`
+> when none was requested, so warm and cold agree. The daemon resolves the name
+> through the same config path as the CLI (`config::Config::load()` →
+> `get_profile()`), strips the variable from the child environment, and refuses
+> an unknown name instead of running the command unconfined. **This is a
+> temporary v1-compatible carrier, not the design:** `ExecV2` (Phase 2) gets a
+> real profile field and `PHANTOM_PROFILE` is removed.
+>
+> **1.3 — the daemon leaves the launcher's session (landed).** Before the accept
+> loop the daemon calls `setsid()` (EPERM = already a session leader, ignored),
+> ignores `SIGHUP` and clears `PR_SET_PDEATHSIG`, so `Ctrl+C` in the shell that
+> ran `phantom warm create` no longer signals the daemon or its children.
 
 Phase 1 makes `--warm` *correct*. It does not make it fast, and it will make it slightly
 slower (it now does the security setup it was skipping).

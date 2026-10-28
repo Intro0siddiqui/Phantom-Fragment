@@ -321,6 +321,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                                                 &final_command,
                                                 &socket_path,
                                                 hardware_profile.as_ref(),
+                                                &profile_name,
                                             ) {
                                                 Ok(exit_code) => {
                                                     let _ = pool.release_pid(pid);
@@ -734,18 +735,25 @@ fn fork_from_daemon(
     command: &[String],
     socket_path: &std::path::Path,
     hardware_profile: Option<&execution_rs::HardwareProfile>,
+    profile_name: &str,
 ) -> anyhow::Result<i32> {
-    use crate::daemon::{exec_in_daemon, ExecRequest};
+    use crate::daemon::{exec_in_daemon, ExecRequest, PROFILE_ENV};
 
     if !socket_path.exists() {
         anyhow::bail!("Socket file not found - daemon may have crashed");
     }
 
+    // The v1 wire format has no profile field, so the resolved profile name
+    // rides in the env map under a reserved key. The daemon strips it before
+    // exec and enforces the matching policy in the child.
+    let mut env = std::collections::HashMap::new();
+    env.insert(PROFILE_ENV.to_string(), profile_name.to_string());
+
     // Build the execution request
     let request = ExecRequest {
         command: command.first().cloned().unwrap_or_default(),
         args: command.iter().skip(1).cloned().collect(),
-        env: std::collections::HashMap::new(),
+        env,
         cwd: None,
         hardware_profile: hardware_profile.cloned(),
     };

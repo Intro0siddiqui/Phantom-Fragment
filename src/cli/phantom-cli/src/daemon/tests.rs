@@ -12,7 +12,7 @@
 mod tests {
     use crate::daemon::warm::{
         exec_in_daemon, is_safe_command, ping_daemon, read_message, write_message, DaemonConfig,
-        ExecRequest, ExecResponse, Message, MessageType, WarmDaemon,
+        ExecRequest, ExecResponse, Message, MessageType, WarmDaemon, PROFILE_ENV,
     };
     use execution_rs::HardwareProfile;
 
@@ -1320,5 +1320,249 @@ mod tests {
         let missing = temp_dir.path().join("missing.sock");
 
         assert!(!ping_daemon(&missing).expect("ping should not fail for a missing socket"));
+    }
+
+    // ========================================================================
+    // Phase 1.2 — security profile enforced in the child
+    // ========================================================================
+
+    /// Send an exec request that carries the reserved `PHANTOM_PROFILE` env var.
+    fn send_exec_request_with_profile(
+        socket_path: &Path,
+        command: &str,
+        profile: &str,
+    ) -> Result<ExecResponse, anyhow::Error> {
+        let mut env = HashMap::new();
+        env.insert(PROFILE_ENV.to_string(), profile.to_string());
+
+        let request = ExecRequest {
+            command: command.to_string(),
+            args: vec![],
+            env,
+            cwd: None,
+            hardware_profile: None,
+        };
+        exec_in_daemon(socket_path, &request)
+    }
+
+    /// Write an executable `/bin/sh` script into the test rootfs.
+    fn write_rootfs_script(rootfs: &Path, name: &str, body: &str) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = rootfs.join(name.strip_prefix("/").unwrap_or(name));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("Failed to create script directory");
+        }
+        fs::write(&path, format!("#!/bin/sh\n{}\n", body)).expect("Failed to write script");
+
+        let mut perms = fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&path, perms).unwrap();
+    }
+
+    /// The profile name rides in the env map for v1 compatibility; the child
+    /// must not inherit it.
+    #[test]
+    fn test_profile_env_is_stripped() {
+        let (temp_dir, socket_path) = setup_test_env("test_profile_env_stripped");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        write_rootfs_script(
+            &rootfs,
+            "bin/env-probe",
+            "if [ -n \"$PHANTOM_PROFILE\" ]; then\n  exit 1\nfi\nexit 0",
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request_with_profile(&socket_path, "/bin/env-probe", "sandbox")
+            .expect("Request should be processed");
+        assert_eq!(
+            response.exit_code, 0,
+            "child must not see PHANTOM_PROFILE (error: {:?})",
+            response.error
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// A read-only profile must deny file creation; a write-enabled profile must
+    /// allow it. The second half proves the first half is a real policy, not a
+    /// blanket failure.
+    #[test]
+    fn test_read_only_profile_blocks_writes() {
+        let (temp_dir, socket_path) = setup_test_env("test_read_only_profile");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        write_rootfs_script(
+            &rootfs,
+            "bin/write-probe",
+            // A redirection error on a special built-in is fatal to a
+            // non-interactive shell, so probe in a subshell.
+            "if ( : > /denied.txt ); then\n  exit 1\nfi\nexit 0",
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        // "hardened" is a built-in profile with file_write = false.
+        let read_only =
+            send_exec_request_with_profile(&socket_path, "/bin/write-probe", "hardened")
+                .expect("Request should be processed");
+        assert_eq!(
+            read_only.exit_code, 0,
+            "write must be denied under a read-only profile (error: {:?})",
+            read_only.error
+        );
+        assert!(
+            !rootfs.join("denied.txt").exists(),
+            "read-only profile must not create /denied.txt"
+        );
+
+        // "sandbox" is a built-in profile with file_write = true.
+        let writable = send_exec_request_with_profile(&socket_path, "/bin/write-probe", "sandbox")
+            .expect("Request should be processed");
+        assert_eq!(
+            writable.exit_code, 1,
+            "write must be allowed under a write-enabled profile (error: {:?})",
+            writable.error
+        );
+        assert!(
+            rootfs.join("denied.txt").exists(),
+            "write-enabled profile must create /denied.txt"
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// The hardened profile installs a whitelist seccomp filter; normal
+    /// execution must still work under it.
+    #[test]
+    fn test_hardened_profile_still_executes() {
+        let (temp_dir, socket_path) = setup_test_env("test_hardened_profile");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request_with_profile(&socket_path, "/bin/true", "hardened")
+            .expect("Request should be processed");
+        assert_eq!(
+            response.exit_code, 0,
+            "hardened profile must still exec /bin/true (error: {:?})",
+            response.error
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// The hardened filter is a whitelist, so a syscall it does not list must
+    /// fail with EPERM. `kill(2)` is deliberately not whitelisted; the same
+    /// script succeeds under the sandbox profile, which proves the filter (not
+    /// something else) is what denies it.
+    #[test]
+    fn test_hardened_seccomp_denies_unlisted_syscall() {
+        let (temp_dir, socket_path) = setup_test_env("test_hardened_seccomp");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        write_rootfs_script(
+            &rootfs,
+            "bin/syscall-probe",
+            "if kill -0 $$; then\n  exit 0\nfi\nexit 1",
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let sandbox = send_exec_request_with_profile(&socket_path, "/bin/syscall-probe", "sandbox")
+            .expect("Request should be processed");
+        assert_eq!(
+            sandbox.exit_code, 0,
+            "kill(2) must work without the hardened filter (error: {:?})",
+            sandbox.error
+        );
+
+        let hardened =
+            send_exec_request_with_profile(&socket_path, "/bin/syscall-probe", "hardened")
+                .expect("Request should be processed");
+        assert_eq!(
+            hardened.exit_code, 1,
+            "hardened seccomp must deny kill(2) (error: {:?})",
+            hardened.error
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// An unknown profile must be refused rather than silently running the
+    /// command unconfined.
+    #[test]
+    fn test_unknown_profile_is_refused() {
+        let (temp_dir, socket_path) = setup_test_env("test_unknown_profile");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response = send_exec_request_with_profile(&socket_path, "/bin/true", "no-such-profile")
+            .expect("Request should be processed");
+        assert_ne!(response.exit_code, 0, "unknown profile must not exec");
+        let error = response.error.unwrap_or_default();
+        assert!(
+            error.contains("unknown security profile"),
+            "unexpected error: {}",
+            error
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    // ========================================================================
+    // Phase 1.3 — the daemon leaves the launcher's session
+    // ========================================================================
+
+    /// After startup the daemon must be a session leader, so signals aimed at
+    /// the launching shell's process group cannot reach it.
+    #[test]
+    fn test_daemon_is_session_leader() {
+        let (temp_dir, socket_path) = setup_test_env("test_daemon_session_leader");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let pid = daemon.pid();
+
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let stat = fs::read_to_string(format!("/proc/{}/stat", pid))
+            .expect("Failed to read the daemon's /proc stat");
+        // The comm field (field 2) is parenthesised and may contain spaces, so
+        // parse the fields after the last ')'.
+        let tail = &stat[stat.rfind(')').expect("stat should contain comm") + 1..];
+        let fields: Vec<&str> = tail.split_whitespace().collect();
+        // fields[0] is field 3 (state); session id is field 6.
+        let session_id: u32 = fields[3]
+            .parse()
+            .expect("session id should be numeric in /proc/<pid>/stat");
+
+        assert_eq!(
+            session_id, pid,
+            "daemon {} should lead its own session",
+            pid
+        );
+
+        shutdown_daemon(&socket_path, handle);
     }
 }
