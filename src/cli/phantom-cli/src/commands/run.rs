@@ -2,7 +2,7 @@ use crate::commands::CommandContext;
 use crate::config::Config;
 use crate::config::PhantomPaths;
 use crate::io_utils::{chrono_lite_timestamp, parse_run_args};
-use crate::permission_prompt::{self, print_continue_without_info, print_sudo_instructions};
+use crate::permission_prompt::{self, print_continue_without_info};
 use crate::ui;
 use anyhow::Context;
 use bpf_lsm_rs::{BpfLsmConfig, BpfLsmSecurity};
@@ -163,9 +163,8 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
 
     match privilege_choice {
         PrivilegeChoice::UseSudo => {
-            // User wants to use sudo - trigger re-exec from main.rs
-            print_sudo_instructions();
-            return Err(anyhow::anyhow!("Permission denied - sudo required"));
+            permission_prompt::reexec_with_sudo()?;
+            unreachable!("exec replaces the process");
         }
         PrivilegeChoice::Abort => {
             println!("{} Aborting.", "✗".red());

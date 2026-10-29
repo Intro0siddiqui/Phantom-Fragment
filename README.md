@@ -51,7 +51,7 @@ Phantom Fragment utilizes a tiered isolation model, selecting the optimal execut
 
 - **Warm Fragments (Beta)**: Pre-warmed daemon processes for faster startup. Workload output is discarded, there is no stdin/PTY, and sandbox setup is re-applied per request (Phase 3 in progress); may fall back to cold start.
 - **Zygote Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested.
-- **BPF-LSM (Partial)**: Optional and requires kernel 5.7+ plus `CAP_SYS_ADMIN` (root); it degrades to no BPF-LSM enforcement otherwise. The unified privilege prompt can suggest a sudo re-run, but it does not elevate yet.
+- **BPF-LSM (Partial)**: Optional and requires kernel 5.7+ plus `CAP_SYS_ADMIN` (root); it degrades to no BPF-LSM enforcement otherwise. The unified privilege prompt can re-run the CLI under `sudo`, preserving `HOME` so the elevated run still sees the user's images, pools and config; the password is read by `sudo`, never by phantom.
 
 ## ⚡ Quick Start
 
