@@ -1054,14 +1054,15 @@ impl WarmDaemon {
 
         // Prepare command and arguments for execvp
         // Note: c_cmd is created after path validation below
-        let mut c_args: Vec<CString> = Vec::with_capacity(request.args.len() + 2);
+        let mut c_args: Vec<CString> = Vec::with_capacity(request.args.len());
         for arg in &request.args {
             let c_arg = CString::new(arg.as_str())
                 .with_context(|| format!("Invalid argument string: {}", arg))?;
             c_args.push(c_arg);
         }
-        // execvp requires null-terminated array - empty string is safe (cannot contain null)
-        c_args.push(CString::new("").expect("Empty string cannot contain null bytes"));
+        // Do NOT append an empty CString here: `nix::unistd::execvp` builds the
+        // NULL-terminated argv array itself, so an empty entry becomes a real
+        // (and empty) trailing argument that shifts every applet's argc.
 
         // Prepare environment variables for execve
         let mut env_vars: Vec<CString> = Vec::new();

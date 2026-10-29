@@ -170,11 +170,28 @@ mod tests {
         )
         .expect("Failed to write /bin/fs-probe");
 
+        // Create /bin/argv-probe mock: records argc and each argument so a test
+        // can prove the child receives exactly the argv the client sent (no
+        // phantom trailing empty argument).
+        let bin_argv_probe = rootfs.join("bin/argv-probe");
+        fs::write(
+            &bin_argv_probe,
+            "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" > /argv.txt\nexit 0\n",
+        )
+        .expect("Failed to write /bin/argv-probe");
+
         // Make them executable
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            for bin in &[&bin_true, &bin_false, &bin_echo, &bin_pwd, &bin_fs_probe] {
+            for bin in &[
+                &bin_true,
+                &bin_false,
+                &bin_echo,
+                &bin_pwd,
+                &bin_fs_probe,
+                &bin_argv_probe,
+            ] {
                 let mut perms = fs::metadata(bin).unwrap().permissions();
                 perms.set_mode(0o755);
                 fs::set_permissions(bin, perms).unwrap();
@@ -893,6 +910,39 @@ mod tests {
         assert!(
             response.error.is_some(),
             "a host-only binary must be reported as an error"
+        );
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// The child must receive exactly the argv the client sent. A stray empty
+    /// trailing entry (as produced by manually NULL-terminating the array that
+    /// `execvp` already terminates) shifts every applet's argc, which broke
+    /// `ls <path>` and `test -e <path>` in real warm runs.
+    #[test]
+    fn test_exec_passes_exact_argv() {
+        let (temp_dir, socket_path) = setup_test_env("test_exec_exact_argv");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        // /bin/argv-probe records `$#` and each argument, one per line.
+        let response = send_exec_request(
+            &socket_path,
+            "/bin/argv-probe",
+            vec!["alpha".to_string(), "beta".to_string()],
+        )
+        .expect("Failed to send exec request");
+        assert_eq!(response.exit_code, 0, "probe should exit 0");
+
+        let recorded = fs::read_to_string(rootfs.join("argv.txt"))
+            .expect("child should have written /argv.txt inside the rootfs");
+        assert_eq!(
+            recorded, "2\nalpha\nbeta\n",
+            "child argv must be exactly [prog, alpha, beta]"
         );
 
         shutdown_daemon(&socket_path, handle);

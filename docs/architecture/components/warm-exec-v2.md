@@ -152,6 +152,28 @@ non-numeric `user`. Pre-existing: the last change to `rootfs_executor.rs` was a 
 > to that user's primary group instead of the user string. If a name cannot be resolved
 > the flags are omitted with a warning, leaving bwrap to keep the invoking user.
 
+### D11 — warm argv carries a phantom trailing empty argument (found 2026-10-29)
+
+`execute_command()` built the child argv by pushing an empty `CString` after the real
+arguments, believing `execvp` needed a caller-supplied NULL terminator. It does not:
+`nix::unistd::execvp` takes a `&[CString]` and terminates the array itself, so the empty
+entry was passed as a genuine argument. Every applet's `argc` was one too high:
+
+```
+$ phantom run --warm alpine ls /etc/alpine-release   # exit 1, "cannot access ''"
+$ phantom run --warm alpine test -e /etc/alpine-release   # exit 2, usage error
+$ phantom run --warm alpine sh -c 'exit 3'           # exit 3 — masked the bug
+```
+
+`sh -c` and `true` ignore trailing arguments, which is why the defect survived the first
+round of warm tests. Pre-existing since v1.0.0 (`61e5a63`), not introduced by the warm
+work.
+
+> **Fixed in `fix(warm)`.** The empty entry was removed. `test_exec_passes_exact_argv`
+> runs a rootfs probe that records `$#` and each argument, and asserts the child sees
+> exactly `[prog, alpha, beta]`. Live: `ls /etc/alpine-release` and `test -e …` both
+> exit 0 under warm, `cat /etc/alpine-release` inside the child prints `3.24.3`.
+
 ## 2. Non-goals
 
 Explicitly out of scope for this plan, so they stop being conflated with it:
@@ -175,8 +197,8 @@ Ship these first. They are small, independently testable, and D1 is a security b
 | 1.4 | Rewrite the health probe to use the real `Message` codec instead of the hardcoded 10-byte buffer. Add a test that changes `PROTOCOL_VERSION` and asserts the probe still works. | `health-rs/src/lib.rs:92-101` | unit test + supervisor health check against a live daemon |
 | 1.5 | `.all_threads(true)` on the Landlock ruleset, with `HardRequirement` compatibility so it fails loudly rather than silently under-enforcing. | `landlock-rs/src/lib.rs:122` | existing landlock tests + a threaded-process test that asserts a sibling thread is restricted |
 
-> **Progress:** 1.1 (`9bfb691`), 1.2, 1.3, 1.4 (`1802f71`) and 1.5 (`717b708`)
-> landed. Phase 1 is complete.
+> **Progress:** 1.1 (`9bfb691`), 1.2 + 1.3 (`da29af7`), 1.4 (`1802f71`) and 1.5
+> (`717b708`) landed. Phase 1 is complete.
 >
 > **1.2 — security stack in the warm child (landed).** The child now applies the
 > profile after `chroot(2)`, in this order:
@@ -200,7 +222,14 @@ Ship these first. They are small, independently testable, and D1 is a security b
 >   be installed, the child reports it over the CLOEXEC status pipe and
 >   `_exit(127)`s instead of exec'ing unfiltered. The hardened whitelist gained
 >   the libc startup syscalls (`newfstatat`, `pread64`, `statx`, `prlimit64`,
->   `rseq`, `clone3`, …) it needs to exec a dynamically linked `/bin/sh` at all.
+>   `rseq`, …) it needs to exec a dynamically linked `/bin/sh` at all.
+>   `clone3` is **not** on the whitelist: libseccomp does not synthesise the
+>   rule automatically, so the hardened branch adds an explicit
+>   `clone3 → ENOSYS`. glibc's `fork()`/`posix_spawn()` fall back to `clone` on
+>   ENOSYS but not on EPERM, and denying `clone3` also keeps its
+>   `CLONE_INTO_CGROUP` flag away from the child (a cgroup-limit escape).
+>   Two `seccomp-rs` tests pin this: `clone3` returns ENOSYS and `fork()` still
+>   succeeds under the hardened filter.
 >
 > **How the profile name reaches the daemon.** `ExecRequest` has no profile field
 > and `PROTOCOL_VERSION` stays 1, so the client (`commands/run.rs::
