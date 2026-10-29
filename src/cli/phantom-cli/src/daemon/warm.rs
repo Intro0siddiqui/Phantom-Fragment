@@ -25,6 +25,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -59,12 +60,6 @@ const HEADER_SIZE: usize = 10;
 /// real field (see `docs/architecture/components/warm-exec-v2.md`).
 pub const PROFILE_ENV: &str = "PHANTOM_PROFILE";
 
-/// Profile applied when a request does not carry [`PROFILE_ENV`].
-///
-/// Matches the `--profile` default in `commands::run`, so a warm exec without an
-/// explicit profile enforces the same policy as the cold path.
-const DEFAULT_PROFILE: &str = "sandbox";
-
 /// Landlock access flags understood by `landlock-rs`'s rule encoding
 /// (`0x2` = write, `0x4` = execute; read is always implied).
 const LL_ACCESS_WRITE: u64 = 0x2;
@@ -77,6 +72,18 @@ const PR_SET_NO_NEW_PRIVS: libc::c_int = 38;
 
 /// `_LINUX_CAPABILITY_VERSION_3`: two 32-bit words per capability set.
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+/// Fixed descriptor the mother keeps its daemon socketpair end on.
+///
+/// Everything except 0/1/2 is closed in the mother before the sandbox is
+/// applied, so the mother end is moved here and the fd number is deterministic
+/// for the rest of the process lifetime.
+const MOTHER_SOCKET_FD: RawFd = 3;
+
+/// Fixed descriptor for the host `/dev/null` the mother opens before
+/// `chroot(2)`. The image rootfs is not guaranteed to contain one, and every
+/// exec child redirects 0/1/2 from it.
+const MOTHER_DEVNULL_FD: RawFd = 4;
 
 /// Upper bound for a single message payload.
 ///
@@ -380,6 +387,63 @@ impl<'a> PayloadReader<'a> {
     }
 }
 
+/// Parse the v1 exec payload into an [`ExecRequest`].
+///
+/// Shared by the daemon (client frames) and the mother (daemon frames) so both
+/// sides agree on the wire format. All reads go through [`PayloadReader`]: a
+/// truncated or malformed payload is rejected instead of panicking.
+fn parse_exec_request(payload: &[u8]) -> Result<ExecRequest> {
+    let mut reader = PayloadReader::new(payload);
+
+    let command = reader.read_string("command")?;
+
+    let args_count = reader.read_u8("args count")? as usize;
+    let mut args = Vec::with_capacity(args_count);
+    for _ in 0..args_count {
+        args.push(reader.read_string("argument")?);
+    }
+
+    let env_count = reader.read_u8("env count")? as usize;
+    let mut env = HashMap::new();
+    for _ in 0..env_count {
+        let key = reader.read_string("env key")?;
+        let val = reader.read_string("env value")?;
+        env.insert(key, val);
+    }
+
+    let cwd = {
+        let cwd = reader.read_string("cwd")?;
+        if cwd.is_empty() {
+            None
+        } else {
+            Some(cwd)
+        }
+    };
+
+    let has_profile = reader.read_u8("profile flag")? != 0;
+    let hardware_profile = if has_profile {
+        // Read profile: [cpu_count:4][memory_mb:4]
+        let cpu_count = reader.read_u32("cpu count")? as usize;
+        let memory_mb = reader.read_u32("memory mb")? as usize;
+        Some(HardwareProfile {
+            cpu_affinity: None,
+            numa_node: None,
+            cpu_count,
+            memory_mb,
+        })
+    } else {
+        None
+    };
+
+    Ok(ExecRequest {
+        command,
+        args,
+        env,
+        cwd,
+        hardware_profile,
+    })
+}
+
 /// Warm fragment daemon configuration
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -388,6 +452,16 @@ pub struct DaemonConfig {
     pub hardware_profile: Option<HardwareProfile>,
     /// Port for Prometheus metrics endpoint (default: 9090)
     pub metrics_port: u16,
+    /// Security profile the mother is sandboxed with at pool-fill time.
+    ///
+    /// The profile is a property of the pool: a request carrying a different
+    /// `PHANTOM_PROFILE` is refused rather than run with weaker confinement.
+    pub security_profile: String,
+    /// Name reserved for named-mother selection (next increment).
+    ///
+    /// Stored now so the pool metadata and future `--mother` selection have a
+    /// stable identity; today it defaults to the security profile name.
+    pub mother_name: String,
 }
 
 /// Running child process tracking
@@ -438,6 +512,89 @@ fn seccomp_profile_for(profile: &crate::config::Profile) -> &'static str {
     }
 }
 
+/// Everything the mother needs to apply its sandbox, resolved in the parent
+/// before `fork(2)`.
+///
+/// The daemon is multi-threaded, so the forked child must not depend on
+/// allocator state it cannot guarantee. Profile lookup, cgroup creation and
+/// every path/mapping string are prepared here; the child only performs the
+/// syscall sequence and the unavoidable allocations inside `libseccomp` and
+/// Landlock.
+struct MotherSetup {
+    policy: ChildPolicy,
+    /// `/sys/fs/cgroup/<mother>/cgroup.procs`, if the cgroup was created.
+    cgroup_procs: Option<CString>,
+    /// Image root, as a C string for `chroot(2)`.
+    rootfs: CString,
+    /// `"<uid> <uid> 1"` for `/proc/self/uid_map`.
+    uid_map: CString,
+    /// `"<gid> <gid> 1"` for `/proc/self/gid_map`.
+    gid_map: CString,
+    /// Highest capability number, read before the chroot hides procfs.
+    last_cap: libc::c_int,
+}
+
+impl MotherSetup {
+    fn prepare(config: &DaemonConfig, daemon_id: u64) -> Result<(Self, Option<CgroupManager>)> {
+        let policy = resolve_child_policy(&config.security_profile)?;
+
+        let mut cgroup_manager = None;
+        let mut cgroup_procs = None;
+
+        if let Some(profile) = config.hardware_profile.as_ref() {
+            let name = format!("phantom_warm_mother_{}", daemon_id);
+            let cgroup = CgroupManager::new(&name);
+            match cgroup.create() {
+                Ok(()) => {
+                    if profile.memory_mb > 0 {
+                        if let Err(e) = cgroup.set_memory_limit(profile.memory_mb as u64) {
+                            log::warn!("Failed to set mother memory limit: {:?}", e);
+                        }
+                    }
+                    if profile.cpu_count > 0 {
+                        if let Err(e) = cgroup.set_cpu_limit(profile.cpu_count as u64) {
+                            log::warn!("Failed to set mother CPU limit: {:?}", e);
+                        }
+                    }
+                    cgroup_procs = Some(
+                        CString::new(format!("/sys/fs/cgroup/{}/cgroup.procs", name))
+                            .context("cgroup path contains a NUL byte")?,
+                    );
+                    cgroup_manager = Some(cgroup);
+                }
+                Err(e) => {
+                    // Graceful degradation, matching the old per-request path:
+                    // a host without delegated cgroups must still run warm.
+                    log::warn!("Failed to create mother cgroup {}: {:?}", name, e);
+                }
+            }
+        }
+
+        let uid = nix::unistd::getuid().as_raw();
+        let gid = nix::unistd::getgid().as_raw();
+
+        let last_cap = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
+            .ok()
+            .and_then(|s| s.trim().parse::<libc::c_int>().ok())
+            .unwrap_or(63);
+
+        Ok((
+            Self {
+                policy,
+                cgroup_procs,
+                rootfs: CString::new(config.rootfs_path.to_string_lossy().as_bytes())
+                    .context("rootfs path contains a NUL byte")?,
+                uid_map: CString::new(format!("{} {} 1", uid, uid))
+                    .expect("generated uid map cannot contain a NUL byte"),
+                gid_map: CString::new(format!("{} {} 1", gid, gid))
+                    .expect("generated gid map cannot contain a NUL byte"),
+                last_cap,
+            },
+            cgroup_manager,
+        ))
+    }
+}
+
 /// Confine the calling process (the forked warm child) with Landlock.
 ///
 /// Rules use paths as seen *after* `chroot(2)`, i.e. `/` is the image root and
@@ -478,7 +635,7 @@ fn apply_child_landlock(file_write: bool) -> std::result::Result<(), String> {
 ///
 /// Defence in depth: the child is already unprivileged in the parent namespace,
 /// so a kernel or namespace that refuses these calls must not fail the exec.
-fn drop_child_capabilities() {
+fn drop_child_capabilities(last_cap: libc::c_int) {
     /// `struct __user_cap_header_struct`
     #[repr(C)]
     struct CapHeader {
@@ -497,11 +654,8 @@ fn drop_child_capabilities() {
 
     // A capability dropped from the bounding set cannot be regained across
     // execve. EINVAL (unknown to this kernel) and EPERM (already absent) are
-    // both expected and harmless.
-    let last_cap = std::fs::read_to_string("/proc/sys/kernel/cap_last_cap")
-        .ok()
-        .and_then(|s| s.trim().parse::<libc::c_int>().ok())
-        .unwrap_or(63);
+    // both expected and harmless. `last_cap` was read in the parent: after the
+    // chroot the image may not expose `/proc/sys/kernel/cap_last_cap`.
     for cap in 0..=last_cap {
         // SAFETY: prctl with PR_CAPBSET_DROP takes the capability number as arg2.
         unsafe { libc::prctl(PR_CAPBSET_DROP, cap, 0, 0, 0) };
@@ -536,6 +690,327 @@ fn drop_child_capabilities() {
     }
 }
 
+/// Close every descriptor above `keep` in the calling process.
+///
+/// Used by the mother immediately after `fork(2)` so it cannot hold the
+/// daemon's listener, metrics socket, or any descriptor inherited from the
+/// launcher. `close_range(2)` is one syscall; the loop is a fallback for
+/// kernels older than 5.9.
+fn close_inherited_fds(keep: RawFd) {
+    let first = (keep + 1).max(3) as libc::c_uint;
+
+    // SAFETY: close_range takes two inclusive bounds and flags; closing every
+    // fd in the range is exactly the intent here.
+    let ret = unsafe { libc::syscall(libc::SYS_close_range, first, libc::c_uint::MAX, 0) };
+    if ret == 0 {
+        return;
+    }
+
+    let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+    // SAFETY: getrlimit writes into the provided struct.
+    let max = if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } == 0
+        && limit.rlim_cur != libc::RLIM_INFINITY
+    {
+        limit.rlim_cur as libc::c_int
+    } else {
+        1024
+    };
+
+    for fd in (keep + 1)..max {
+        // SAFETY: closing an fd that may not be open is harmless (EBADF).
+        unsafe {
+            libc::close(fd);
+        }
+    }
+}
+
+/// Apply the sandbox to the mother process, once, before it starts serving.
+///
+/// This is the per-request setup previously executed in `execute_command`'s
+/// child branch, moved verbatim into the long-lived mother. Every failure is
+/// fatal: the caller `_exit(127)`s, so a request can never be served without
+/// the profile's confinement.
+fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
+    // Open the host's /dev/null before the root switch: the image is not
+    // guaranteed to have one, and every exec child redirects 0/1/2 from it.
+    // The fixed fd number keeps the loop free of bookkeeping.
+    // SAFETY: open(2) with a valid C string and flags.
+    let null_fd = unsafe { libc::open(c"/dev/null".as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
+    if null_fd < 0 {
+        anyhow::bail!(
+            "Failed to open /dev/null: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    if null_fd != MOTHER_DEVNULL_FD {
+        // SAFETY: dup2 with valid descriptors; close the temporary duplicate.
+        unsafe {
+            if libc::dup2(null_fd, MOTHER_DEVNULL_FD) < 0 {
+                anyhow::bail!(
+                    "Failed to move /dev/null to fd {}: {}",
+                    MOTHER_DEVNULL_FD,
+                    std::io::Error::last_os_error()
+                );
+            }
+            libc::close(null_fd);
+            libc::fcntl(MOTHER_DEVNULL_FD, libc::F_SETFD, libc::FD_CLOEXEC);
+        }
+    }
+
+    // Join the cgroup the parent created. The path is precomputed so the
+    // child does not have to format a string before the sandbox is applied.
+    if let Some(ref procs) = setup.cgroup_procs {
+        // SAFETY: open(2) with a valid C string; write "0" (self) to cgroup.procs.
+        unsafe {
+            let fd = libc::open(procs.as_ptr(), libc::O_WRONLY | libc::O_CLOEXEC);
+            if fd >= 0 {
+                libc::write(fd, b"0".as_ptr().cast(), 1);
+                libc::close(fd);
+            }
+        }
+    }
+
+    // ENFORCE NAMESPACE PURITY
+    // A user namespace is required first: without it the daemon (unprivileged
+    // uid 1000) has no CAP_SYS_CHROOT/CAP_SYS_ADMIN and both chroot(2) and
+    // mount(2) would fail with EPERM. The mount namespace is owned by the new
+    // user namespace.
+    // SAFETY: unshare(2) takes a flag mask.
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
+        anyhow::bail!(
+            "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    // `setgroups` does not exist on older kernels; anything else is fatal
+    // because gid_map would then be unusable.
+    if let Err(e) = write_proc_file("/proc/self/setgroups", b"deny") {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            anyhow::bail!("Failed to write /proc/self/setgroups: {}", e);
+        }
+    }
+    if let Err(e) = write_proc_file("/proc/self/uid_map", setup.uid_map.as_bytes()) {
+        anyhow::bail!("Failed to write /proc/self/uid_map: {}", e);
+    }
+    if let Err(e) = write_proc_file("/proc/self/gid_map", setup.gid_map.as_bytes()) {
+        anyhow::bail!("Failed to write /proc/self/gid_map: {}", e);
+    }
+
+    // Make all mounts private so they do not propagate to the parent.
+    // SAFETY: mount(2) with static C strings and no data.
+    if unsafe {
+        libc::mount(
+            std::ptr::null(),
+            c"/".as_ptr(),
+            std::ptr::null(),
+            libc::MS_PRIVATE | libc::MS_REC,
+            std::ptr::null(),
+        )
+    } != 0
+    {
+        anyhow::bail!(
+            "mount(/, MS_PRIVATE|MS_REC) failed: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    // Enter the image. Everything from here on runs inside the rootfs.
+    // SAFETY: chroot(2) with a valid C string prepared in the parent.
+    if unsafe { libc::chroot(setup.rootfs.as_ptr()) } != 0 {
+        anyhow::bail!(
+            "chroot({}) failed: {}",
+            config.rootfs_path.display(),
+            std::io::Error::last_os_error()
+        );
+    }
+
+    // SAFETY: chdir(2) with a static C string.
+    if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
+        anyhow::bail!("chdir(/) failed: {}", std::io::Error::last_os_error());
+    }
+
+    // tmpfs hygiene inside the new root. These mounts are not a security
+    // boundary; failures are ignored.
+    for (dir, path) in [(c"/tmp", "/tmp"), (c"/dev/shm", "/dev/shm")] {
+        if !Path::new(path).is_dir() {
+            continue;
+        }
+        // SAFETY: mount(2) with static C strings; failure is ignored.
+        unsafe {
+            libc::mount(
+                c"tmpfs".as_ptr(),
+                dir.as_ptr(),
+                c"tmpfs".as_ptr(),
+                0,
+                std::ptr::null(),
+            );
+        }
+    }
+
+    // === Security stack ===
+    // Order: landlock -> caps/no_new_privs -> seccomp -> serve.
+    // Landlock and the capability drop need no privileges; the seccomp filter
+    // goes last so it cannot block the remaining setup syscalls.
+    apply_child_landlock(setup.policy.file_write).map_err(anyhow::Error::msg)?;
+    drop_child_capabilities(setup.last_cap);
+
+    seccomp_rs::apply_profile(setup.policy.seccomp).with_context(|| {
+        format!(
+            "seccomp profile '{}' could not be installed",
+            setup.policy.seccomp
+        )
+    })?;
+
+    Ok(())
+}
+
+/// Serve exec requests from the daemon forever.
+///
+/// The mother is already chrooted, namespaced, Landlocked, capability-dropped
+/// and seccomp-filtered. Per request it only reads a frame, forks, waits, and
+/// writes the exit status back.
+fn mother_loop(mother_fd: RawFd) -> ! {
+    // SAFETY: the fd was moved to MOTHER_SOCKET_FD in the child and is owned
+    // by this stream for the rest of the process lifetime.
+    let mut stream = unsafe { UnixStream::from_raw_fd(mother_fd) };
+
+    loop {
+        let msg = match read_message(&mut stream) {
+            Ok(msg) => msg,
+            // The daemon closed the channel or the frame is invalid. Fail
+            // closed: an unserved request is better than an unsandboxed one.
+            Err(_) => unsafe { libc::_exit(127) },
+        };
+
+        if msg.msg_type != MessageType::Exec {
+            let response = ExecResponse {
+                exit_code: 127,
+                pid: 0,
+                error: Some(format!(
+                    "mother only accepts Exec requests, got {:?}",
+                    msg.msg_type
+                )),
+            };
+            if write_exec_response(&mut stream, &response).is_err() {
+                unsafe { libc::_exit(127) };
+            }
+            continue;
+        }
+
+        let request = match parse_exec_request(&msg.payload) {
+            Ok(request) => request,
+            Err(e) => {
+                let response = ExecResponse {
+                    exit_code: 127,
+                    pid: 0,
+                    error: Some(e.to_string()),
+                };
+                if write_exec_response(&mut stream, &response).is_err() {
+                    unsafe { libc::_exit(127) };
+                }
+                continue;
+            }
+        };
+
+        // SAFETY: fork(2) from the single-threaded mother. The child only
+        // touches async-signal-safe libc entry points and execs.
+        match unsafe { fork() } {
+            Ok(ForkResult::Child) => mother_exec_child(&request),
+            Ok(ForkResult::Parent { child }) => {
+                let exit_code = wait_for_mother_child(child);
+                let response = ExecResponse {
+                    exit_code,
+                    pid: child.as_raw() as u32,
+                    error: None,
+                };
+                if write_exec_response(&mut stream, &response).is_err() {
+                    unsafe { libc::_exit(127) };
+                }
+            }
+            Err(e) => {
+                let response = ExecResponse {
+                    exit_code: 127,
+                    pid: 0,
+                    error: Some(format!("mother fork failed: {}", e)),
+                };
+                if write_exec_response(&mut stream, &response).is_err() {
+                    unsafe { libc::_exit(127) };
+                }
+            }
+        }
+    }
+}
+
+/// Forked child of the mother: redirect stdio, apply the request environment,
+/// and exec the command. Never returns.
+fn mother_exec_child(request: &ExecRequest) -> ! {
+    // The mother is the parent: if it is killed (daemon cleanup, crash), the
+    // command must not survive as an orphan.
+    // SAFETY: prctl with PR_SET_PDEATHSIG takes a signal number as arg2.
+    unsafe {
+        libc::prctl(PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+        for fd in 0..3 {
+            libc::dup2(MOTHER_DEVNULL_FD, fd);
+        }
+        // The profile name is a daemon-only carrier; it must not leak into the
+        // command's environment even if the daemon itself was started with it.
+        libc::unsetenv(c"PHANTOM_PROFILE".as_ptr());
+    }
+
+    if let Some(ref cwd) = request.cwd {
+        let Ok(c_cwd) = CString::new(cwd.as_str()) else {
+            unsafe { libc::_exit(127) };
+        };
+        // SAFETY: chdir(2) with a valid C string.
+        if unsafe { libc::chdir(c_cwd.as_ptr()) } != 0 {
+            unsafe { libc::_exit(127) };
+        }
+    }
+
+    for (key, val) in &request.env {
+        let (Ok(c_key), Ok(c_val)) = (CString::new(key.as_str()), CString::new(val.as_str()))
+        else {
+            unsafe { libc::_exit(127) };
+        };
+        // SAFETY: setenv(3) with valid NUL-terminated strings; overwrite = 1.
+        unsafe {
+            libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1);
+        }
+    }
+
+    let c_cmd = match CString::new(request.command.as_str()) {
+        Ok(cmd) => cmd,
+        Err(_) => unsafe { libc::_exit(127) },
+    };
+
+    let mut c_args: Vec<CString> = Vec::with_capacity(request.args.len() + 1);
+    c_args.push(c_cmd.clone());
+    for arg in &request.args {
+        match CString::new(arg.as_str()) {
+            Ok(c_arg) => c_args.push(c_arg),
+            Err(_) => unsafe { libc::_exit(127) },
+        }
+    }
+
+    // SAFETY: execvp(3) with a valid argv; it only returns on failure.
+    let _ = execvp(&c_cmd, &c_args);
+    unsafe { libc::_exit(127) }
+}
+
+/// Wait for the mother's exec child and translate its status to an exit code.
+fn wait_for_mother_child(child: Pid) -> i32 {
+    loop {
+        match nix::sys::wait::waitpid(child, None) {
+            Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return code,
+            Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => return 128 + sig as i32,
+            Ok(_) => continue,
+            Err(nix::errno::Errno::EINTR) => continue,
+            Err(_) => return 127,
+        }
+    }
+}
+
 /// Socket-based warm fragment daemon
 pub struct WarmDaemon {
     config: DaemonConfig,
@@ -557,6 +1032,12 @@ pub struct WarmDaemon {
     metrics_port: u16,
     /// Handle to the metrics server thread
     metrics_server_handle: Option<std::thread::JoinHandle<()>>,
+    /// The long-lived, pre-sandboxed mother fragment.
+    mother_pid: Pid,
+    /// Daemon end of the daemon↔mother socketpair.
+    mother_fd: Option<UnixStream>,
+    /// Cgroup the mother joined at startup (destroyed on cleanup).
+    mother_cgroup: Option<CgroupManager>,
 }
 
 impl WarmDaemon {
@@ -609,6 +1090,87 @@ impl WarmDaemon {
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
 
+        // Resolve the profile and prepare every child-side string *before*
+        // forking: the daemon is multi-threaded, so the child must not depend
+        // on allocator state or config I/O.
+        let (mother_setup, mother_cgroup) = MotherSetup::prepare(&config, daemon_id)?;
+
+        // Fork the mother once, here, before the metrics thread and the tokio
+        // runtime exist. It applies the sandbox once and then serves requests.
+        let (daemon_sock, mother_sock) =
+            UnixStream::pair().context("Failed to create daemon↔mother socketpair")?;
+        let daemon_fd = daemon_sock.into_raw_fd();
+        let mother_fd = mother_sock.into_raw_fd();
+        let listener_fd = listener.as_raw_fd();
+
+        // SAFETY: the child only runs the sandbox setup and the mother loop;
+        // it never returns to the daemon's Rust state.
+        let mother_pid = match unsafe { fork() } {
+            Ok(ForkResult::Child) => {
+                // === MOTHER ===
+                unsafe {
+                    libc::close(daemon_fd);
+                    // The listener is the daemon's, not the mother's.
+                    if listener_fd != MOTHER_SOCKET_FD && listener_fd != mother_fd {
+                        libc::close(listener_fd);
+                    }
+                }
+
+                // Move the mother end to a fixed descriptor and close
+                // everything else inherited from the launcher/test harness.
+                if mother_fd != MOTHER_SOCKET_FD {
+                    // SAFETY: dup2 atomically closes the destination (which may
+                    // be the listener) and duplicates the socketpair end.
+                    unsafe {
+                        if libc::dup2(mother_fd, MOTHER_SOCKET_FD) < 0 {
+                            libc::_exit(127);
+                        }
+                        libc::close(mother_fd);
+                    }
+                }
+                close_inherited_fds(MOTHER_SOCKET_FD);
+                // SAFETY: fcntl sets FD_CLOEXEC so exec'd commands do not
+                // inherit the daemon channel.
+                unsafe {
+                    libc::fcntl(MOTHER_SOCKET_FD, libc::F_SETFD, libc::FD_CLOEXEC);
+                    // If the daemon dies (including SIGKILL from `warm
+                    // remove`), the mother must not survive as an orphan.
+                    libc::prctl(PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+                    if libc::getppid() == 1 {
+                        libc::_exit(127);
+                    }
+                }
+
+                match sandbox_mother(&config, &mother_setup) {
+                    Ok(()) => mother_loop(MOTHER_SOCKET_FD),
+                    // Fail closed: never serve a request without the sandbox.
+                    Err(_) => unsafe { libc::_exit(127) },
+                }
+            }
+            Ok(ForkResult::Parent { child }) => {
+                // SAFETY: the parent keeps only its own end.
+                unsafe {
+                    libc::close(mother_fd);
+                }
+                child
+            }
+            Err(e) => {
+                // SAFETY: both socketpair ends are still owned by this process.
+                unsafe {
+                    libc::close(daemon_fd);
+                    libc::close(mother_fd);
+                }
+                if let Some(cgroup) = mother_cgroup {
+                    let _ = cgroup.destroy();
+                }
+                return Err(anyhow::anyhow!("Failed to fork warm mother: {:?}", e));
+            }
+        };
+
+        // SAFETY: daemon_fd is the parent's socketpair end, now owned by the
+        // stream.
+        let mother_fd = unsafe { UnixStream::from_raw_fd(daemon_fd) };
+
         let metrics_port = config.metrics_port;
 
         let mut daemon = Self {
@@ -624,6 +1186,9 @@ impl WarmDaemon {
             cgroup_active: Arc::new(AtomicBool::new(false)),
             metrics_port,
             metrics_server_handle: None,
+            mother_pid,
+            mother_fd: Some(mother_fd),
+            mother_cgroup,
         };
 
         // Start the metrics HTTP server in a background thread
@@ -640,6 +1205,15 @@ impl WarmDaemon {
     /// Get the daemon PID
     pub fn pid(&self) -> u32 {
         std::process::id()
+    }
+
+    /// Get the mother fragment PID (0 after cleanup).
+    ///
+    /// Exposed for tests and diagnostics; the daemon itself talks to the
+    /// mother through `mother_fd`.
+    #[allow(dead_code)]
+    pub fn mother_pid(&self) -> u32 {
+        self.mother_pid.as_raw() as u32
     }
 
     /// Start the metrics HTTP server in a background thread
@@ -945,58 +1519,7 @@ impl WarmDaemon {
         let start = Instant::now();
 
         // Parse request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1][cpu:4][mem:4]
-        //
-        // All reads go through PayloadReader: a truncated or malformed payload
-        // is rejected with an error rather than panicking on slice indexing.
-        let mut reader = PayloadReader::new(payload);
-
-        let command = reader.read_string("command")?;
-
-        let args_count = reader.read_u8("args count")? as usize;
-        let mut args = Vec::with_capacity(args_count);
-        for _ in 0..args_count {
-            args.push(reader.read_string("argument")?);
-        }
-
-        let env_count = reader.read_u8("env count")? as usize;
-        let mut env = HashMap::new();
-        for _ in 0..env_count {
-            let key = reader.read_string("env key")?;
-            let val = reader.read_string("env value")?;
-            env.insert(key, val);
-        }
-
-        let cwd = {
-            let cwd = reader.read_string("cwd")?;
-            if cwd.is_empty() {
-                None
-            } else {
-                Some(cwd)
-            }
-        };
-
-        let has_profile = reader.read_u8("profile flag")? != 0;
-        let hardware_profile = if has_profile {
-            // Read profile: [cpu_count:4][memory_mb:4]
-            let cpu_count = reader.read_u32("cpu count")? as usize;
-            let memory_mb = reader.read_u32("memory mb")? as usize;
-            Some(HardwareProfile {
-                cpu_affinity: None,
-                numa_node: None,
-                cpu_count,
-                memory_mb,
-            })
-        } else {
-            None
-        };
-
-        let request = ExecRequest {
-            command,
-            args,
-            env,
-            cwd,
-            hardware_profile,
-        };
+        let request = parse_exec_request(payload)?;
 
         // Execute the command and record metrics
         let (response, success) = match self.execute_command(&request) {
@@ -1018,95 +1541,38 @@ impl WarmDaemon {
         self.send_response(stream, MessageType::ExecResponse, &response)
     }
 
-    /// Execute a command with proper isolation and cgroups
+    /// Execute a command in the pre-sandboxed mother fragment.
     ///
-    /// SECURITY FIX: Uses fork-exec pattern to apply cgroups BETWEEN fork and exec.
-    /// This eliminates the race condition where the child process could run unrestricted
-    /// between spawn() and cgroup application.
-    ///
-    /// Previous vulnerable pattern:
-    /// ```rust
-    /// let child = cmd.spawn()?;  // Child starts executing (unrestricted)
-    /// let pid = child.id();
-    /// cgroup.add_process(pid)?;  // Too late - child already running
-    /// ```
-    ///
-    /// New secure pattern:
-    /// ```rust
-    /// fork() -> child process
-    ///   -> apply cgroup to child (PID 0 = self)
-    ///   -> execvp() - child is already restricted when command runs
-    /// ```
+    /// The daemon no longer forks or applies cgroup/userns/chroot/mounts/
+    /// Landlock/caps/seccomp per request: the mother did that once at startup.
+    /// Here we only validate the request, bind-check the profile, translate the
+    /// cwd into the chroot, and exchange one Exec frame over the socketpair.
     fn execute_command(&mut self, request: &ExecRequest) -> Result<ExecResponse> {
         // Validate command - whitelist allowed characters to prevent injection
         if !is_safe_command(&request.command) {
             anyhow::bail!("Invalid command: contains unsafe characters");
         }
 
-        // Resolve the security profile before forking. An unknown profile is a
-        // normal exec error, not a child setup failure.
+        // The pool is bound to one profile at creation. A request naming a
+        // different profile must never run: the mother's sandbox is already
+        // fixed and could only be weaker than what the caller asked for.
         let profile_name = request
             .env
             .get(PROFILE_ENV)
             .map(String::as_str)
-            .unwrap_or(DEFAULT_PROFILE);
-        let child_policy = resolve_child_policy(profile_name)?;
-
-        // Prepare command and arguments for execvp
-        // Note: c_cmd is created after path validation below
-        let mut c_args: Vec<CString> = Vec::with_capacity(request.args.len());
-        for arg in &request.args {
-            let c_arg = CString::new(arg.as_str())
-                .with_context(|| format!("Invalid argument string: {}", arg))?;
-            c_args.push(c_arg);
-        }
-        // Do NOT append an empty CString here: `nix::unistd::execvp` builds the
-        // NULL-terminated argv array itself, so an empty entry becomes a real
-        // (and empty) trailing argument that shifts every applet's argc.
-
-        // Prepare environment variables for execve
-        let mut env_vars: Vec<CString> = Vec::new();
-
-        // Add custom environment from request
-        for (key, val) in &request.env {
-            // `PHANTOM_PROFILE` is the v1 carrier for the profile name: the
-            // daemon consumes it, the child must never see it.
-            if key == PROFILE_ENV {
-                continue;
-            }
-            let env_str = format!("{}={}", key, val);
-            let c_env = CString::new(env_str)
-                .with_context(|| format!("Invalid environment variable: {}", key))?;
-            env_vars.push(c_env);
-        }
-
-        // Add Phantom-specific environment variables
-        // These are internally generated and safe (cannot contain null bytes)
-        env_vars
-            .push(CString::new("PHANTOM_WARM=1").expect("Static string cannot contain null bytes"));
-        env_vars.push(
-            CString::new(format!("PHANTOM_DAEMON_ID={}", self.daemon_id))
-                .expect("Generated daemon ID cannot contain null bytes"),
-        );
-
-        let rootfs_str = self.config.rootfs_path.to_string_lossy();
-        if !rootfs_str.is_empty() && rootfs_str != "/" {
-            env_vars.push(
-                CString::new(format!("PHANTOM_ROOTFS={}", rootfs_str))
-                    .expect("Generated rootfs path cannot contain null bytes"),
+            .unwrap_or(self.config.security_profile.as_str());
+        if profile_name != self.config.security_profile {
+            anyhow::bail!(
+                "warm pool '{}' is bound to profile '{}' but request asked for '{}'",
+                self.config.mother_name,
+                self.config.security_profile,
+                profile_name
             );
         }
 
-        // Preserve current environment and merge with custom vars
-        let mut final_env: Vec<CString> = std::env::vars()
-            .filter(|(k, _)| k != PROFILE_ENV)
-            .filter_map(|(k, v)| CString::new(format!("{}={}", k, v)).ok())
-            .collect();
-        final_env.extend(env_vars);
-
         // Determine and validate working directory.
         //
-        // `request.cwd` arrives as a host path under the rootfs, but the child
+        // `request.cwd` arrives as a host path under the rootfs, but the mother
         // chdir()s after chroot(2), where that host prefix no longer exists.
         // Strip it so the stored value is absolute inside the new root.
         let chroot_cwd = if let Some(ref cwd) = request.cwd {
@@ -1133,8 +1599,9 @@ impl WarmDaemon {
             "/".to_string()
         };
 
-        // Validate command path - ensure it exists within rootfs
-        let validated_command = {
+        // Validate command path - ensure it exists within rootfs. This stays in
+        // the daemon because only it can see the host-side rootfs path.
+        {
             let cmd_path = PathBuf::from(&request.command);
 
             // Check for path traversal attempts
@@ -1177,403 +1644,47 @@ impl WarmDaemon {
                     full_path
                 );
             }
-
-            // Return the original command - it will be resolved in the chroot
-            request.command.clone()
-        };
-
-        // Create CString for command after validation
-        let c_cmd = CString::new(validated_command.as_str())
-            .with_context(|| format!("Invalid command string: {}", validated_command))?;
-
-        // Insert command at the beginning of args (execvp expects argv[0] to be the command)
-        let mut c_args_with_cmd: Vec<CString> = Vec::with_capacity(c_args.len() + 1);
-        c_args_with_cmd.push(c_cmd.clone());
-        c_args_with_cmd.append(&mut c_args);
-
-        // Create cgroup in parent BEFORE fork so we can destroy it after child exits.
-        //
-        // The name is computed exactly once, here in the parent, and the child
-        // reuses it. Previously the child recomputed the timestamp after fork,
-        // producing a *different* name: it tried to join a cgroup that did not
-        // exist (so limits were never applied) while the parent destroyed its
-        // empty cgroup. That silently disabled cgroup enforcement.
-        let cgroup_name: Option<String> = request.hardware_profile.as_ref().map(|_| {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0) as u64;
-
-            format!("phantom_warm_{}_{}", self.daemon_id, timestamp)
-        });
-
-        let cgroup: Option<CgroupManager> = if let (Some(profile), Some(name)) =
-            (request.hardware_profile.as_ref(), cgroup_name.as_deref())
-        {
-            let cgroup = CgroupManager::new(name);
-
-            // Create cgroup
-            if let Err(e) = cgroup.create() {
-                log::warn!("Failed to create cgroup {}: {:?}", name, e);
-                None
-            } else {
-                // Apply memory limit
-                if profile.memory_mb > 0 {
-                    if let Err(e) = cgroup.set_memory_limit(profile.memory_mb as u64) {
-                        log::warn!("Failed to set memory limit: {:?}", e);
-                    }
-                }
-
-                // Apply CPU limit
-                if profile.cpu_count > 0 {
-                    if let Err(e) = cgroup.set_cpu_limit(profile.cpu_count as u64) {
-                        log::warn!("Failed to set CPU limit: {:?}", e);
-                    }
-                }
-
-                Some(cgroup)
-            }
-        } else {
-            None
-        };
-
-        // Fail-closed status pipe.
-        //
-        // The daemon is spawned with `Stdio::null()`, so anything the child
-        // prints is lost. The child reports setup/exec failures through this
-        // pipe instead. The write end is CLOEXEC, so the parent reads EOF with
-        // no bytes only when execvp() actually succeeded.
-        let (status_read, status_write) = nix::unistd::pipe2(nix::fcntl::OFlag::O_CLOEXEC)
-            .context("Failed to create exec status pipe")?;
-
-        // Build child-only paths before fork to keep the post-fork window small.
-        let c_rootfs = CString::new(self.config.rootfs_path.to_string_lossy().as_bytes())
-            .context("rootfs path contains a NUL byte")?;
-        let c_chroot_cwd =
-            CString::new(chroot_cwd.as_str()).context("working directory contains a NUL byte")?;
-
-        // Fork-exec pattern: apply cgroup BETWEEN fork and exec
-        // SAFETY: Signal masking is critical before fork to prevent race conditions.
-        // In multi-threaded programs, signals could be delivered to the child process
-        // before it can establish its own signal handlers, causing undefined behavior.
-        let (pid, exec_error) = unsafe {
-            let mut sigmask: libc::sigset_t = std::mem::zeroed();
-            let mut old_sigmask: libc::sigset_t = std::mem::zeroed();
-
-            // Initialize sigset to block all signals
-            libc::sigfillset(&mut sigmask);
-
-            // Block all signals before fork
-            let mask_ret = libc::pthread_sigmask(libc::SIG_SETMASK, &sigmask, &mut old_sigmask);
-            if mask_ret != 0 {
-                let _ = nix::unistd::close(status_read);
-                let _ = nix::unistd::close(status_write);
-                return Err(anyhow::anyhow!(
-                    "Failed to block signals before fork: errno {}",
-                    mask_ret
-                ));
-            }
-
-            let fork_result = fork();
-
-            // Restore signal mask in both parent and child immediately after fork
-            let restore_ret =
-                libc::pthread_sigmask(libc::SIG_SETMASK, &old_sigmask, std::ptr::null_mut());
-
-            match fork_result {
-                Ok(ForkResult::Child) => {
-                    // === IN CHILD PROCESS ===
-                    // At this point, we are a copy of the parent but before exec.
-                    // This is the ONLY safe place to apply cgroups.
-
-                    // Only the parent consumes the status pipe.
-                    let _ = nix::unistd::close(status_read);
-
-                    // Report a setup failure to the parent and fail closed.
-                    // `_exit` is async-signal-safe and skips atexit handlers.
-                    let fail = |msg: String| -> ! {
-                        let _ = nix::unistd::write(status_write, msg.as_bytes());
-                        libc::_exit(127);
-                    };
-
-                    // CRITICAL: Child must restore signals before any non-async-signal-safe operations
-                    if restore_ret != 0 {
-                        fail(format!(
-                            "Failed to restore signal mask after fork: errno {}",
-                            restore_ret
-                        ));
-                    }
-
-                    // Apply cgroup limits BEFORE exec - child is still just our code
-                    // The cgroup was already created by the parent; we just need to add ourselves
-                    // using the SAME name the parent created.
-                    if let Some(ref name) = cgroup_name {
-                        let cgroup = CgroupManager::new(name);
-
-                        // CRITICAL: Add current process (PID 0) to cgroup BEFORE exec
-                        // PID 0 means "current process" in the cgroup API
-                        if let Err(e) = cgroup.add_process(0) {
-                            eprintln!("Failed to add self to cgroup: {:?}", e);
-                            // Continue execution without cgroup - don't fail completely
-                        }
-                    }
-
-                    // Capture credentials before entering the user namespace:
-                    // the mapping itself is written with the caller's host ids.
-                    let uid = libc::getuid();
-                    let gid = libc::getgid();
-
-                    // ENFORCE NAMESPACE PURITY
-                    // A user namespace is required first: without it the daemon
-                    // (unprivileged uid 1000) has no CAP_SYS_CHROOT/CAP_SYS_ADMIN
-                    // and both chroot(2) and mount(2) would fail with EPERM.
-                    // The mount namespace is owned by the new user namespace.
-                    if libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) != 0 {
-                        fail(format!(
-                            "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed: {}",
-                            std::io::Error::last_os_error()
-                        ));
-                    }
-
-                    // `setgroups` does not exist on older kernels; anything else
-                    // is fatal because gid_map would then be unusable.
-                    if let Err(e) = write_proc_file("/proc/self/setgroups", b"deny") {
-                        if e.kind() != std::io::ErrorKind::NotFound {
-                            fail(format!("Failed to write /proc/self/setgroups: {}", e));
-                        }
-                    }
-                    if let Err(e) = write_proc_file(
-                        "/proc/self/uid_map",
-                        format!("{} {} 1", uid, uid).as_bytes(),
-                    ) {
-                        fail(format!("Failed to write /proc/self/uid_map: {}", e));
-                    }
-                    if let Err(e) = write_proc_file(
-                        "/proc/self/gid_map",
-                        format!("{} {} 1", gid, gid).as_bytes(),
-                    ) {
-                        fail(format!("Failed to write /proc/self/gid_map: {}", e));
-                    }
-
-                    // Make all mounts private so they don't propagate to parent
-                    let c_root =
-                        CString::new("/").expect("Static string cannot contain null bytes");
-                    if libc::mount(
-                        std::ptr::null(),
-                        c_root.as_ptr(),
-                        std::ptr::null(),
-                        libc::MS_PRIVATE | libc::MS_REC,
-                        std::ptr::null(),
-                    ) != 0
-                    {
-                        fail(format!(
-                            "mount(/, MS_PRIVATE|MS_REC) failed: {}",
-                            std::io::Error::last_os_error()
-                        ));
-                    }
-
-                    // The image may not have a usable /dev/null, so open the
-                    // host's before the root switch.
-                    let null_fd = match nix::fcntl::open(
-                        "/dev/null",
-                        nix::fcntl::OFlag::O_RDONLY,
-                        nix::sys::stat::Mode::empty(),
-                    ) {
-                        Ok(fd) => fd,
-                        Err(e) => fail(format!("Failed to open /dev/null: {}", e)),
-                    };
-
-                    // Enter the image. Everything from here on runs inside the
-                    // rootfs, so the command validated above is now the file
-                    // execvp() will actually execute.
-                    if libc::chroot(c_rootfs.as_ptr()) != 0 {
-                        fail(format!(
-                            "chroot({}) failed: {}",
-                            self.config.rootfs_path.display(),
-                            std::io::Error::last_os_error()
-                        ));
-                    }
-
-                    // Change to target directory inside the new root
-                    if libc::chdir(c_chroot_cwd.as_ptr()) != 0 {
-                        fail(format!(
-                            "chdir({}) failed: {}",
-                            chroot_cwd,
-                            std::io::Error::last_os_error()
-                        ));
-                    }
-
-                    // tmpfs hygiene inside the new root. These mounts are not a
-                    // security boundary; failures are ignored.
-                    for dir in ["/tmp", "/dev/shm"] {
-                        if !Path::new(dir).is_dir() {
-                            continue;
-                        }
-                        let c_dir = match CString::new(dir) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-                        let c_tmpfs =
-                            CString::new("tmpfs").expect("Static string cannot contain null bytes");
-                        libc::mount(
-                            c_tmpfs.as_ptr(),
-                            c_dir.as_ptr(),
-                            c_tmpfs.as_ptr(),
-                            0,
-                            std::ptr::null(),
-                        );
-                    }
-
-                    // Redirect stdin from the host's /dev/null opened above.
-                    // stdout/stderr stay inherited.
-                    let _ = nix::unistd::dup2(null_fd, 0);
-                    if null_fd != 0 {
-                        let _ = nix::unistd::close(null_fd);
-                    }
-
-                    // === Security stack ===
-                    // Order: landlock -> caps/no_new_privs -> seccomp -> exec.
-                    // Landlock and the capability drop need no privileges; the
-                    // seccomp filter goes last so it cannot block our own setup
-                    // syscalls.
-                    if let Err(e) = apply_child_landlock(child_policy.file_write) {
-                        // Fail closed: the profile's filesystem policy could
-                        // not be enforced, so the command must not run.
-                        fail(e);
-                    }
-
-                    // Defence in depth only: the child is already unprivileged
-                    // in the parent namespace, so this never fails the exec.
-                    drop_child_capabilities();
-
-                    // Fail closed: a profile that asks for a filter must not
-                    // run without one.
-                    if let Err(e) = seccomp_rs::apply_profile(child_policy.seccomp) {
-                        fail(format!(
-                            "seccomp profile '{}' could not be installed: {}",
-                            child_policy.seccomp, e
-                        ));
-                    }
-
-                    // Set environment variables using libc::setenv
-                    for env_var in &final_env {
-                        let env_str = match env_var.to_str() {
-                            Ok(s) => s,
-                            Err(_) => {
-                                fail("Invalid environment variable encoding".to_string());
-                            }
-                        };
-                        if let Some(eq_pos) = env_str.find('=') {
-                            let key = &env_str[..eq_pos];
-                            let val = &env_str[eq_pos + 1..];
-                            let c_key = match CString::new(key) {
-                                Ok(c) => c,
-                                Err(_) => fail("Invalid environment variable key".to_string()),
-                            };
-                            let c_val = match CString::new(val) {
-                                Ok(c) => c,
-                                Err(_) => fail("Invalid environment variable value".to_string()),
-                            };
-                            libc::setenv(c_key.as_ptr(), c_val.as_ptr(), 1);
-                        }
-                    }
-
-                    // NOW exec - child is already restricted by cgroup
-                    // This is the key security fix: cgroup is applied BEFORE the target
-                    // command ever starts executing
-                    let exec_result = execvp(&c_cmd, &c_args_with_cmd);
-
-                    // If execvp returns, it failed.
-                    // SAFETY: Use _exit(127) instead of exit() to avoid flushing stdio buffers
-                    // twice (once in child, once in parent), which could cause duplicate output.
-                    fail(format!(
-                        "execvp({}) failed: {:?}",
-                        validated_command, exec_result
-                    ));
-                }
-                Ok(ForkResult::Parent { child }) => {
-                    // === IN PARENT PROCESS ===
-                    // child is the PID of the forked process
-
-                    // Close the write end or the read below would never see EOF.
-                    let _ = nix::unistd::close(status_write);
-
-                    // Log if signal restoration failed (only safe to do in parent)
-                    if restore_ret != 0 {
-                        log::warn!(
-                            "Failed to restore signal mask after fork: errno {}",
-                            restore_ret
-                        );
-                    }
-
-                    // Read to EOF: bytes mean the child failed before exec,
-                    // while a clean EOF means execvp() succeeded.
-                    let mut status = Vec::new();
-                    let mut chunk = [0u8; 256];
-                    loop {
-                        match nix::unistd::read(status_read, &mut chunk) {
-                            Ok(0) => break,
-                            Ok(n) => status.extend_from_slice(&chunk[..n]),
-                            Err(nix::errno::Errno::EINTR) => continue,
-                            Err(_) => break,
-                        }
-                    }
-                    let _ = nix::unistd::close(status_read);
-
-                    let error = if status.is_empty() {
-                        None
-                    } else {
-                        Some(String::from_utf8_lossy(&status).into_owned())
-                    };
-
-                    (child.as_raw() as u32, error)
-                }
-                Err(e) => {
-                    // Signal restoration already attempted above, but fork failed
-                    let _ = nix::unistd::close(status_read);
-                    let _ = nix::unistd::close(status_write);
-                    return Err(anyhow::anyhow!("Fork failed: {:?}", e));
-                }
-            }
-        };
-
-        // Parent continues here with the child PID
-        // Track child with its cgroup for later cleanup
-        self.children
-            .lock()
-            .unwrap()
-            .insert(pid, ChildProcess { cgroup });
-
-        // Wait for child to complete (synchronous execution)
-        let wait_result = nix::sys::wait::waitpid(Pid::from_raw(pid as i32), None);
-
-        let exit_code = match wait_result {
-            Ok(status) => match status {
-                nix::sys::wait::WaitStatus::Exited(_, code) => code,
-                nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + sig as i32,
-                _ => 127,
-            },
-            Err(_) => 127,
-        };
-
-        // Clean up cgroup BEFORE removing from tracking
-        let mut locked_children = self.children.lock().unwrap();
-        if let Some(child) = locked_children.get(&pid) {
-            if let Some(ref cgroup) = child.cgroup {
-                if let Err(e) = cgroup.destroy() {
-                    log::warn!("Failed to destroy cgroup for PID {}: {:?}", pid, e);
-                }
-            }
         }
 
-        // Clean up tracking
-        locked_children.remove(&pid);
+        // Build the request the mother will execute. The mother inherits the
+        // daemon environment, so only the request's overrides need serializing.
+        let mut mother_request = request.clone();
+        mother_request.env.remove(PROFILE_ENV);
+        mother_request
+            .env
+            .insert("PHANTOM_WARM".to_string(), "1".to_string());
+        mother_request
+            .env
+            .insert("PHANTOM_DAEMON_ID".to_string(), self.daemon_id.to_string());
+        let rootfs_str = self.config.rootfs_path.to_string_lossy();
+        if !rootfs_str.is_empty() && rootfs_str != "/" {
+            mother_request
+                .env
+                .insert("PHANTOM_ROOTFS".to_string(), rootfs_str.into_owned());
+        }
+        mother_request.cwd = Some(chroot_cwd);
 
-        Ok(ExecResponse {
-            exit_code,
-            pid,
-            error: exec_error,
-        })
+        let payload = serialize_exec_request(&mother_request)?;
+        let mother_fd = self
+            .mother_fd
+            .as_mut()
+            .context("warm mother is not running")?;
+        write_message(mother_fd, &Message::new(MessageType::Exec, payload))
+            .context("Failed to send request to warm mother")?;
+
+        let response =
+            read_message(mother_fd).context("Failed to read response from warm mother")?;
+        if !matches!(
+            response.msg_type,
+            MessageType::ExecResponse | MessageType::Error
+        ) {
+            anyhow::bail!(
+                "Unexpected response type from warm mother: {:?}",
+                response.msg_type
+            );
+        }
+
+        parse_exec_response(&response.payload)
     }
 
     /// Apply cgroup to the daemon itself
@@ -1778,23 +1889,8 @@ impl WarmDaemon {
         msg_type: MessageType,
         response: &ExecResponse,
     ) -> Result<()> {
-        // Serialize response: [exit_code:4][pid:4][error_len:2][error]
-        let mut payload =
-            Vec::with_capacity(10 + response.error.as_ref().map(|e| e.len()).unwrap_or(0));
-        payload.extend_from_slice(&response.exit_code.to_le_bytes());
-        payload.extend_from_slice(&response.pid.to_le_bytes());
-
-        if let Some(ref error) = response.error {
-            payload.extend_from_slice(&(error.len() as u16).to_le_bytes());
-            payload.extend_from_slice(error.as_bytes());
-        } else {
-            payload.extend_from_slice(&0u16.to_le_bytes());
-        }
-
-        let msg = Message::new(msg_type, payload);
-        let data = msg.serialize()?;
-        stream.write_all(&data)?;
-        Ok(())
+        let msg = Message::new(msg_type, encode_exec_response(response));
+        write_message(stream, &msg)
     }
 
     /// Send error
@@ -1810,6 +1906,28 @@ impl WarmDaemon {
     /// Cleanup resources
     fn cleanup(&mut self) -> Result<()> {
         log::info!("Cleaning up warm daemon resources");
+
+        // Kill the mother first: it is the long-lived sandboxed process, and
+        // leaving it behind would orphan a chrooted process (and its cgroup).
+        if self.mother_pid.as_raw() > 0 {
+            let _ = nix::sys::signal::kill(self.mother_pid, nix::sys::signal::Signal::SIGKILL);
+            let _ = nix::sys::wait::waitpid(self.mother_pid, None);
+            self.mother_pid = Pid::from_raw(0);
+        }
+
+        // Close the daemon end of the channel so the mother sees EOF if it is
+        // somehow still alive, and release the descriptor.
+        if let Some(mother_fd) = self.mother_fd.take() {
+            let _ = mother_fd.shutdown(std::net::Shutdown::Both);
+        }
+
+        // The mother was the only member of this cgroup; now that it is reaped
+        // the cgroup can be removed.
+        if let Some(cgroup) = self.mother_cgroup.take() {
+            if let Err(e) = cgroup.destroy() {
+                log::warn!("Failed to destroy mother cgroup: {:?}", e);
+            }
+        }
 
         // Remove socket file
         if self.config.socket_path.exists() {
@@ -2042,6 +2160,8 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
     cmd.arg(&socket_path);
     cmd.arg("--rootfs");
     cmd.arg(&rootfs_path);
+    cmd.arg("--profile");
+    cmd.arg(&config.security_profile);
 
     if let Some(ref profile) = config.hardware_profile {
         cmd.arg("--cpu-count");
@@ -2113,7 +2233,7 @@ pub fn ping_daemon(socket_path: &Path) -> Result<bool> {
 pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecResponse> {
     // Reject requests whose length-prefixed fields cannot be represented by the
     // wire format instead of silently truncating them with `as u16`/`as u8`.
-    validate_exec_request(request)?;
+    let payload = serialize_exec_request(request)?;
 
     let mut last_err = None;
 
@@ -2142,47 +2262,8 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
 
         let mut stream = stream;
 
-        // Serialize request: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...][cwd_len:2][cwd][profile:1][cpu:4][mem:4]
-        let mut payload = Vec::new();
-
-        // Command
-        payload.extend_from_slice(&(request.command.len() as u16).to_le_bytes());
-        payload.extend_from_slice(request.command.as_bytes());
-
-        // Args
-        payload.push(request.args.len() as u8);
-        for arg in &request.args {
-            payload.extend_from_slice(&(arg.len() as u16).to_le_bytes());
-            payload.extend_from_slice(arg.as_bytes());
-        }
-
-        // Env
-        payload.push(request.env.len() as u8);
-        for (key, val) in &request.env {
-            payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
-            payload.extend_from_slice(key.as_bytes());
-            payload.extend_from_slice(&(val.len() as u16).to_le_bytes());
-            payload.extend_from_slice(val.as_bytes());
-        }
-
-        // Cwd
-        let cwd_bytes = request.cwd.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
-        payload.extend_from_slice(&(cwd_bytes.len() as u16).to_le_bytes());
-        payload.extend_from_slice(cwd_bytes);
-
-        // Hardware profile
-        if let Some(ref profile) = request.hardware_profile {
-            payload.push(1);
-            payload.extend_from_slice(&(profile.cpu_count as u32).to_le_bytes());
-            payload.extend_from_slice(&(profile.memory_mb as u32).to_le_bytes());
-        } else {
-            payload.push(0);
-            payload.extend_from_slice(&0u32.to_le_bytes());
-            payload.extend_from_slice(&0u32.to_le_bytes());
-        }
-
         // Send request
-        let msg = Message::new(MessageType::Exec, payload);
+        let msg = Message::new(MessageType::Exec, payload.clone());
         if let Err(e) = write_message(&mut stream, &msg) {
             last_err = Some(anyhow::anyhow!("Failed to send request to daemon: {}", e));
             std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
@@ -2219,6 +2300,55 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
         .unwrap_or_else(|| anyhow::anyhow!("Failed to communicate with daemon after 3 attempts")))
 }
 
+/// Serialize an [`ExecRequest`] into the v1 payload used by both the client
+/// and the daemon→mother channel.
+///
+/// Layout: [cmd_len:2][cmd][args_count:1][args...][env_count:1][env...]
+/// [cwd_len:2][cwd][profile:1][cpu:4][mem:4]
+fn serialize_exec_request(request: &ExecRequest) -> Result<Vec<u8>> {
+    validate_exec_request(request)?;
+
+    let mut payload = Vec::new();
+
+    // Command
+    payload.extend_from_slice(&(request.command.len() as u16).to_le_bytes());
+    payload.extend_from_slice(request.command.as_bytes());
+
+    // Args
+    payload.push(request.args.len() as u8);
+    for arg in &request.args {
+        payload.extend_from_slice(&(arg.len() as u16).to_le_bytes());
+        payload.extend_from_slice(arg.as_bytes());
+    }
+
+    // Env
+    payload.push(request.env.len() as u8);
+    for (key, val) in &request.env {
+        payload.extend_from_slice(&(key.len() as u16).to_le_bytes());
+        payload.extend_from_slice(key.as_bytes());
+        payload.extend_from_slice(&(val.len() as u16).to_le_bytes());
+        payload.extend_from_slice(val.as_bytes());
+    }
+
+    // Cwd
+    let cwd_bytes = request.cwd.as_ref().map(|s| s.as_bytes()).unwrap_or(&[]);
+    payload.extend_from_slice(&(cwd_bytes.len() as u16).to_le_bytes());
+    payload.extend_from_slice(cwd_bytes);
+
+    // Hardware profile
+    if let Some(ref profile) = request.hardware_profile {
+        payload.push(1);
+        payload.extend_from_slice(&(profile.cpu_count as u32).to_le_bytes());
+        payload.extend_from_slice(&(profile.memory_mb as u32).to_le_bytes());
+    } else {
+        payload.push(0);
+        payload.extend_from_slice(&0u32.to_le_bytes());
+        payload.extend_from_slice(&0u32.to_le_bytes());
+    }
+
+    Ok(payload)
+}
+
 /// Validate that an exec request fits the wire format.
 fn validate_exec_request(request: &ExecRequest) -> Result<()> {
     if request.command.len() > u16::MAX as usize {
@@ -2246,6 +2376,29 @@ fn validate_exec_request(request: &ExecRequest) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Encode an `ExecResponse` payload: [exit_code:4][pid:4][error_len:2][error]
+fn encode_exec_response(response: &ExecResponse) -> Vec<u8> {
+    let mut payload =
+        Vec::with_capacity(10 + response.error.as_ref().map(|e| e.len()).unwrap_or(0));
+    payload.extend_from_slice(&response.exit_code.to_le_bytes());
+    payload.extend_from_slice(&response.pid.to_le_bytes());
+
+    if let Some(ref error) = response.error {
+        payload.extend_from_slice(&(error.len() as u16).to_le_bytes());
+        payload.extend_from_slice(error.as_bytes());
+    } else {
+        payload.extend_from_slice(&0u16.to_le_bytes());
+    }
+
+    payload
+}
+
+/// Write an `ExecResponse` frame to the daemon↔mother channel.
+fn write_exec_response<W: Write>(writer: &mut W, response: &ExecResponse) -> Result<()> {
+    let msg = Message::new(MessageType::ExecResponse, encode_exec_response(response));
+    write_message(writer, &msg)
 }
 
 /// Parse an `ExecResponse` payload: [exit_code:4][pid:4][error_len:2][error]
@@ -2356,6 +2509,10 @@ fn daemon_main(args: &[String]) -> anyhow::Result<()> {
 
         #[arg(long, default_value = "512")]
         memory_mb: usize,
+
+        /// Security profile the mother is sandboxed with (bound at startup).
+        #[arg(long, default_value = "sandbox")]
+        profile: String,
     }
 
     let args = DaemonArgs::parse_from(args);
@@ -2370,6 +2527,8 @@ fn daemon_main(args: &[String]) -> anyhow::Result<()> {
             memory_mb: args.memory_mb,
         }),
         metrics_port: 9090,
+        mother_name: args.profile.clone(),
+        security_profile: args.profile,
     };
 
     let mut daemon = WarmDaemon::new(config)?;

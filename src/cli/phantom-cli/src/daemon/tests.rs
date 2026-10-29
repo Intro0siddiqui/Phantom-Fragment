@@ -58,6 +58,24 @@ mod tests {
             rootfs_path,
             hardware_profile: None,
             metrics_port: 9090,
+            security_profile: "sandbox".to_string(),
+            mother_name: "sandbox".to_string(),
+        }
+    }
+
+    /// Like [`create_test_config`] but binds the pool to a specific profile.
+    fn create_test_config_with_profile(
+        socket_path: PathBuf,
+        rootfs_path: PathBuf,
+        profile: &str,
+    ) -> DaemonConfig {
+        DaemonConfig {
+            socket_path,
+            rootfs_path,
+            hardware_profile: None,
+            metrics_port: 9090,
+            security_profile: profile.to_string(),
+            mother_name: profile.to_string(),
         }
     }
 
@@ -438,6 +456,8 @@ mod tests {
             rootfs_path: rootfs,
             hardware_profile,
             metrics_port: 9090,
+            security_profile: "sandbox".to_string(),
+            mother_name: "sandbox".to_string(),
         };
 
         let daemon = WarmDaemon::new(config).expect("Failed to create daemon");
@@ -1455,9 +1475,15 @@ mod tests {
             "if ( : > /denied.txt ); then\n  exit 1\nfi\nexit 0",
         );
 
-        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
-            .expect("Failed to create daemon");
-        let handle = start_daemon_background_thread(daemon);
+        // Each pool is bound to one profile, so the read-only half and the
+        // writable half use separate daemons.
+        let hardened_daemon = WarmDaemon::new(create_test_config_with_profile(
+            socket_path.clone(),
+            rootfs.clone(),
+            "hardened",
+        ))
+        .expect("Failed to create hardened daemon");
+        let hardened_handle = start_daemon_background_thread(hardened_daemon);
         wait_for_socket(&socket_path, 1000).expect("Socket should be available");
 
         // "hardened" is a built-in profile with file_write = false.
@@ -1473,10 +1499,22 @@ mod tests {
             !rootfs.join("denied.txt").exists(),
             "read-only profile must not create /denied.txt"
         );
+        shutdown_daemon(&socket_path, hardened_handle);
 
         // "sandbox" is a built-in profile with file_write = true.
-        let writable = send_exec_request_with_profile(&socket_path, "/bin/write-probe", "sandbox")
-            .expect("Request should be processed");
+        let sandbox_socket = socket_path.with_file_name("test_read_only_profile_sandbox.sock");
+        let sandbox_daemon = WarmDaemon::new(create_test_config_with_profile(
+            sandbox_socket.clone(),
+            rootfs.clone(),
+            "sandbox",
+        ))
+        .expect("Failed to create sandbox daemon");
+        let sandbox_handle = start_daemon_background_thread(sandbox_daemon);
+        wait_for_socket(&sandbox_socket, 1000).expect("Socket should be available");
+
+        let writable =
+            send_exec_request_with_profile(&sandbox_socket, "/bin/write-probe", "sandbox")
+                .expect("Request should be processed");
         assert_eq!(
             writable.exit_code, 1,
             "write must be allowed under a write-enabled profile (error: {:?})",
@@ -1487,7 +1525,7 @@ mod tests {
             "write-enabled profile must create /denied.txt"
         );
 
-        shutdown_daemon(&socket_path, handle);
+        shutdown_daemon(&sandbox_socket, sandbox_handle);
     }
 
     /// The hardened profile installs a whitelist seccomp filter; normal
@@ -1497,8 +1535,12 @@ mod tests {
         let (temp_dir, socket_path) = setup_test_env("test_hardened_profile");
         let rootfs = create_test_rootfs(&temp_dir);
 
-        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
-            .expect("Failed to create daemon");
+        let daemon = WarmDaemon::new(create_test_config_with_profile(
+            socket_path.clone(),
+            rootfs,
+            "hardened",
+        ))
+        .expect("Failed to create daemon");
         let handle = start_daemon_background_thread(daemon);
         wait_for_socket(&socket_path, 1000).expect("Socket should be available");
 
@@ -1528,9 +1570,12 @@ mod tests {
             "if kill -0 $$; then\n  exit 0\nfi\nexit 1",
         );
 
-        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
-            .expect("Failed to create daemon");
-        let handle = start_daemon_background_thread(daemon);
+        // A pool is bound to one profile, so run the sandbox half first and
+        // then start a hardened pool for the same probe.
+        let sandbox_daemon =
+            WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+                .expect("Failed to create daemon");
+        let sandbox_handle = start_daemon_background_thread(sandbox_daemon);
         wait_for_socket(&socket_path, 1000).expect("Socket should be available");
 
         let sandbox = send_exec_request_with_profile(&socket_path, "/bin/syscall-probe", "sandbox")
@@ -1540,9 +1585,20 @@ mod tests {
             "kill(2) must work without the hardened filter (error: {:?})",
             sandbox.error
         );
+        shutdown_daemon(&socket_path, sandbox_handle);
+
+        let hardened_socket = socket_path.with_file_name("test_hardened_seccomp_pool.sock");
+        let hardened_daemon = WarmDaemon::new(create_test_config_with_profile(
+            hardened_socket.clone(),
+            rootfs,
+            "hardened",
+        ))
+        .expect("Failed to create hardened daemon");
+        let hardened_handle = start_daemon_background_thread(hardened_daemon);
+        wait_for_socket(&hardened_socket, 1000).expect("Socket should be available");
 
         let hardened =
-            send_exec_request_with_profile(&socket_path, "/bin/syscall-probe", "hardened")
+            send_exec_request_with_profile(&hardened_socket, "/bin/syscall-probe", "hardened")
                 .expect("Request should be processed");
         assert_eq!(
             hardened.exit_code, 1,
@@ -1550,7 +1606,7 @@ mod tests {
             hardened.error
         );
 
-        shutdown_daemon(&socket_path, handle);
+        shutdown_daemon(&hardened_socket, hardened_handle);
     }
 
     /// An unknown profile must be refused rather than silently running the
@@ -1560,19 +1616,151 @@ mod tests {
         let (temp_dir, socket_path) = setup_test_env("test_unknown_profile");
         let rootfs = create_test_rootfs(&temp_dir);
 
-        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
-            .expect("Failed to create daemon");
-        let handle = start_daemon_background_thread(daemon);
-        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
-
-        let response = send_exec_request_with_profile(&socket_path, "/bin/true", "no-such-profile")
-            .expect("Request should be processed");
-        assert_ne!(response.exit_code, 0, "unknown profile must not exec");
-        let error = response.error.unwrap_or_default();
+        // The profile is resolved when the pool is created, so an unknown name
+        // must fail startup rather than run the first request unconfined.
+        let err = WarmDaemon::new(create_test_config_with_profile(
+            socket_path,
+            rootfs,
+            "no-such-profile",
+        ))
+        .err()
+        .expect("unknown profile must not create a pool");
+        let error = err.to_string();
         assert!(
             error.contains("unknown security profile"),
             "unexpected error: {}",
             error
+        );
+    }
+
+    // ========================================================================
+    // Phase 3.4/3.5 — the pre-sandboxed mother fragment
+    // ========================================================================
+
+    /// The mother is forked once and survives every exec; neither it nor the
+    /// daemon is re-created per request.
+    #[test]
+    fn test_mother_pid_is_stable() {
+        let (temp_dir, socket_path) = setup_test_env("test_mother_pid_stable");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs))
+            .expect("Failed to create daemon");
+        let daemon_pid = daemon.pid();
+        let mother_pid = daemon.mother_pid();
+        assert_ne!(mother_pid, 0, "mother must have been forked");
+        assert_ne!(mother_pid, daemon_pid, "mother must be a separate process");
+
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        for i in 0..3 {
+            let response = send_exec_request(&socket_path, "/bin/true", vec![])
+                .expect("exec should be processed");
+            assert_eq!(response.exit_code, 0, "exec {} should succeed", i);
+
+            // The daemon object lives in the serving thread now, so verify
+            // stability through /proc: the same mother is still alive and is
+            // still a direct child of the same daemon process.
+            assert_eq!(
+                std::process::id(),
+                daemon_pid,
+                "daemon pid must not change across execs"
+            );
+            let stat = fs::read_to_string(format!("/proc/{}/stat", mother_pid))
+                .expect("mother must still exist after the exec");
+            let tail = &stat[stat.rfind(')').expect("stat should contain comm") + 1..];
+            let fields: Vec<&str> = tail.split_whitespace().collect();
+            let ppid: u32 = fields[1]
+                .parse()
+                .expect("ppid should be numeric in /proc/<pid>/stat");
+            assert_eq!(
+                ppid, daemon_pid,
+                "mother pid must be unchanged and parented by the daemon"
+            );
+        }
+
+        shutdown_daemon(&socket_path, handle);
+    }
+
+    /// The mother really is chrooted before serving: the fs-probe (which exits
+    /// 1 when the host's /etc/os-release is visible) must see only the image,
+    /// and a hardened pool must still exec /bin/true through its filter.
+    #[test]
+    fn test_mother_is_pre_sandboxed() {
+        let (temp_dir, socket_path) = setup_test_env("test_mother_pre_sandboxed");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let probe = send_exec_request(&socket_path, "/bin/fs-probe", vec![])
+            .expect("probe should be processed");
+        assert_eq!(
+            probe.exit_code, 0,
+            "mother must be chrooted before serving (error: {:?})",
+            probe.error
+        );
+        shutdown_daemon(&socket_path, handle);
+
+        let hardened_socket = socket_path.with_file_name("test_mother_pre_sandboxed_hardened.sock");
+        let hardened = WarmDaemon::new(create_test_config_with_profile(
+            hardened_socket.clone(),
+            rootfs,
+            "hardened",
+        ))
+        .expect("Failed to create hardened daemon");
+        let hardened_handle = start_daemon_background_thread(hardened);
+        wait_for_socket(&hardened_socket, 1000).expect("Socket should be available");
+
+        let response = send_exec_request_with_profile(&hardened_socket, "/bin/true", "hardened")
+            .expect("hardened exec should be processed");
+        assert_eq!(
+            response.exit_code, 0,
+            "chroot + seccomp must not break normal exec (error: {:?})",
+            response.error
+        );
+
+        shutdown_daemon(&hardened_socket, hardened_handle);
+    }
+
+    /// A request asking for a profile other than the pool's must be refused
+    /// before anything is executed.
+    #[test]
+    fn test_profile_mismatch_is_refused() {
+        let (temp_dir, socket_path) = setup_test_env("test_profile_mismatch");
+        let rootfs = create_test_rootfs(&temp_dir);
+
+        write_rootfs_script(
+            &rootfs,
+            "bin/mismatch-probe",
+            "echo executed > /mismatch.txt\nexit 0",
+        );
+
+        let daemon = WarmDaemon::new(create_test_config(socket_path.clone(), rootfs.clone()))
+            .expect("Failed to create sandbox daemon");
+        let handle = start_daemon_background_thread(daemon);
+        wait_for_socket(&socket_path, 1000).expect("Socket should be available");
+
+        let response =
+            send_exec_request_with_profile(&socket_path, "/bin/mismatch-probe", "hardened")
+                .expect("request should be answered");
+        assert_eq!(
+            response.exit_code, 127,
+            "profile mismatch must fail closed (error: {:?})",
+            response.error
+        );
+        let error = response.error.unwrap_or_default();
+        assert!(
+            error.contains("bound to profile 'sandbox'") && error.contains("hardened"),
+            "unexpected error: {}",
+            error
+        );
+        assert!(
+            !rootfs.join("mismatch.txt").exists(),
+            "a mismatched request must never execute"
         );
 
         shutdown_daemon(&socket_path, handle);

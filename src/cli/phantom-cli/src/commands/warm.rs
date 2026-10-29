@@ -27,6 +27,9 @@ pub enum WarmCommands {
         /// Initialize zygote pool for ultra-fast spawning
         #[arg(long)]
         zygote: bool,
+        /// Security profile bound to the pool's mother fragment
+        #[arg(short = 'p', long, default_value = "sandbox")]
+        profile: String,
     },
     /// List fragment pools (beta/experimental)
     List,
@@ -134,11 +137,13 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             size,
             supervise: _,
             zygote,
+            profile,
         } => {
             print_header("Create Fragment Pool (experimental)");
             print_divider_full();
             println!("\n{} Creating fragment pool for: {}", "→".yellow(), image);
             println!("{} Pool size: {}", "→".yellow(), size);
+            println!("{} Security profile: {}", "→".yellow(), profile);
             if zygote {
                 println!("{} Zygote pool: enabled", "→".yellow());
             }
@@ -167,7 +172,7 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             for i in 0..size {
                 let pid_file = pid_file_dir.join(format!("daemon_{}.pid", i));
 
-                match start_daemon_in_rootfs(&rootfs_path, &pid_file) {
+                match start_daemon_in_rootfs(&rootfs_path, &pid_file, &profile) {
                     Ok(pid) => {
                         println!("  {} Daemon {} started (PID: {})", "✓".green(), i, pid);
                         registered_pids.push(pid);
@@ -331,6 +336,8 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
                     memory_mb: 512,
                 }),
                 metrics_port: 9090,
+                security_profile: "sandbox".to_string(),
+                mother_name: "sandbox".to_string(),
             };
 
             let supervisor_config = SupervisorConfig {
@@ -547,7 +554,7 @@ async fn run_benchmark(iterations: usize, size: usize) -> Result<()> {
 /// - Safe command execution (no eval, uses Command::new directly)
 /// - Cgroup integration (applied before exec)
 /// - Proper cleanup on exit
-fn start_daemon_in_rootfs(rootfs_path: &Path, pid_file: &Path) -> Result<u32> {
+fn start_daemon_in_rootfs(rootfs_path: &Path, pid_file: &Path, profile: &str) -> Result<u32> {
     let pool_path = pid_file
         .parent()
         .context("Daemon PID file has no parent directory")?;
@@ -575,6 +582,8 @@ fn start_daemon_in_rootfs(rootfs_path: &Path, pid_file: &Path) -> Result<u32> {
         rootfs_path: rootfs_path.to_path_buf(),
         hardware_profile,
         metrics_port: 9090,
+        security_profile: profile.to_string(),
+        mother_name: profile.to_string(),
     };
 
     // Start the daemon in background

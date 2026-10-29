@@ -117,6 +117,8 @@ impl Default for SupervisorConfig {
                 rootfs_path: PathBuf::from("/"),
                 hardware_profile: None,
                 metrics_port: 9090,
+                security_profile: "sandbox".to_string(),
+                mother_name: "sandbox".to_string(),
             },
             auto_restart: true,
             max_restart_attempts: MAX_RESTART_ATTEMPTS,
