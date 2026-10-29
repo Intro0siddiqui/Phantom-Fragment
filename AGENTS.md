@@ -350,11 +350,11 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 - **Status**: ✅ **Production Ready**
 
 ### Tier 2: Warm Fragments / Mother Fragments
-- **Command**: `phantom warm fragment create alpine 3` then `phantom run --warm alpine <cmd>`
-- **Mechanism**: Pre-warmed daemon processes ("mother fragments") that stay alive and fork on demand
-- **Performance**: Faster than cold start (avoids image setup overhead)
+- **Command**: `phantom warm create alpine 3` then `phantom run --warm alpine <cmd>`
+- **Mechanism**: The daemon forks one long-lived, pre-sandboxed "mother fragment" at startup. The mother applies cgroup, userns/mount ns, chroot, tmpfs, Landlock, caps and seccomp **once**, then serves each request by forking and `exec`ing the child over a daemon↔mother socketpair. The security profile is bound at pool creation (`warm create -p`), and a mismatched `PHANTOM_PROFILE` is refused.
+- **Performance**: Faster than cold start (no per-request sandbox setup)
 - **Use Case**: When you need faster startup than cold, without pre-fork complexity
-- **Status**: 🚧 **Beta/Experimental** - Currently has significant limitations (daemon stability, IPC issues)
+- **Status**: 🚧 **Beta/Experimental** - Mother is now pre-sandboxed (Phase 3.4/3.5), but output is still discarded (D2) and per-session concurrency/output streaming is Phase 2
 
 ### Tier 3: Zygote Pool (Fastest)
 - **Command**: `phantom run --zygote alpine <cmd>`
@@ -371,7 +371,7 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | <1ms in benchmarks; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) has landed, but output is still discarded (D2) and the daemon still re-applies setup per fork — the "mother fragment" is not yet a pre-sandboxed process (Phase 3 pending).
+**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed, but output is still discarded (D2) and per-session concurrency/output streaming is still Phase 2.
 
 See `docs/architecture/components/warm-fragment-roadmap.md` for full implementation details.
 
@@ -465,7 +465,7 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 | Status | Count | Commands |
 |--------|-------|----------|
 | **Complete** | 25 | run, create, delete, list, logs, health, metrics, clean, search, images, network, profile, inspect, update, restart, monitor, benchmark, volume, debug, stop, status, explain, build, migrate, registry |
-| **Partial** | 2 | warm (Phase 1 landed; output still discarded = D2, Phase 2/3 pending), security scan (placeholder) |
+| **Partial** | 2 | warm (Phase 1 + 3.4/3.5 mother landed; output still discarded = D2, Phase 2 pending), security scan (placeholder) |
 | **Minimal** | 0 | — |
 
 ### Tools

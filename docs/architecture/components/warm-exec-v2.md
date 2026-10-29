@@ -446,25 +446,41 @@ existing property that length is validated *before* allocation, for every new ty
 
 ## 5. Phase 3 — Remove the client-side 28 ms
 
-**Implementation reality (divergence to close).** The intended "mother fragment" design is
-a *pre-sandboxed* process: chroot + namespaces + seccomp + Landlock + cgroup are applied
-once at pool-fill time, and running a command is just forking that process and `exec`'ing
-in the child. **The current implementation does not do this.** The daemon is the unified
-`phantom` binary running in `--internal-warm-daemon` mode and re-applies chroot, the
-mount namespace, cgroup membership, Landlock, capabilities and seccomp on *every* fork
-(`daemon/warm.rs::execute_command`). Phase 3 is the work that closes this gap (in
-particular 3.4 and 3.5); it is **not done yet** — do not describe the daemon as a
-pre-sandboxed mother fragment.
+**Implementation status (3.4 + 3.5 landed in `fdb10ea`).** The "mother fragment" is now a
+*pre-sandboxed* process. `WarmDaemon::new` forks exactly one mother after binding the
+listener and before starting the metrics thread or the tokio runtime. The mother closes
+every inherited fd except 0/1/2 and its socketpair end, opens the host `/dev/null`,
+then applies the sandbox **once**: cgroup membership (from `hardware_profile`),
+`unshare(CLONE_NEWUSER|CLONE_NEWNS)`, uid/gid maps, `MS_PRIVATE|MS_REC`, `chroot` into
+the image, tmpfs on `/tmp` and `/dev/shm`, Landlock (profile `file_write`), capability
+drop + `no_new_privs`, and the profile's seccomp filter. It then blocks on the
+daemon↔mother `socketpair`.
+
+Per request the daemon sends the existing v1 `ExecRequest` payload over that socketpair;
+the mother reads one framed message, `fork(2)`s, redirects the child's 0/1/2 from the
+pre-opened `/dev/null`, applies the request environment, and `execvp`s. The mother
+`wait4`s the child and returns `ExecResponse`; the request path is
+`read_message` (the socketpair read, `recvmsg`-class) → `fork` → `execve` → `wait4`.
+No cgroup/userns/chroot/mount/Landlock/caps/seccomp work remains on the hot path.
+
+The security profile is bound to the pool at creation (`phantom warm create -p/--profile`,
+default `sandbox`) and passed to the daemon as `--profile`. A request whose
+`PHANTOM_PROFILE` differs is refused before the mother is contacted, so a sandbox pool
+can never silently serve a hardened request with weaker confinement. Named mothers
+(`--mother` selection, multiple profiles per pool) are the next increment; `mother_name`
+is already stored in `DaemonConfig` for it. The mother is forked once; it is not
+re-forked per request. Its parent-death signal is `SIGKILL`, so `warm remove` (which
+SIGKILLs the daemon) cannot leave an orphaned chrooted process behind.
 
 This is where the actual speed lives, and none of it is protocol work.
 
-| # | Change | Expected |
+| # | Change | Status |
 |---|---|---|
-| 3.1 | Pool state lives in the daemon; `meta.json` becomes a crash-recovery artifact written on change, not per request. Drop the two `sync_all()` calls from the hot path. | −1.4 ms |
-| 3.2 | Client sends `image_ref`; the daemon caches the resolved rootfs path. Client does one `stat`, not a directory scan. | −5…10 ms |
-| 3.3 | Stop re-initialising `ImagePuller::with_config` + config + paths on the exec path; one lazily-initialised context. | −5…10 ms |
-| 3.4 | Exec into a **pre-forked child**, not a fresh `fork` from the 31-thread, 237-VMA tokio daemon. Pool children block in `recvmsg()` on a `socketpair`; per-request work is `recvmsg` → `dup2` → `execve`. | 2.4 ms → ~1 ms |
-| 3.5 | Move `chroot`, mount ns, cgroup membership, seccomp and Landlock to **pool-fill time** — they are properties of image+policy, not of `argv`. | removes per-request setup |
+| 3.1 | Pool state lives in the daemon; `meta.json` becomes a crash-recovery artifact written on change, not per request. Drop the two `sync_all()` calls from the hot path. | planned |
+| 3.2 | Client sends `image_ref`; the daemon caches the resolved rootfs path. Client does one `stat`, not a directory scan. | planned |
+| 3.3 | Stop re-initialising `ImagePuller::with_config` + config + paths on the exec path; one lazily-initialised context. | planned |
+| 3.4 | Exec into a **pre-forked child**, not a fresh `fork` from the 31-thread, 237-VMA tokio daemon. Pool children block in `recvmsg()` on a `socketpair`; per-request work is `recvmsg` → `dup2` → `execve`. | ✅ `fdb10ea` |
+| 3.5 | Move `chroot`, mount ns, cgroup membership, seccomp and Landlock to **pool-fill time** — they are properties of image+policy, not of `argv`. | ✅ `fdb10ea` |
 | 3.6 | Independent session tasks (§4.6) so concurrency stops being serialised. | removes the queue |
 
 Budget after Phase 3:
