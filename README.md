@@ -1,53 +1,57 @@
 # Phantom Fragment
 
-A high-performance, rootless container runtime engineered for sub-millisecond execution and line-rate security.
+A low-latency, rootless container runtime with measured cold starts and layered kernel sandboxing.
 
 ## 🚀 Project Overview
 
-**Phantom Fragment** is a specialized execution engine designed to bridge the gap between native process performance and container isolation. By leveraging a hybrid architecture of **Rust** and **Zig**, it eliminates the overhead inherent in traditional daemon-based runtimes like Docker.
+**Phantom Fragment** is a specialized execution engine designed to bridge the gap between native process performance and container isolation. It is written primarily in **Rust**, with **Zig** used for low-level process and memory components, and it avoids a long-running daemon for normal cold execution.
 
 ### Core Value Proposition:
-- **Elite Performance**: ~7x faster cold starts than Docker (~45ms vs ~330ms).
-- **Extreme Efficiency**: 9.0MB static binary with zero background daemon memory.
-- **Line-Rate Security**: Proactive enforcement via BPF-LSM and Landlock, providing deeper isolation than standard namespaces.
-- **Rootless by Design**: Operates entirely without elevated privileges, utilizing user namespaces and modern kernel features.
+- **Measured Performance**: ~32 ms cold start on the reference machine, versus ~330 ms for Docker (~10× faster).
+- **Small Footprint**: ~19 MB binary, dynamically linked against glibc, OpenSSL and libseccomp; no daemon memory when no warm daemon is running.
+- **Layered Security**: Seccomp, Landlock, cgroups v2 and capability dropping by default; optional BPF-LSM on kernels that support it (requires root).
+- **Rootless by Design**: Normal execution uses user namespaces and `bubblewrap`, without elevated privileges.
 
 ## 📊 Actual Performance (Verified)
 
 *System: Intel i3-6006U @ 2.00GHz, Linux 6.18.9, 7.5GB RAM*
 
 > ⚠️ **BETA WARNING: Warm Start Feature**
-> 
-> The Warm Start feature is currently in **beta/experimental** stage and may be unreliable.
-> - May fallback to cold start automatically if warm fragment is unavailable
-> - Actively being improved for production readiness
-> - Use with caution in production environments
+>
+> Warm start is **beta/experimental** and not production-ready:
+> - stdout/stderr from the workload are currently discarded (D2), and there is no stdin or PTY support.
+> - The daemon still re-applies sandbox setup per request (Phase 3 is in progress).
+> - It may fall back to cold start automatically if a warm fragment is unavailable.
 
-| Metric | Phantom Fragment | Docker | Improvement |
-|--------|---------|--------|-------|
-| **Warm Start (Beta/Experimental)** | **~5-10ms (unreliable)** | ~330ms | **~33× Faster (when working)** |
-| **Cold Start** | **~45ms** | ~330ms | **~7× Faster** |
-| **Binary Size** | **19MB** | 161MB | **~8× Smaller** |
-| **Daemon RSS** | **0 MB** | ~92MB | **Zero Overhead** |
-| **Runtime RSS** | **~1.7MB** | ~15MB | **~8× More Efficient** |
+| Metric | Phantom Fragment | Docker | Notes |
+|--------|------------------|--------|-------|
+| **Cold Start** | **~32 ms (measured)** | ~330 ms | **~10× faster** |
+| **Warm Start (Beta/Experimental)** | **~37–40 ms before the Phase 3 rewrite** | — | Target floor is ~12 ms; the CLI alone costs ~9 ms, so shell-level warm runs cannot go below that |
+| **Binary Size** | **~19 MB** | — | Dynamically linked: glibc, OpenSSL, libseccomp |
+| **Daemon RSS** | **0 MB cold / ~25 MB per warm daemon** | — | Warm daemons are started on demand |
+
 ## 🛠️ System Architecture
 
 Phantom Fragment utilizes a tiered isolation model, selecting the optimal execution path based on the workload's risk profile:
 
-1. **Zygote Engine (Zig)**: A high-performance process pool that bypasses standard `fork/exec` overhead for sub-millisecond warm starts.(note zygote engine is a technology that is actively being developed currently in beta and had bugs)
+1. **Zygote Engine (Zig)**: An experimental pre-forked process pool targeting low-latency spawns. It is **beta**, and it cannot apply seccomp or Landlock; when a security policy is requested, `--zygote` silently falls back to normal execution.
 2. **Adaptive Execution (Rust)**: Orchestrates namespaces, cgroups v2, and hardware isolation (NUMA/CPU affinity).
-3. **Kernel Sentry (eBPF)**: BPF-LSM hooks provide programmatic, un-bypassable security checks at the kernel boundary.
+3. **Kernel Sentry (eBPF)**: Optional BPF-LSM hooks (kernel 5.7+ and `CAP_SYS_ADMIN`/root required) add kernel-boundary checks; without them the runtime applies no BPF-LSM policy.
 4. **Filesystem Sandbox (Landlock)**: Fine-grained, path-based access control that follows the process even across namespace boundaries.
 
 ## ✅ Working Features
 
 - **OCI Compatibility**: Full support for pulling and executing standard images (Alpine, Ubuntu, etc.) from Docker Hub.
 - **Rootless Execution**: Leverages `bubblewrap` and user namespaces for secure, non-privileged operation.
-- **Security Stack**: Integrated BPF-LSM, Landlock, and Seccomp with graceful degradation for older kernels.
+- **Security Stack**: Seccomp and Landlock with graceful degradation for older kernels.
 - **Hardware Isolation**: Native NUMA node binding and CPU affinity management.
 - **WASM Support**: Native WebAssembly execution mode using Wasmtime/WASI.
-- **Warm Fragments (Beta/Experimental)**: Pre-warmed daemon processes for faster startup (currently unstable; may fallback to cold start).
-- **MCP Integration**: First-class support for AI agents via the Model Context Protocol.
+
+## 🚧 Beta / Partial Features
+
+- **Warm Fragments (Beta)**: Pre-warmed daemon processes for faster startup. Workload output is discarded, there is no stdin/PTY, and sandbox setup is re-applied per request (Phase 3 in progress); may fall back to cold start.
+- **Zygote Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested.
+- **BPF-LSM (Partial)**: Optional and requires kernel 5.7+ plus `CAP_SYS_ADMIN` (root); it degrades to no BPF-LSM enforcement otherwise. The unified privilege prompt can suggest a sudo re-run, but it does not elevate yet.
 
 ## ⚡ Quick Start
 
