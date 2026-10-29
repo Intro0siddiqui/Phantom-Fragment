@@ -9,7 +9,7 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 ### Core Value Proposition:
 - **Measured Performance**: ~32 ms cold start on the reference machine, versus ~330 ms for Docker (~10× faster).
 - **Small Footprint**: ~19 MB binary, dynamically linked against glibc, OpenSSL and libseccomp; no daemon memory when no warm daemon is running.
-- **Layered Security**: Seccomp, Landlock, cgroups v2 and capability dropping by default; optional BPF-LSM on kernels that support it (requires root).
+- **Layered Security**: The warm path applies seccomp, Landlock, cgroups v2 and capability dropping. The cold bubblewrap path currently applies namespace isolation only; seccomp/Landlock on cold image execution is an open gap. Optional BPF-LSM on kernels that support it (requires root).
 - **Rootless by Design**: Normal execution uses user namespaces and `bubblewrap`, without elevated privileges.
 
 ## 📊 Actual Performance (Verified)
@@ -43,7 +43,7 @@ Phantom Fragment utilizes a tiered isolation model, selecting the optimal execut
 
 - **OCI Compatibility**: Full support for pulling and executing standard images (Alpine, Ubuntu, etc.) from Docker Hub.
 - **Rootless Execution**: Leverages `bubblewrap` and user namespaces for secure, non-privileged operation.
-- **Security Stack**: Seccomp and Landlock with graceful degradation for older kernels.
+- **Security Stack (warm path)**: Seccomp and Landlock with graceful degradation for older kernels. The cold bubblewrap path does not apply them yet.
 - **Hardware Isolation**: Native NUMA node binding and CPU affinity management.
 - **WASM Support**: Native WebAssembly execution mode using Wasmtime/WASI.
 
