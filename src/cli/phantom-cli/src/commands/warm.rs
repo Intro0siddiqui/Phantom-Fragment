@@ -265,6 +265,15 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             print_header("Remove Fragment Pool (beta/experimental)");
             print_divider_full();
             println!("\n{} Removing fragment pool for: {}", "→".yellow(), image);
+            // Kill the daemons before deleting the directory: otherwise the
+            // PID files vanish with it and the daemons (now setsid'd and
+            // reparented to init) leak as orphans listening on unlinked
+            // sockets. See D12 in warm-exec-v2.md.
+            let dir = pool_dir(&image);
+            let killed = kill_existing_daemons(&dir).unwrap_or(0);
+            if killed > 0 {
+                println!("{} Stopped {} daemon(s).", "→".yellow(), killed);
+            }
             FragmentPool::remove(&image)?;
             println!("{} Fragment pool removed.", "✓".green().bold());
             Ok(())
@@ -273,6 +282,15 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             print_header("Remove All Fragment Pools (beta/experimental)");
             print_divider_full();
             println!("\n{} Removing all fragment pools...", "→".yellow());
+            // Stop every daemon first, same reason as Remove.
+            let pools_dir = crate::config::PhantomPaths::new().fragment_pools();
+            if pools_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&pools_dir) {
+                    for entry in entries.flatten() {
+                        let _ = kill_existing_daemons(&entry.path());
+                    }
+                }
+            }
             FragmentPool::remove_all()?;
             println!("{} All fragment pools removed.", "✓".green().bold());
             Ok(())

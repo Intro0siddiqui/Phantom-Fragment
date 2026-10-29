@@ -174,6 +174,20 @@ work.
 > exactly `[prog, alpha, beta]`. Live: `ls /etc/alpine-release` and `test -e …` both
 > exit 0 under warm, `cat /etc/alpine-release` inside the child prints `3.24.3`.
 
+### D12 — `warm remove` leaks the daemon (found 2026-10-29)
+
+`FragmentPool::remove()` is `fs::remove_dir_all(&dir)`. It deletes the pool directory
+(and with it the PID files) but never signals the daemon. Because 1.3 (setsid + cleared
+PDEATHSIG) deliberately detaches the daemon from its launcher, nothing kills it: the
+process is reparented to init and keeps listening on the now-unlinked socket, ~25 MB RSS
+wasted indefinitely. The follow-up `warm create` could not find a PID file to kill, so
+it spawned a second daemon on the same path (two inodes, one listening socket).
+
+> **Fixed.** `warm remove` and `warm remove-all` now call `kill_existing_daemons()` on
+> the pool directory *before* deleting it, and wait for the daemons to exit. The
+> `warm create` path already did this; `remove` simply never had. Verified: the
+> daemon is gone within ~1 s of `warm remove`.
+
 ## 2. Non-goals
 
 Explicitly out of scope for this plan, so they stop being conflated with it:
