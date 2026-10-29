@@ -60,6 +60,14 @@ const HEADER_SIZE: usize = 10;
 /// real field (see `docs/architecture/components/warm-exec-v2.md`).
 pub const PROFILE_ENV: &str = "PHANTOM_PROFILE";
 
+/// Marker prefix for a pool/profile mismatch in an error response.
+///
+/// The client must treat this as fatal instead of falling back to cold: a
+/// mismatch means the caller explicitly asked for a profile the pool was not
+/// built with, and running the command through another engine would silently
+/// answer a different question. The marker keeps the v1 payload unchanged.
+pub const PROFILE_MISMATCH_MARKER: &str = "warm profile mismatch:";
+
 /// Landlock access flags understood by `landlock-rs`'s rule encoding
 /// (`0x2` = write, `0x4` = execute; read is always implied).
 const LL_ACCESS_WRITE: u64 = 0x2;
@@ -1563,7 +1571,8 @@ impl WarmDaemon {
             .unwrap_or(self.config.security_profile.as_str());
         if profile_name != self.config.security_profile {
             anyhow::bail!(
-                "warm pool '{}' is bound to profile '{}' but request asked for '{}'",
+                "{} warm pool '{}' is bound to profile '{}' but request asked for '{}'",
+                PROFILE_MISMATCH_MARKER,
                 self.config.mother_name,
                 self.config.security_profile,
                 profile_name

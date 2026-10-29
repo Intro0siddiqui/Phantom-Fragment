@@ -125,8 +125,11 @@ pub struct RunArgs {
     pub runtime: Option<String>,
 
     /// Security profile (direct, sandbox, hardened, wasm)
-    #[arg(short, long, default_value = "sandbox")]
-    pub profile: String,
+    ///
+    /// `None` means the caller did not choose one. Cold execution then uses
+    /// `sandbox`, but the warm path lets the pool's bound profile decide.
+    #[arg(short, long)]
+    pub profile: Option<String>,
 
     /// Run as WebAssembly module
     #[arg(long, help = "Run as WebAssembly module")]
@@ -227,18 +230,23 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
     // Use image USER if not running as root
     let effective_user = if root { None } else { image_user };
 
+    // Distinguish "no profile chosen" from "sandbox chosen explicitly": the
+    // warm pool already carries a bound profile, and an explicit request that
+    // disagrees with it must fail instead of falling back to another engine.
+    let requested_profile = profile.clone();
+
     let profile_name = if wasm {
         "wasm".to_string()
     } else if let Some(ref img) = final_image {
         if img.ends_with(".wasm") {
             "wasm".to_string()
         } else {
-            profile
+            profile.unwrap_or_else(|| "sandbox".to_string())
         }
     } else if !final_command.is_empty() && final_command[0].ends_with(".wasm") {
         "wasm".to_string()
     } else {
-        profile
+        profile.unwrap_or_else(|| "sandbox".to_string())
     };
 
     // Get hardware profile from profile settings for cgroup limits
@@ -321,7 +329,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                                                 &final_command,
                                                 &socket_path,
                                                 hardware_profile.as_ref(),
-                                                &profile_name,
+                                                requested_profile.as_deref(),
                                             ) {
                                                 Ok(exit_code) => {
                                                     let _ = pool.release_pid(pid);
@@ -338,6 +346,27 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                                                     return Ok(());
                                                 }
                                                 Err(e) => {
+                                                    let message = format!("{:#}", e);
+                                                    if message.contains(
+                                                        crate::daemon::PROFILE_MISMATCH_MARKER,
+                                                    ) {
+                                                        // The caller named a profile the pool
+                                                        // was not built with. Do not purge a
+                                                        // healthy daemon and do not answer the
+                                                        // request through a different engine.
+                                                        // Return the slot so the pool stays
+                                                        // usable for matching requests.
+                                                        let _ = pool.release_pid(pid);
+                                                        ui::error_with_prefix("✗", &message);
+                                                        return Err(anyhow::anyhow!(
+                                                            "warm pool for '{}' uses a different security profile; \
+                                                             create a pool with `phantom warm create {} -p {}` \
+                                                             or omit --profile",
+                                                            image_ref,
+                                                            image_ref,
+                                                            profile_name
+                                                        ));
+                                                    }
                                                     ui::warn(&format!(
                                                         "Warm execution failed: {:?}, falling back to cold",
                                                         e
@@ -735,7 +764,7 @@ fn fork_from_daemon(
     command: &[String],
     socket_path: &std::path::Path,
     hardware_profile: Option<&execution_rs::HardwareProfile>,
-    profile_name: &str,
+    profile_name: Option<&str>,
 ) -> anyhow::Result<i32> {
     use crate::daemon::{exec_in_daemon, ExecRequest, PROFILE_ENV};
 
@@ -743,11 +772,13 @@ fn fork_from_daemon(
         anyhow::bail!("Socket file not found - daemon may have crashed");
     }
 
-    // The v1 wire format has no profile field, so the resolved profile name
-    // rides in the env map under a reserved key. The daemon strips it before
-    // exec and enforces the matching policy in the child.
+    // The v1 wire format has no profile field, so an explicitly chosen profile
+    // name rides in the env map under a reserved key. When the caller did not
+    // choose one, send nothing and let the pool's bound profile apply.
     let mut env = std::collections::HashMap::new();
-    env.insert(PROFILE_ENV.to_string(), profile_name.to_string());
+    if let Some(name) = profile_name {
+        env.insert(PROFILE_ENV.to_string(), name.to_string());
+    }
 
     // Build the execution request
     let request = ExecRequest {
