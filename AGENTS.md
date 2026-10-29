@@ -371,7 +371,7 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | <1ms in benchmarks; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status with significant limitations.
+**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) has landed, but output is still discarded (D2) and the daemon still re-applies setup per fork — the "mother fragment" is not yet a pre-sandboxed process (Phase 3 pending).
 
 See `docs/architecture/components/warm-fragment-roadmap.md` for full implementation details.
 
@@ -407,9 +407,9 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 | **Storage** | 4 | 4 | 0 | 0 |
 | **Monitoring** | 3 | 2 | 1 | 0 |
 | **Memory** | 2 | 2 | 0 | 0 |
-| **CLI** | 27 | 24 | 2 | 1 |
+| **CLI** | 27 | 25 | 2 | 0 |
 | **Tools** | 4 | 4 | 0 | 0 |
-| **Total** | **55** | **49 (89%)** | **5 (9%)** | **1 (2%)** |
+| **Total** | **55** | **50 (91%)** | **5 (9%)** | **0 (0%)** |
 
 ### Core Subsystems
 
@@ -464,9 +464,9 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 
 | Status | Count | Commands |
 |--------|-------|----------|
-| **Complete** | 24 | run, create, delete, list, logs, health, metrics, clean, search, images, network, profile, inspect, update, restart, monitor, benchmark, volume, debug, stop, status, explain, build, migrate |
-| **Partial** | 2 | warm (daemon stability issues), security scan (placeholder) |
-| **Minimal** | 1 | registry (12-line placeholder) |
+| **Complete** | 25 | run, create, delete, list, logs, health, metrics, clean, search, images, network, profile, inspect, update, restart, monitor, benchmark, volume, debug, stop, status, explain, build, migrate, registry |
+| **Partial** | 2 | warm (Phase 1 landed; output still discarded = D2, Phase 2/3 pending), security scan (placeholder) |
+| **Minimal** | 0 | — |
 
 ### Tools
 

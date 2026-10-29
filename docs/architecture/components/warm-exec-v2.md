@@ -70,6 +70,11 @@ This is an escape primitive, not a missing feature: a user who expects isolation
 (`warm.rs:1158-1166`) — i.e. the daemon's `/dev/null`. `run.rs:325-337` consumes only an
 exit code. `echo hi` over warm prints nothing.
 
+> **Status: Open.** Verified against current code: the daemon is still spawned with
+> `Stdio::null()` ×3 (`daemon/warm.rs:2053-2055`) and the child inherits them;
+> `exec_in_daemon` still returns only an `ExecResponse` exit code. Closed by Phase 2
+> (fd handoff / framed stdout).
+
 ### D3 — the protocol is one-request-one-response
 
 `handle_client` reads exactly one frame, dispatches, writes exactly one reply, closes the
@@ -77,17 +82,27 @@ socket (`warm.rs:709-763`). There is no session, no sequence number, no frame ki
 the response layout (`warm.rs:1434-1458`) is a single terminal struct. Adding output is
 therefore not a field addition — it is a change of shape.
 
+> **Status: Open.** `handle_client` still reads one frame, dispatches, writes one reply,
+> closes (`daemon/warm.rs:884-928`). Closed by Phase 2 (ExecV2 session protocol).
+
 ### D4 — the client retries the whole request on any failure
 
 `exec_in_daemon` (`warm.rs:1733-1831`) retries the entire request up to 3×. Harmless today
 because a failed reply means nothing ran. Once output streams, a mid-stream failure
 **re-executes the command** — duplicate side effects on `rm -rf`.
 
+> **Status: Open.** `exec_in_daemon` still retries the whole request up to 3×
+> (`daemon/warm.rs:2113`, `for attempt in 1..=3`). Closed by Phase 2 (retry only before
+> `ExecStarted`).
+
 ### D5 — one exec blocks the whole daemon
 
 `handle_client` runs inline under `block_in_place` with `&mut self`
 (`warm.rs:672-682`, `run_test_loop` at `1570-1580`). A long-running command stalls every
 other client, including health checks.
+
+> **Status: Open.** `handle_client` still runs inline under `block_in_place` with
+> `&mut self` (`daemon/warm.rs:844-848`). Closed by Phase 2/3 (per-session tasks).
 
 ### D6 — the daemon inherits the launching shell's session
 
@@ -116,6 +131,10 @@ silently breaks every supervisor health check. It must use the real codec.
 (`fragment_pool.rs:188-227`, `125-150`), and `FragmentPool::list()` scans directories.
 Two fsyncs (~0.68 ms each on this fs) plus a directory scan, per request, for state the
 daemon already holds in memory.
+
+> **Status: Open.** `FragmentPool::save()` still calls `sync_all()` on the temp file
+> (`fragment_pool.rs:308`); `acquire_pid`/`release_pid` still call `save()` per request.
+> Closed by Phase 3.1 (pool state in daemon, meta.json as crash-recovery artifact).
 
 ### D9 — Landlock is applied without TSYNC
 
@@ -146,7 +165,7 @@ non-numeric `user`. Pre-existing: the last change to `rootfs_executor.rs` was a 
 (`4d0e8d7`), and nothing in the warm work touches it. Fix by resolving the name to a uid
 (or omitting `--uid` when it is not numeric) before building the bwrap argv.
 
-> **Fixed.** `rootfs_executor.rs` now resolves `user[:group]` before building the bwrap
+> **Fixed (`8081893`).** `rootfs_executor.rs` now resolves `user[:group]` before building the bwrap
 > argv: numeric ids pass through, names are looked up against the **image's**
 > `/etc/passwd` and `/etc/group` (not the host's), and a user-only spec defaults the gid
 > to that user's primary group instead of the user string. If a name cannot be resolved
@@ -169,7 +188,7 @@ $ phantom run --warm alpine sh -c 'exit 3'           # exit 3 — masked the bug
 round of warm tests. Pre-existing since v1.0.0 (`61e5a63`), not introduced by the warm
 work.
 
-> **Fixed in `fix(warm)`.** The empty entry was removed. `test_exec_passes_exact_argv`
+> **Fixed in `925d88f`.** The empty entry was removed. `test_exec_passes_exact_argv`
 > runs a rootfs probe that records `$#` and each argument, and asserts the child sees
 > exactly `[prog, alpha, beta]`. Live: `ls /etc/alpine-release` and `test -e …` both
 > exit 0 under warm, `cat /etc/alpine-release` inside the child prints `3.24.3`.
@@ -183,7 +202,7 @@ process is reparented to init and keeps listening on the now-unlinked socket, ~2
 wasted indefinitely. The follow-up `warm create` could not find a PID file to kill, so
 it spawned a second daemon on the same path (two inodes, one listening socket).
 
-> **Fixed.** `warm remove` and `warm remove-all` now call `kill_existing_daemons()` on
+> **Fixed (`b8534ca`).** `warm remove` and `warm remove-all` now call `kill_existing_daemons()` on
 > the pool directory *before* deleting it, and wait for the daemons to exit. The
 > `warm create` path already did this; `remove` simply never had. Verified: the
 > daemon is gone within ~1 s of `warm remove`.
@@ -426,6 +445,16 @@ Plus: a golden-file parser test replaying recorded byte streams (malformed lengt
 existing property that length is validated *before* allocation, for every new type.
 
 ## 5. Phase 3 — Remove the client-side 28 ms
+
+**Implementation reality (divergence to close).** The intended "mother fragment" design is
+a *pre-sandboxed* process: chroot + namespaces + seccomp + Landlock + cgroup are applied
+once at pool-fill time, and running a command is just forking that process and `exec`'ing
+in the child. **The current implementation does not do this.** The daemon is the unified
+`phantom` binary running in `--internal-warm-daemon` mode and re-applies chroot, the
+mount namespace, cgroup membership, Landlock, capabilities and seccomp on *every* fork
+(`daemon/warm.rs::execute_command`). Phase 3 is the work that closes this gap (in
+particular 3.4 and 3.5); it is **not done yet** — do not describe the daemon as a
+pre-sandboxed mother fragment.
 
 This is where the actual speed lives, and none of it is protocol work.
 

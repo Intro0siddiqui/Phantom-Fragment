@@ -1,9 +1,13 @@
 # Warm Fragment / Zygote Pool Implementation Roadmap
 
-> **Status**: BETA/EXPERIMENTAL - IN ACTIVE DEVELOPMENT | **Last Updated**: March 2026
+> **Status**: BETA/EXPERIMENTAL - IN ACTIVE DEVELOPMENT | **Last Updated**: 2026-10-29
 >
 > ⚠️ **Stale.** Socket IPC now exists, the pool is connected to execution, and the daemon
-> no longer exits immediately. For the current state and the protocol design, see
+> no longer exits immediately. Phase 1 (correctness) of `warm-exec-v2.md` has landed:
+> chroot (`9bfb691`), security stack + setsid (`da29af7`), real health probe (`1802f71`),
+> Landlock TSYNC (`717b708`), clone3/argv (`925d88f`), remove-leak (`b8534ca`).
+> Phase 2 (protocol v2) and Phase 3 (pre-forked mother fragments) are still pending.
+> For the current state and the protocol design, see
 > [`warm-exec-v2.md`](./warm-exec-v2.md).
 
 ---
@@ -57,6 +61,13 @@ This roadmap defines the implementation plan for the Warm Fragment / Zygote Pool
 | **Zygote** | A forked child from the mother, frozen/minimized until activated |
 | **Zygote Pool** | Collection of pre-forked zygotes ready to activate on demand |
 | **Fragment** | Active running container (end result when zygote is activated) |
+
+> **Implementation divergence.** A "mother fragment" is *intended* to be a pre-sandboxed
+> process (chroot + namespaces + seccomp + Landlock + cgroup applied at pool-fill time),
+> with a command being a fork+exec of it. The current daemon is instead the unified
+> `phantom` binary in `--internal-warm-daemon` mode that re-applies that setup on every
+> fork (`daemon/warm.rs::execute_command`); Phase 3 of `warm-exec-v2.md` is the work that
+> closes this gap. Do not describe the daemon as a pre-sandboxed mother fragment.
 
 ---
 
