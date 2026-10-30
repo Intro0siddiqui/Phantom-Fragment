@@ -5,6 +5,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 mod commands;
 mod config;
 mod daemon;
+mod engine;
 mod fragment_pool;
 mod fragment_registry;
 mod io_utils;
