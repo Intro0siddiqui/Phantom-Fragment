@@ -11,7 +11,7 @@ pub mod fuse_overlayfs;
 pub mod oci_config;
 pub mod proot;
 pub mod rootfs_executor;
-pub use rootfs_executor::RootfsExecutor;
+pub use rootfs_executor::{resolve_uid_gid, RootfsExecutor};
 
 use anyhow::{Context, Result};
 use flate2::read::GzDecoder;

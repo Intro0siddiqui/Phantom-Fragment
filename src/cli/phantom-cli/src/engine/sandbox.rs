@@ -94,6 +94,29 @@ pub(crate) fn apply_child_landlock(file_write: bool) -> std::result::Result<(), 
             .map_err(|e| format!("Landlock rule for {} failed: {}", path, e))?;
     }
 
+    // The standard device nodes live on their own mount, so the `/` rule does
+    // not grant access to them. A read-only profile would otherwise make every
+    // `2>/dev/null` and `>/dev/tty` fail, which breaks ordinary commands
+    // without protecting anything: these nodes discard or pass through writes.
+    for path in [
+        "/dev/null",
+        "/dev/zero",
+        "/dev/full",
+        "/dev/random",
+        "/dev/urandom",
+        "/dev/tty",
+    ] {
+        if !Path::new(path).exists() {
+            continue;
+        }
+        // A device that cannot be opened (e.g. `/dev/tty` without a controlling
+        // terminal) is simply left out: no rule means access stays denied, which
+        // is the safe direction.
+        if let Err(e) = ctx.add_rule(path, LL_ACCESS_WRITE) {
+            log::debug!("Landlock rule for {} skipped: {}", path, e);
+        }
+    }
+
     ctx.apply()
         .map_err(|e| format!("Landlock restrict_self failed: {}", e))
 }

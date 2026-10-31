@@ -5,7 +5,7 @@ use crate::io_utils::{chrono_lite_timestamp, parse_run_args};
 use crate::permission_prompt::{self, print_continue_without_info};
 use crate::ui;
 use anyhow::Context;
-use bpf_lsm_rs::{BpfLsmConfig, BpfLsmSecurity};
+use bpf_lsm_rs::BpfLsmSecurity;
 use colored::*;
 use security_rs::{CgroupPolicy, PrivilegeChoice, SeccompRule, SecurityPolicy};
 use std::path::{Path, PathBuf};
@@ -142,6 +142,14 @@ pub struct RunArgs {
     )]
     pub warm: bool,
 
+    /// Execution engine for image runs
+    ///
+    /// `auto` uses the native sandbox and falls back to bubblewrap only when the
+    /// host cannot provide the namespace primitives. A profile that requires
+    /// confinement never falls back.
+    #[arg(long, value_enum, default_value_t = crate::engine::EngineChoice::Auto)]
+    pub engine: crate::engine::EngineChoice,
+
     /// Use zygote pool for ultra-fast spawning (<1ms)
     #[arg(long, help = "Use zygote pool for ultra-fast spawning")]
     pub zygote: bool,
@@ -197,6 +205,7 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
         profile,
         wasm,
         warm,
+        engine,
         zygote,
         command,
         config: config_path_opt,
@@ -503,36 +512,22 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
             network
         };
 
-        // Initialize BPF-LSM security if supported
-        log::debug!("Checking BPF-LSM support...");
-        if BpfLsmSecurity::is_supported() {
-            log::debug!("BPF-LSM supported, initializing...");
-            match BpfLsmSecurity::new(BpfLsmConfig::default()) {
-                Ok(_security) => {
-                    ui::info("BPF-LSM:", "active (runtime syscall monitoring)");
-                }
-                Err(e) if graceful_security => {
-                    // In graceful mode, log warning but continue
-                    log::warn!(
-                        "BPF-LSM initialization failed: {}, continuing without it",
-                        e
-                    );
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!("BPF-LSM initialization failed: {}", e));
-                }
-            }
-        } else {
-            log::debug!("BPF-LSM not supported on this kernel");
-        }
+        // BPF-LSM is not attached to image fragments yet. Creating the handle
+        // here only proves the kernel supports it; nothing would be enforced,
+        // so do not claim otherwise. Seccomp, Landlock and the capability drop
+        // in the execution engine are what actually confine the command.
+        log::debug!(
+            "BPF-LSM supported: {} (not attached to image fragments)",
+            BpfLsmSecurity::is_supported()
+        );
 
-        let mut executor_builder = RootfsExecutor::new(rootfs_path)
+        let mut executor_builder = RootfsExecutor::new(rootfs_path.clone())
             .with_network(effective_network)
             .with_user_ns(!root)
             .with_proot(proot)
             .with_overlay(overlay)
             .with_mounts(root)
-            .with_runtime(runtime)
+            .with_runtime(runtime.clone())
             .with_root(root);
 
         // Apply USER from image config if specified
@@ -560,7 +555,106 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
             .open(&log_file)
             .and_then(|mut f| std::io::Write::write_all(&mut f, log_entry.as_bytes()));
 
-        let exit_code = executor_builder.execute(&final_command).await?;
+        // Engine selection: the native sandbox is the default, bubblewrap is a
+        // classified fallback. Flags that need a different mechanism (proot,
+        // overlayfs, an OCI runtime, real root, wasm) always use the bubblewrap
+        // executor, because the native engine does not implement them.
+        let native_blocked = proot || overlay || runtime.is_some() || root || wasm;
+        if native_blocked && engine == crate::engine::EngineChoice::Native {
+            anyhow::bail!(
+                "--engine native cannot be combined with --proot, --overlay, --runtime, --root or --wasm"
+            );
+        }
+        let choice = if native_blocked {
+            crate::engine::EngineChoice::Bwrap
+        } else {
+            engine
+        };
+
+        let policy = crate::engine::sandbox::resolve_child_policy(&profile_name)?;
+        // A profile that asks for confinement the bubblewrap path does not
+        // apply must never be answered by the fallback.
+        let strict_profile =
+            profile_name == "hardened" || !policy.file_write || policy.seccomp != "default";
+
+        let (inside_uid, inside_gid) = match &effective_user {
+            Some(user) => match image_puller::resolve_uid_gid(&rootfs_path, user) {
+                Some(ids) => ids,
+                None => {
+                    ui::warn(&format!(
+                        "Cannot resolve user '{}' in the image's /etc/passwd or /etc/group; \
+                         running as the invoking user",
+                        user
+                    ));
+                    (
+                        nix::unistd::getuid().as_raw(),
+                        nix::unistd::getgid().as_raw(),
+                    )
+                }
+            },
+            None => (0, 0),
+        };
+
+        let mut env: Vec<(String, String)> = std::env::vars()
+            .filter(|(key, _)| key != crate::daemon::PROFILE_ENV && key != "PATH")
+            .collect();
+        env.push((
+            "PATH".to_string(),
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string(),
+        ));
+
+        // The image's own resolv.conf is kept; with network access a file with
+        // public resolvers is bound over it so DNS works without mutating the
+        // rootfs (the bubblewrap path rewrites the file instead).
+        let resolv_conf = if effective_network {
+            let path =
+                std::env::temp_dir().join(format!("phantom-resolv-{}.conf", std::process::id()));
+            match crate::engine::native::write_resolv_conf(&path) {
+                Ok(()) => Some(path),
+                Err(e) => {
+                    ui::warn(&format!("Could not write DNS configuration: {}", e));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let exit_code = if choice == crate::engine::EngineChoice::Bwrap {
+            executor_builder.execute(&final_command).await?
+        } else {
+            let spec = crate::engine::native::NativeSpec {
+                rootfs: rootfs_path.clone(),
+                command: final_command.clone(),
+                network: effective_network,
+                inside_uid,
+                inside_gid,
+                policy,
+                env,
+                resolv_conf: resolv_conf.clone(),
+            };
+            ui::info("Engine:", "native");
+            match crate::engine::native::execute(&spec) {
+                Ok(code) => code,
+                Err(crate::engine::native::NativeFailure::Unsupported(reason))
+                    if choice == crate::engine::EngineChoice::Auto && !strict_profile =>
+                {
+                    ui::warn(&format!(
+                        "Native engine unavailable ({}); falling back to bubblewrap, which applies \
+                         namespace isolation only (no seccomp, Landlock or capability drop)",
+                        reason
+                    ));
+                    executor_builder.execute(&final_command).await?
+                }
+                Err(failure) => {
+                    anyhow::bail!("native engine: {}", failure);
+                }
+            }
+        };
+
+        if let Some(path) = &resolv_conf {
+            let _ = std::fs::remove_file(path);
+        }
 
         let timestamp = chrono_lite_timestamp();
         let exit_entry = format!("{} │ Fragment exited with code: {}\n", timestamp, exit_code);

@@ -538,7 +538,7 @@ impl RootfsExecutor {
 /// host's) is what applies inside the container. When only a user is given, the
 /// gid defaults to that user's primary group from `/etc/passwd`, falling back to
 /// the uid. Returns `None` when a name cannot be resolved.
-fn resolve_uid_gid(rootfs: &Path, spec: &str) -> Option<(u32, u32)> {
+pub fn resolve_uid_gid(rootfs: &Path, spec: &str) -> Option<(u32, u32)> {
     let (user_part, group_part) = match spec.split_once(':') {
         Some((user, group)) => (user, Some(group)),
         None => (spec, None),
