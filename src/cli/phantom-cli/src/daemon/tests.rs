@@ -125,6 +125,10 @@ mod tests {
     fn copy_host_file(rootfs: &Path, source: &Path) {
         use std::os::unix::fs::PermissionsExt;
 
+        if !source.exists() {
+            return;
+        }
+
         let destination = rootfs.join(source.strip_prefix("/").expect("source must be absolute"));
         if let Some(parent) = destination.parent() {
             fs::create_dir_all(parent)
@@ -148,14 +152,35 @@ mod tests {
         fs::create_dir_all(&rootfs).expect("Failed to create rootfs");
         fs::create_dir_all(rootfs.join("bin")).expect("Failed to create bin");
 
-        // Real /bin/sh and its runtime dependencies. `ldd /bin/sh` on this
-        // glibc box reports libc.so.6 and the /lib64 loader; glibc's built-in
-        // search path here is /usr/lib64, while ldd reports /usr/lib, so install
-        // libc under both names.
+        // Real /bin/sh and its runtime dependencies. Dynamically discover
+        // dependencies via ldd when available, and fall back to known distro paths.
         copy_host_file(&rootfs, Path::new("/bin/sh"));
-        copy_host_file(&rootfs, Path::new("/lib64/ld-linux-x86-64.so.2"));
-        copy_host_file(&rootfs, Path::new("/usr/lib64/libc.so.6"));
-        copy_host_file(&rootfs, Path::new("/usr/lib/libc.so.6"));
+
+        let candidate_libs = [
+            "/lib64/ld-linux-x86-64.so.2",
+            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+            "/usr/lib/libc.so.6",
+            "/usr/lib64/libc.so.6",
+            "/lib/x86_64-linux-gnu/libc.so.6",
+            "/lib/libc.so.6",
+            "/lib/ld-musl-x86_64.so.1",
+        ];
+        for lib in candidate_libs {
+            copy_host_file(&rootfs, Path::new(lib));
+        }
+
+        if let Ok(output) = std::process::Command::new("ldd").arg("/bin/sh").output() {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    for token in line.split_whitespace() {
+                        if token.starts_with("/") {
+                            copy_host_file(&rootfs, Path::new(token));
+                        }
+                    }
+                }
+            }
+        }
 
         // Create /bin/true mock
         let bin_true = rootfs.join("bin/true");
