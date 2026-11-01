@@ -1,11 +1,147 @@
 # Warm Exec v2 — Plan
 
-> Status: proposed · 2026-10-27 · supersedes the protocol sections of `warm-fragment-roadmap.md`
+> **Status: beta.** The tables above are current. Sections 1–9 below are the original
+> design record from 2026-10-27, kept because they explain *why* the warm path is shaped
+> the way it is. Read them as history, not as a description of today's behaviour: every
+> defect listed there has been fixed or is tracked in "Known limitations".
 
-## 0. Why this exists
+## What warm is
 
-`phantom run --warm` is not a slower version of `phantom run`. It is a different,
-incorrect program. Measured on this box (release, 14-core Ultra 5 225H, kernel 7.3.0):
+Warm is an **execution mode**, not a security level and not a second program. It runs
+the same fragment as cold; the only thing it changes is *where the latency is paid*.
+
+Cold pays, per command: create the namespaces, build the root, mount `/proc`, `/tmp` and
+`/dev`, apply the security stack, `exec`. Warm pays that once and then serves each
+command from a fragment that already exists. That is the entire idea. Everything else
+below is a different answer to "which part of cold do we refuse to pay twice".
+
+There is no separate "daemon" execution mode. The long-lived process **is** the fragment.
+The small host process that accepts sockets is only its listener; it does not run the
+command and it is not a warm method of its own.
+
+### Method 1: the mother fragment
+
+One long-lived fragment is built in the state the user runs most, and every later
+fragment is forked from it. Two kinds:
+
+- **Complete mother** — the full fragment state, image included. A fork needs no image
+  work at all: the rootfs, the mounts and the security stack are already in place.
+- **Semi mother** — holds only the expensive-to-build parts (namespaces, isolation,
+  security stack) and not the image, which is applied dynamically at runtime. Cheaper to
+  build and to keep, more work per request.
+
+Whether a mother is faster than cold was unproven for a long time: early warm runs were
+*slower*, because the mother learned of a child's exit on a 50 ms poll tick and the
+client resolved an image the fragment already owned. Both are fixed (see "Measured
+today" below), and the mother now wins clearly on the same machine.
+
+### Method 2: the zygote pool
+
+Not one fragment: a **collection of fragments created ahead of time**, then frozen and
+compressed so they cost almost no CPU and almost no RAM while idle. The mental model is
+that the user has already run many cold fragments and stored them; when one is wanted,
+the machine does not fork — the stored fragment is already exactly the desired state, so
+it only has to be made active.
+
+This is the only method that can plausibly beat cold by a wide margin, and it is also
+the one where the entire question is *restore cost*: thawing, page faults and re-mapping
+are the latency. Note that the Zig pool in this tree is **not** that yet — it pre-forks
+processes and still forks a grandchild per request (see the status table below).
+
+### Method 3: artifact / cache warm
+
+No button, no pool, no long-lived process. The first cold run of a fragment type leaves
+artifacts behind — pulled layers, an extracted rootfs, build outputs, compiled caches —
+and later cold runs reuse them, so latency drops after the first run. It is **advanced
+cold start**: the same path, less work. Today only image and rootfs reuse exists.
+
+## Terminology
+
+| Term | Definition |
+|------|------------|
+| **Fragment** | One running instance: namespaces, private root, security stack, a command |
+| **Mother fragment** | A long-lived fragment that other fragments are forked from |
+| **Complete mother** | A mother that already contains the image |
+| **Semi mother** | A mother that contains the isolation/security state but not the image; the image is applied at runtime |
+| **Zygote** | A pre-created fragment stored frozen and compressed until activated |
+| **Zygote pool** | A collection of frozen zygotes, activated on demand |
+| **Artifact cache** | On-disk products of previous cold runs, reused by later cold runs |
+
+> **Implementation note.** The mother is a pre-sandboxed process: chroot, namespaces,
+> Landlock, capability drop, seccomp and (when delegated) a cgroup are applied once at
+> pool-fill time; each request is a `fork` + `exec` of it. It is forked by a small
+> host-side listener that owns the Unix socket, because a process inside a mount
+> namespace cannot accept a host path. The listener is not the fragment.
+
+---
+
+## Status of each method
+
+| Method | Status | What exists today |
+|---|---|---|
+| **Mother fragment** | Implemented, beta | One pre-sandboxed mother per pool, forked once at pool fill; chroot, user/mount/PID/IPC/UTS namespaces, procfs, Landlock, caps, seccomp and (when delegated) a cgroup applied once. Each request is a `fork` + `exec` with the caller's stdin/stdout/stderr passed over the socket (SCM_RIGHTS); when stdin is a terminal the client allocates a pty instead and proxies it. Ctrl+C/SIGTERM are relayed to the command, and a slot whose client dies is reclaimed. Profile is bound at creation and a mismatch is a hard error. A slot whose daemon died (crash, reboot) is rebuilt on the next run with the pool's profile instead of degrading the pool to cold forever. |
+| **Semi mother** | Not implemented | The pool always builds a complete mother for one image. There is no image-less mother with the image applied per request. |
+| **Zygote pool** | Partial, different model | The Zig pool pre-forks processes and, per request, `unshare`s the mount ns, `pivot_root`s into the rootfs and forks a grandchild to `execve`. It is a spawn accelerator, not frozen-state activation: no thawing, no compression, no restore. It applies no seccomp, Landlock or capability drop, so `run --zygote` skips it whenever a policy is requested. Not connected to the mother path. |
+| **Artifact / cache warm** | Partial | Pulled layers, the extracted rootfs and the build cache are reused by later cold runs. There is no compiled-artifact or executed-work cache, and nothing measures the latency drop. |
+
+### Known limitations
+
+| Limitation | Impact |
+|---|---|
+| One command per fragment at a time (D5) | A long-running command blocks health checks on that fragment; scale the pool instead of queueing |
+| Pty output is merged | With a terminal, stdout and stderr are one stream, as in `docker run -t` |
+| No semi mother | Every pool pays full image setup, even for images used only briefly |
+| Zygote is not frozen-state activation | No restore path, so it cannot reach the sub-millisecond target by activation |
+| No artifact cache beyond images | Repeated cold runs redo work that a compiler-cache model would keep |
+
+### Measured today (2026-10-31)
+
+Release build, same box, `alpine` cached, command `true`, 30 samples after 3 warm-ups,
+median (min in parentheses):
+
+| Path | Time |
+|---|---|
+| `phantom --version` | 7 ms |
+| cold `run alpine true` | 39 ms (30) |
+| warm `run --warm alpine true` | 11 ms (10) |
+| rootless `podman run --rm alpine:latest true` | 378 ms (337) |
+| direct daemon RPC `Exec` | 2–3 ms |
+
+Warm is ~3.5× faster than cold and ~34× faster than rootless podman. Two fixes produced
+that, and both were latency, not security: the mother now waits on a `pidfd` instead of
+a 50 ms poll tick, and the client no longer builds a registry client and opens the image
+store to resolve a rootfs the fragment already has.
+
+### Key files
+
+```
+src/cli/phantom-cli/src/
+├── commands/warm.rs          # warm create/list/remove/benchmark
+├── commands/run.rs           # run dispatch (cold, --warm, --zygote)
+├── daemon/warm.rs            # host listener + pre-sandboxed mother + per-request fork
+├── engine/sandbox.rs         # shared Landlock/caps/seccomp stack
+├── fragment_pool.rs          # pool metadata
+└── config.rs                 # paths
+
+src/core/zygote-rs/
+├── src/lib.rs                # Rust wrapper around the Zig pool
+└── src/zygote.zig            # clone/fork, unshare, pivot_root, execve
+```
+
+---
+
+---
+
+## 0. Why this plan existed (2026-10-27)
+
+> **Historical.** This section describes the state before Phase 1. In particular, the
+> "warm" row below — host binary, no chroot, no security stack — is no longer true: the
+> mother is now pre-sandboxed and refuses profile mismatches. The measurements are kept
+> because they are still the only end-to-end numbers recorded for the warm path.
+
+At the time, `phantom run --warm` was not a slower version of `phantom run`. It was a
+different, incorrect program. Measured on this box (release, 14-core Ultra 5 225H,
+kernel 7.3.0):
 
 | Path | Time | What actually runs |
 |---|---|---|
@@ -70,10 +206,13 @@ This is an escape primitive, not a missing feature: a user who expects isolation
 (`warm.rs:1158-1166`) — i.e. the daemon's `/dev/null`. `run.rs:325-337` consumes only an
 exit code. `echo hi` over warm prints nothing.
 
-> **Status: Open.** Verified against current code: the daemon is still spawned with
-> `Stdio::null()` ×3 (`daemon/warm.rs:2053-2055`) and the child inherits them;
-> `exec_in_daemon` still returns only an `ExecResponse` exit code. Closed by Phase 2
-> (fd handoff / framed stdout).
+> **Fixed (2026-10-31).** `exec_in_daemon` hands its stdio to the daemon with the request
+> (`write_message_with_fds`, `SCM_RIGHTS`); the daemon forwards them to the mother and the
+> forked child `dup2`s them onto 0/1/2 before `exec`. Both sides close their copies
+> immediately, so a pipe still sees EOF. When stdin is a terminal the client allocates a
+> pty instead, because a descriptor inherited from the caller's terminal cannot be read
+> from the mother's session (see D14). Verified: `run --warm alpine sh -c 'echo one;
+> echo two >&2; exit 7'` prints both streams, returns 7, and accepts piped stdin.
 
 ### D3 — the protocol is one-request-one-response
 
@@ -146,7 +285,8 @@ the fix is one method call.
 
 > **Fixed in `717b708`.** The ruleset now requests TSYNC and inspects
 > `RestrictionStatus::all_threads`; on ABI < 8 it logs a warning and keeps the previous
-> thread-scoped behaviour. See `docs/security/security-line-rate.md` for the scope table.
+> thread-scoped behaviour. See "Landlock enforcement scope" in
+> [`native-executor.md`](./native-executor.md).
 
 ### D10 — cold execution passes a non-numeric user to bwrap (found 2026-10-28)
 
@@ -206,6 +346,72 @@ it spawned a second daemon on the same path (two inodes, one listening socket).
 > the pool directory *before* deleting it, and wait for the daemons to exit. The
 > `warm create` path already did this; `remove` simply never had. Verified: the
 > daemon is gone within ~1 s of `warm remove`.
+
+### D13 — a signal frame outlives its request and breaks the next one (found 2026-10-31)
+
+`await_mother_response` polls both the mother and the client. When the client is killed,
+the socket reports `POLLHUP` on every iteration, and a closed socket stays readable
+(EOF) forever: the daemon therefore wrote one `Signal` frame per poll tick instead of
+one. The mother consumed the first frames while waiting for the child, but the leftovers
+sat in the stream and were read as the *next* request's first frame — which the mother
+rejected with `mother only accepts Exec requests, got Signal`. `run.rs` then treated
+that as a broken fragment, `SIGKILL`ed the healthy daemon, and fell back to cold. One
+killed client permanently removed a pool slot and killed its daemon.
+
+> **Fixed (2026-10-31).** After the client reaches EOF the daemon stops polling it and
+> sends exactly one `SIGKILL` frame. As defence in depth, the mother now drops a
+> `Signal` frame that arrives between requests instead of rejecting the following
+> request. Verified: client `SIGKILL` → slot reclaimed → next `run --warm` succeeds on
+> the same daemon, pool returns to `available_pids`.
+
+### D14 — a 5 s read deadline re-ran long commands (found 2026-10-31)
+
+`exec_in_daemon` set a 5 s read timeout on the daemon socket and retried a failed read
+up to three times. The deadline covers the *whole* command, not just the handshake, so
+any warm command that lived longer than 5 s hit it, was treated as a transport failure,
+and was sent again — `sleep 8` ran three times and took 24 s. The retry was silent
+because the first attempt's output had already been written.
+
+> **Fixed (2026-10-31).** The client now clears the read timeout
+> (`set_read_timeout(None)`) and keeps a deadline only on the write side, which is what
+> actually guards a wedged daemon. A long command is not a timeout: liveness comes from
+> the daemon's `Exited` frame. Verified: `sleep 9` returns once, in 9.09 s.
+
+### D15 — a warm command was not interactive (found 2026-10-31)
+
+Handing the caller's own 0/1/2 to the command is enough for pipes and files but not for
+a terminal. The command runs in the mother's session, not the terminal's, so the
+inherited slave has no foreground process group: `read(2)` returns `EIO` and `sh` prints
+`can't access tty; job control turned off`. `test -t 0` succeeded (the fd *is* a tty)
+while `stty` and `ttyname(3)` failed — the two checks disagree because one only inspects
+the descriptor and the other needs the session's controlling terminal.
+
+> **Fixed (2026-10-31).** The client allocates a pty (`openpty`) sized like its terminal,
+> puts its own terminal into raw mode, sends the slave as 0/1/2 and proxies the master
+> to stdout while reading stdin back into the master. The child calls `setsid()` +
+> `ioctl(TIOCSCTTY)` when stdin is a tty, which makes the pty its controlling terminal.
+> Resize is polled and pushed with `TIOCSWINSZ`; buffered output is drained after exit;
+> termios is restored on drop. Non-tty runs keep the direct fd path. Verified: a shell
+> prompt, `read`, Ctrl+C, `exit 5`, and `test -t 0` all behave as in cold.
+
+### D16 — warm fragments had no procfs and no PID/IPC/UTS namespaces (found 2026-10-31)
+
+The mother unshared only `CLONE_NEWUSER|CLONE_NEWNS`, and mounted only `/tmp` and
+`/dev/shm`. `/proc` was therefore absent (inherited from the daemon, which is in the
+host's PID namespace, or missing entirely after `chroot`), so `ps`, `top`, `ttyname(3)`
+and `/proc/self` failed. Commands also saw host pids, host semaphores and the host
+hostname — weaker isolation than the cold engine, which unshares all five.
+
+> **Fixed (2026-10-31).** `prepare_namespaces` unshares
+> `USER|NS|PID|IPC|UTS`; the process that mounts procfs and serves requests is a `fork`
+> of it (a PID namespace only applies to children), so the structure is
+> daemon → supervisor (host pid) → init (PID 1 in the new namespace). The init mounts
+> `/proc` (`MS_NOSUID|MS_NODEV|MS_NOEXEC`), then chroots, mounts tmpfs, applies the
+> security stack and serves. The supervisor closes its copy of the protocol socket,
+> waits and mirrors the child's status; the init carries `PDEATHSIG=SIGKILL` so it
+> cannot outlive the supervisor. Verified: `ps` shows PID 1 = `warm-daemon`,
+> `/proc/self/comm` works, and the warm/cold parity probe matches (`$$` small,
+> `/proc` entry count, hostname, `nproc`, `notty0` for piped stdin).
 
 ## 2. Non-goals
 
@@ -359,7 +565,7 @@ legacy `Exec` (0x01), byte-for-byte, including `Stdio::null()`.
 | Situation | Mode |
 |---|---|
 | stdout/stderr are pipes or files (normal shell, CI) | fd handoff, `FD_PASS` |
-| stdout is a tty **and** stdin is a tty | PTY: daemon `openpty()`, child `setsid()` + `TIOCSCTTY` on the slave, master sent to client in `ExecStarted` |
+| stdout is a tty **and** stdin is a tty | PTY: client `openpty()`, slave as 0/1/2, child `setsid()` + `TIOCSCTTY`, client proxies master ↔ terminal |
 | stdin is a tty but stdout is redirected | fd handoff for stdout/stderr, framed stdin (never hand over the user's tty stdin) |
 | peer refuses fds (`SO_PASSRIGHTS=0`, `EPERM`) | framed, `Credit` flow control |
 
@@ -385,8 +591,9 @@ Docker and runc make explicitly.
 | `Exited` with `DAEMON_LOST_CHILD` | reaped elsewhere | exit 125 |
 
 **A long-running command is not a timeout.** No read deadline after `ExecStarted`;
-liveness comes from the pidfd (readable ⇒ exited). The fixed 5 s read/write timeouts at
-`warm.rs:712-717` and `1748-1753` must become handshake-only.
+liveness comes from the `Exited` frame (or the pidfd, if one is ever passed). The fixed
+5 s read/write timeouts at `warm.rs:712-717` and `1748-1753` are handshake-only — the
+client now clears the read deadline entirely (D14).
 
 ### 4.5 Signals and disconnect
 
@@ -402,6 +609,14 @@ liveness comes from the pidfd (readable ⇒ exited). The fixed 5 s read/write ti
   with `KILL_ON_DISCONNECT`, `SIGHUP` the session pgrp after a 2 s grace (allowing a
   future reattach), then `SIGTERM`, then `SIGKILL`. With `DETACHED`, do nothing — a lost
   client is no reason to stop the output.
+
+> **What landed (2026-10-31).** Non-tty: the client installs `SIGINT`/`SIGTERM` handlers
+> for the duration of one warm request and writes the signal number as a byte to the
+> daemon socket; the daemon relays it as a `Signal` frame; the mother `kill(2)`s the
+> command and keeps waiting. Client EOF is treated as `KILL_ON_DISCONNECT` with no grace
+> period. Tty: the client owns a pty and stays in raw mode, so `Ctrl+C`/`Ctrl+D`/`Ctrl+Z`
+> travel as bytes and the slave's line discipline turns them into signals for the
+> command; resize is pushed with `TIOCSWINSZ` from the client's poll loop (D15).
 
 ### 4.6 Implementation notes
 
@@ -559,3 +774,224 @@ not a stream EOF).
 
 Doing Phase 2 before Phase 1 would mean designing a session protocol for a child that
 runs the wrong binary.
+
+---
+
+## Implementation roadmap (task breakdown)
+
+> **Note.** The per-phase status columns below are the original plan from before Phase 1
+> landed. They are kept for the task breakdown, not as current status: chroot, the
+> security stack, `setsid`, the health probe, Landlock TSYNC and the remove-leak fix are
+> all done. The authoritative status is the "Status of each method" table above.
+
+### Phase 0: Resource Limits Infrastructure
+
+**Goal**: Enable unprivileged users to apply cgroup resource limits without sudo, similar to Docker rootless mode
+
+**Status**: 🔴 NOT STARTED
+
+#### Tasks
+
+| # | Task | Status | Priority | Complexity | Dependencies |
+|---|------|--------|----------|------------|--------------|
+| 0.1 | Implement user cgroup delegation support | 🔴 NOT STARTED | P0 | High | - |
+| 0.2 | Add systemd user slice integration | 🔴 NOT STARTED | P1 | Medium | 0.1 |
+| 0.3 | Create cgroup delegation setup script | 🔴 NOT STARTED | P1 | Low | 0.1 |
+| 0.4 | Add fallback to manual cgroup delegation | 🔴 NOT STARTED | P1 | Medium | 0.1 |
+| 0.5 | Integrate with cgroups-rs for per-fragment limits | 🔴 NOT STARTED | P2 | High | 0.1 |
+
+---
+
+### Phase 1: Keep Mother Alive
+
+**Goal**: Fix daemon to stay alive continuously and accept connections
+
+**Status**: ✅ Landed — the mother is sandboxed at pool fill and serves requests over a
+socketpair; it does not re-apply the sandbox per request.
+
+#### Tasks
+
+| # | Task | Status | Complexity | Dependencies |
+|---|------|--------|------------|--------------|
+| 1.1 | Replace shell daemon with persistent listener | 🔴 NOT STARTED | Medium | - |
+| 1.2 | Implement socket-based IPC protocol | 🔴 NOT STARTED | Medium | 1.1 |
+| 1.3 | Add mother process health monitoring | 🔴 NOT STARTED | Medium | 1.2 |
+| 1.4 | Create daemon pidfile on startup | 🔴 NOT STARTED | Low | 1.1 |
+| 1.5 | Add daemon restart on crash | 🔴 NOT STARTED | Medium | 1.3 |
+| 1.6 | Implement graceful shutdown | 🔴 NOT STARTED | Medium | 1.3 |
+
+#### Current Broken Implementation
+
+```bash
+# Current daemon in warm.rs:324-349 - exits immediately
+daemon_script = r""
+while true; do
+    for f in "$PHANTOM_CMD_DIR"/*.cmd; do
+        # Polls for files - primitive and unreliable
+        ...
+    done
+    sleep 0.1
+done
+""
+```
+
+---
+
+### Phase 2: Zygote Pool Management
+
+**Goal**: Create frozen zygotes from mother, store in pool, activate on demand
+
+**Status**: 🔴 NOT STARTED
+
+#### Tasks
+
+| # | Task | Status | Complexity | Dependencies |
+|---|------|--------|------------|--------------|
+| 2.1 | Implement fork-from-mother in daemon | 🔴 NOT STARTED | High | Phase 1.2 |
+| 2.2 | Add zygote state tracking (frozen/active) | 🔴 NOT STARTED | Medium | 2.1 |
+| 2.3 | Implement zygote activation protocol | 🔴 NOT STARTED | Medium | 2.1 |
+| 2.4 | Add zygote recycling on fragment exit | 🔴 NOT STARTED | Medium | 2.3 |
+| 2.5 | Implement pool refill on low watermark | 🔴 NOT STARTED | Medium | 2.4 |
+| 2.6 | Connect fragment_pool.rs to daemon | 🔴 NOT STARTED | Medium | 2.3 |
+
+---
+
+### Phase 3: Adaptive Resource Control
+
+**Goal**: Child processes get independent limits from mother using cgroups
+
+**Status**: 🔴 NOT STARTED
+
+#### Tasks
+
+| # | Task | Status | Complexity | Dependencies |
+|---|------|--------|------------|--------------|
+| 3.1 | Integrate cgroups-rs for per-fragment limits | 🔴 NOT STARTED | High | Phase 2 |
+| 3.2 | Implement adaptive engine integration | 🔴 NOT STARTED | Medium | 3.1 |
+| 3.3 | Add memory limit inheritance | 🔴 NOT STARTED | Medium | 3.1 |
+| 3.4 | Implement CPU affinity control | 🔴 NOT STARTED | Medium | 3.1 |
+| 3.5 | Add I/O limits per fragment | 🔴 NOT STARTED | High | 3.1 |
+| 3.6 | Security policy application per fragment | 🔴 NOT STARTED | Medium | 3.2 |
+
+---
+
+### Phase 4: Integration & Polish
+
+**Status**: 🔴 NOT STARTED
+
+#### Tasks
+
+| # | Task | Status | Complexity | Dependencies |
+|---|------|--------|------------|--------------|
+| 4.1 | Connect warm execution in run.rs | 🔴 NOT STARTED | Medium | Phase 2 |
+| 4.2 | Add proper error handling | 🔴 NOT STARTED | Medium | Phase 2 |
+| 4.3 | Implement pool metrics | 🔴 NOT STARTED | Low | Phase 2 |
+| 4.4 | Add integration tests | 🔴 NOT STARTED | Medium | All phases |
+| 4.5 | Performance benchmarking | 🔴 NOT STARTED | Low | Phase 2 |
+
+---
+
+## Dependencies Graph
+
+```
+Phase 0 (foundational - enables all others)
+├── 0.1 User cgroup delegation ──────────────────────────┐
+│   ├── 0.2 Systemd user slice                          │
+│   ├── 0.3 Setup script                                │
+│   ├── 0.4 Manual fallback                             │
+│   └── 0.5 Cgroups-rs integration ────────────────────┤
+│                                                       │
+Phase 1                                                │
+├── 1.1 Fix daemon script                              │
+│   └── 1.2 Socket IPC protocol                        │
+│       └── 1.3 Health monitoring                      │
+│           ├── 1.5 Daemon restart                      │
+│           └── 1.6 Graceful shutdown                   │
+                                                        │
+Phase 2                                                │
+├── 2.1 Fork-from-mother ──────────────────────────────┤
+│   └── 2.2 State tracking                             │
+│       └── 2.3 Activation protocol                    │
+│           └── 2.4 Recycling                          │
+│               └── 2.5 Pool refill                    │
+│                   └── 2.6 Pool integration            │
+                                                │
+Phase 3 (depends on Phase 0, Phase 2)                 │
+├── 3.1 Cgroups integration ───────────────────────────┤
+│   └── 3.2 Adaptive engine                            │
+│       └── 3.3 Memory limits                          │
+│       └── 3.4 CPU affinity                           │
+│       └── 3.5 I/O limits                             │
+│       └── 3.6 Security policy                         │
+                                                │
+Phase 4 (depends on all)                              │
+├── 4.1 Connect run.rs ────────────────────────────────┘
+├── 4.2 Error handling
+├── 4.3 Metrics
+├── 4.4 Integration tests
+└── 4.5 Benchmarking
+```
+
+---
+
+## Complexity Summary
+
+| Phase | Tasks | Total Complexity | Est. Total Effort |
+|-------|-------|------------------|-------------------|
+| Phase 0 | 5 | High | 10-14 hours |
+| Phase 1 | 6 | Medium | 12-18 hours |
+| Phase 2 | 6 | Medium-High | 16-22 hours |
+| Phase 3 | 6 | High | 12-18 hours |
+| Phase 4 | 5 | Low-Medium | 8-12 hours |
+| **TOTAL** | **28** | - | **58-84 hours** |
+
+---
+
+## Implementation Priority Order
+
+1. **P0 (Critical)**: 0.1, 1.1, 1.2, 2.1, 4.1
+2. **P1 (High)**: 0.2, 0.3, 0.4, 1.3, 2.2, 2.3, 3.1
+3. **P2 (Medium)**: 0.5, 2.4, 2.5, 3.2, 4.2, 4.3, 4.4
+4. **P3 (Low)**: 1.4, 1.5, 1.6, 3.3, 3.4, 3.5, 3.6, 4.5
+
+---
+
+## Testing Strategy (When Implemented)
+
+### Unit Tests
+- IPC protocol parsing
+- State machine transitions
+- Pool management logic
+
+### Integration Tests
+- `phantom warm fragment create alpine` → creates pool
+- `phantom run alpine echo hello` → uses warm fragment
+- Pool exhaustion → falls back to cold
+- Daemon crash → restart + refill
+
+### Benchmarking Targets
+- Cold start: ~32 ms measured (baseline)
+- Warm start target: <1 ms (NOT YET ACHIEVED; current warm is dominated by CLI startup)
+- Pool initialization: measure overhead
+
+---
+
+## Risks & Mitigations
+
+| Risk | Impact | Likelihood | Mitigation |
+|------|--------|------------|------------|
+| Daemon crash leaves orphaned processes | High | Medium | Health monitor + restart (Phase 1.5) |
+| Socket race conditions | Medium | Medium | Proper locking in Rust (Phase 1.2) |
+| Cgroups permissions | Medium | High | Graceful degradation to cold execution |
+| Memory pressure from too many zygotes | Medium | Medium | Pool size limits (Phase 2.5) |
+| Rootfs changes not reflected | Medium | Low | Invalidate on image update |
+
+---
+
+## Future Enhancements (Post-MVP)
+
+- [ ] NUMA-aware pool placement
+- [ ] Landlock security on zygotes
+- [ ] Cross-host zygote migration
+- [ ] Priority-based pool allocation
+- [ ] Predictive pre-warming based on usage patterns

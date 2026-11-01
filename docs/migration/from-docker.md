@@ -1,249 +1,99 @@
-# Migrating from Docker to Phantom Fragment
+# Migrating from Docker
 
-This guide shows you how to migrate your Docker setup to Phantom Fragment.
+Status: current. Last verified against `8b51686`.
 
-## Why Migrate?
+This guide covers what actually transfers. Several Docker features have **no equivalent
+yet** — they are listed explicitly at the end rather than papered over with a flag that
+does not exist.
 
-**Performance Benefits:**
-- **8-10× faster** startup times
-- **39× lighter** memory footprint  
-- **2.6-3.7× faster** I/O throughput
-- **640× smaller** tooling (3.6MB vs 2.3GB)
+## What transfers
 
-## Migration Tools
+| Docker | Phantom Fragment | Notes |
+|---|---|---|
+| Dockerfile | Fragmentfile | the parser accepts a Dockerfile subset, see below |
+| `docker build -t x .` | `phantom build -t x .` | multi-stage builds work |
+| `docker run image cmd` | `phantom run image cmd` | rootless, no daemon |
+| `docker run --rm` | `phantom run` | cold runs are already ephemeral |
+| `docker run -e K=V` | `phantom run` with the variable in the environment | no `-e` flag yet |
+| `docker run --network host` | `phantom run -n` | `-n` keeps the host network namespace |
+| `docker run --network none` | `phantom run` (default) | network namespace with no route |
+| `docker run --read-only` | `phantom run -p hardened` | read-only rootfs |
+| `docker ps` | `phantom list` | registry-backed, not a live process list |
+| `docker rm` | `phantom destroy` | |
+| `docker logs` | `phantom logs` | reads `~/.phantom/logs/<name>.log` |
 
-Phantom Fragment provides integrated migration subcommands:
+## What does not transfer
+
+| Docker | Status here |
+|---|---|
+| `docker pull` | no `pull` subcommand; `phantom run` pulls on demand (`--no-pull` to disable) |
+| `-p` / `--expose` | no port publishing |
+| `-v` / `--mount` | no user volumes; `phantom volume` manages internal storage only |
+| `docker exec` | no exec into a running fragment |
+| `docker run -d` | no detached mode |
+| `docker attach` | no attach; warm runs stream to the caller's stdio but cannot be attached later |
+| `docker compose` | no Compose parser, no `up`/`down` |
+| `--restart` | no restart policy |
+| `docker commit` | no commit |
+| `docker save` / `load` | no image export/import |
+| `--privileged`, `--cap-add` | no capability *addition*; the runtime only drops |
+| healthchecks in the image | not read |
+
+## Dockerfile → Fragmentfile
+
+The migrate tool converts and can rewrite layers:
 
 ```bash
-# Analyze your Dockerfile
 phantom migrate analyze Dockerfile
-
-# Convert Dockerfile to Fragmentfile (with optimizations)
 phantom migrate docker Dockerfile --output Fragmentfile --optimize
-
-# Maintain strict Docker compatibility
 phantom migrate docker Dockerfile --compat
 ```
 
-## Dockerfile → Fragmentfile Migration
+`--optimize` merges adjacent `RUN` lines and appends cache cleanup. `--compat` keeps the
+file byte-identical in behaviour to the Docker original.
 
-**Good news:** Fragmentfiles ARE Dockerfiles! The syntax is 100% compatible.
+The parser is a subset. Supported instructions: `FROM`, `RUN`, `COPY`, `ADD`, `WORKDIR`,
+`ENV`, `ARG`, `CMD`, `ENTRYPOINT`, `EXPOSE` (parsed and recorded, not published), `USER`,
+`LABEL`, `VOLUME` (recorded, not mounted). Multi-stage `COPY --from=` works.
 
-### Simple Migration
+If the parser rejects an instruction it fails the build rather than skipping it.
 
-Most Dockerfiles work as-is:
-
-```bash
-# Just rename it!
-cp Dockerfile Fragmentfile
-
-# Or use migrate tool
-phantom migrate docker Dockerfile
-```
-
-### With Optimization
-
-The migrate tool can optimize your Dockerfiles:
-
-```bash
-phantom migrate docker Dockerfile --optimize
-```
-
-**Before (Docker):**
-```dockerfile
-FROM ubuntu:22.04
-RUN apt-get update
-RUN apt-get install -y curl
-RUN apt-get install -y wget
-COPY app.py /app/
-CMD ["python3", "/app/app.py"]
-```
-
-**After (Optimized Fragmentfile):**
-```dockerfile
-FROM ubuntu:22.04
-RUN apt-get update && \
-    apt-get install -y curl wget && \
-    rm -rf /var/lib/apt/lists/*
-COPY app.py /app/
-CMD ["python3", "/app/app.py"]
-```
-
-**Benefits:**
-- Fewer layers = smaller image
-- Better caching
-- Cleanup included
-
-## Multi-Stage Build Migration
-
-Docker multi-stage builds work identically:
-
-```dockerfile
-# Build stage
-FROM rust:1.75-alpine AS builder
-WORKDIR /build
-COPY . .
-RUN cargo build --release
-
-# Runtime stage
-FROM alpine:3.18
-COPY --from=builder /build/target/release/app /usr/local/bin/
-CMD ["app"]
-```
-
-**No changes needed!** Use with Phantom Fragment:
+## Building
 
 ```bash
 phantom build -t myapp:latest .
 ```
 
-## Migrating Running Containers
+`phantom build` is the only path that records `ENTRYPOINT`/`CMD`/`USER` for later runs
+(in `phantom-config.json` inside the rootfs). Images pulled from a registry do not carry
+that metadata yet, so `phantom run <pulled-image>` requires an explicit command.
 
-### Export from Docker
+## From a running container
 
 ```bash
-# Export Docker container filesystem
 docker export my-container > container.tar
-
-# Import to Phantom Fragment
-mkdir rootfs
-tar -xf container.tar -C rootfs
-phantom run --rootfs ./rootfs -- /bin/bash
+mkdir rootfs && tar -xf container.tar -C rootfs
 ```
 
-### Docker Compose Migration
+There is no `--rootfs` flag. To run that tree you currently have to register it as an
+image, which is not implemented either. Exporting a running container is therefore a dead
+end today; rebuild from the Dockerfile instead.
 
-Docker Compose files need conversion to Phantom Fragment profiles.
+## Compose
 
-**Docker Compose:**
-```yaml
-services:
-  web:
-    build: .
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./data:/data
-```
+No equivalent. A Compose file has to be translated by hand into separate `phantom run`
+invocations plus profile definitions in `phantom.toml`.
 
-**Phantom Fragment Equivalent:**
-```bash
-# Build image
-phantom build -t web:latest .
+## Benchmarks
 
-# Run with options
-phantom run web:latest \
-  --network enabled \
-  --expose 8000 \
-  --mount ./data:/data:rw \
-  -- python app.py
-```
-
-## Registry Migration
-
-Pull images from Docker Hub:
+Measure it yourself:
 
 ```bash
-# Phantom Fragment can pull directly
-phantom pull ubuntu:22.04
-phantom pull python:3.11-slim
-phantom pull node:18-alpine
+time docker run --rm alpine true
+time phantom run alpine true
 ```
 
-## Common Migration Patterns
-
-### Pattern 1: Web Application
-
-**Docker:**
-```bash
-docker build -t myapp .
-docker run -p 8000:8000 myapp
-```
-
-**Phantom Fragment:**
-```bash
-phantom build -t myapp .
-phantom run myapp --network enabled --expose 8000
-```
-
-### Pattern 2: Development Environment
-
-**Docker:**
-```bash
-docker run -it --rm -v $(pwd):/workspace ubuntu:22.04 bash
-```
-
-**Phantom Fragment:**
-```bash
-phantom run ubuntu:22.04 \
-  --mount $(pwd):/workspace:rw \
-  -- /bin/bash
-```
-
-### Pattern 3: CI/CD Pipeline
-
-**Docker:**
-```bash
-docker build -t test .
-docker run --rm test npm test
-```
-
-**Phantom Fragment:**
-```bash
-phantom build -t test .
-phantom run test -- npm test
-```
-
-## Migration Checklist
-
-- [ ] Analyze current Dockerfiles with `phantom-migrate analyze`
-- [ ] Convert Dockerfiles to Fragmentfiles
-- [ ] Test builds with `phantom build`
-- [ ] Verify runtime behavior with `phantom run`
-- [ ] Update CI/CD pipelines
-- [ ] Migrate docker-compose to Phantom profiles
-- [ ] Update team documentation
-
-## Troubleshooting
-
-### Issue: "Image not found"
-
-Make sure to pull or build the image first:
-```bash
-phantom pull ubuntu:22.04
-# OR
-phantom build -t myapp .
-```
-
-### Issue: "Permission denied"
-
-Enable user namespaces:
-```bash
-echo 1 | sudo tee /proc/sys/kernel/unprivileged_userns_clone
-```
-
-### Issue: "Network not working"
-
-Use network-enabled profile:
-```bash
-phantom run --network enabled myimage
-```
-
-## Performance Comparison
-
-Run your own benchmark:
-
-```bash
-# Compare Docker vs Phantom Fragment
-time docker run --rm ubuntu:22.04 echo "Hello"
-time phantom run ubuntu:22.04 -- echo "Hello"
-```
-
-**Typical results:**
-- Docker: ~1.2 seconds
-- Phantom Fragment: ~0.15 seconds ⚡
-
-## Next Steps
-
-- Read the [Architecture Overview](../architecture/overview.md)
-- Check the [Implementation Guide](../IMPLEMENTATION_GUIDE.md)
+On the development machine: `phantom run alpine true` ≈ 32 ms, of which 9 ms is CLI
+startup. Docker is ~330 ms with a cold image and page cache, and much faster when warm.
+Any "N× faster" figure depends on that cache state; the previously quoted "8–10× faster,
+39× lighter, 640× smaller" was never measured and has been removed.

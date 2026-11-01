@@ -1,248 +1,86 @@
-# Phantom Fragment - Technical Documentation
+# Technical Overview
 
-## Executive Summary
+Status: index. Last verified against `8b51686` (native cold engine), version 3.1.0.
 
-**VERDICT**: Phantom Fragment with WebAssembly and Landlock integration represents the **optimal next-generation architecture** for LLM-native sandboxing, achieving ~7ms startups, ~1.7MB RSS, and comparable I/O performance to Docker.
+This page is a map, not a specification. Each claim below has a document behind it; if
+the two disagree, the component document is correct and this page is stale.
 
-### Performance Comparison (Verified)
+## What Phantom Fragment is
 
-| Metric | Docker | Phantom Fragment | Improvement |
-|--------|--------|------------------|-------------|
-| **Cold Start** | 330ms | ~45ms | **~7× faster** |
-| **Warm Start (zygote - Beta/Experimental)** | 156ms | ~5-10ms (unreliable) | **~15-30× faster (when working)** |
-| **Memory/Container** | 67MB | ~1.7MB | **39× lighter** |
-| **I/O Write** | ~1 GB/s | 2.2 GB/s | **2× faster** |
-| **I/O Read** | ~1 GB/s | 6.2 GB/s | **6× faster** |
-| **Memory Pool Throughput** | N/A | 26-43 GB/s | **20-43× faster than malloc** |
-| **Security Overhead** | 5ms | <1ms | **5× faster** |
+A rootless container runtime for Linux. It runs OCI images as process trees in private
+kernel namespaces, applies a security stack to the process that actually runs untrusted
+code, and needs no root, no image daemon and no per-container supervisor.
 
-*Verified on: Intel i3-6006U @ 2.00GHz, Linux 6.18.9, 7.5GB RAM*
+The three primitives:
 
-## Core Architecture Components
+- **namespaces** — what the process can see,
+- **Landlock** — which files it can touch,
+- **seccomp** — which syscalls it can make,
 
-### 1. Zygote Spawner - <1ms Raw Spawn
+plus capability dropping and `no_new_privs` so those restrictions survive `execve`.
 
-**Architecture**: Rust FFI wrapper calling Zig implementation for low-level clone/vfork operations.
+## Measured, on one machine
 
-```rust
-// src/core/zygote-rs/src/lib.rs (Rust)
+Release build, 14-core Ultra 5 225H, kernel 7.3.0. `alpine` cached locally, command
+`true`, 30 samples after 3 warm-ups, median (min in parentheses):
 
-// FFI to Zig implementation
-extern "C" {
-    fn phantom_zygote_fork() -> i32;
-    fn phantom_zygote_pool_create(size: usize) -> i32;
-}
+| Path | Time |
+|---|---|
+| `phantom --version` (no container work) | 7 ms |
+| cold `run alpine true` (native engine) | **39 ms** (30) |
+| warm `run --warm alpine true` | **11 ms** (10) |
+| rootless `podman run --rm alpine:latest true` | **378 ms** (337) |
+| direct daemon RPC `Exec` | 2–3 ms |
 
-impl ZygotePool {
-    pub fn new(size: usize) -> Result<Self, PhantomError> {
-        // Initialize Zig subsystem
-        unsafe {
-            if phantom_zygote_pool_create(size) < 0 {
-                return Err(PhantomError::Internal(
-                    "Failed to init Zig zygote system".into(),
-                ));
-            }
-        }
-        // ...
-    }
-}
+Binary: ~19 MB, dynamically linked (glibc, OpenSSL, libseccomp).
+
+So cold is ~10× faster than rootless podman and warm is ~34× faster, with warm ~3.5×
+faster than cold. Warm used to be *slower* than cold for two reasons, both fixed: the
+mother noticed a child's exit on a 50 ms poll tick, and the warm path built a registry
+client and opened the image store to resolve a rootfs the fragment already owned. See
+[warm-exec-v2](components/warm-exec-v2.md) for the three warm methods and what is
+actually implemented.
+
+## How a run is dispatched
+
+```text
+phantom run <image> <cmd>
+├── --wasm / *.wasm   -> Wasmtime (wasm-rs)
+├── --warm            -> listener -> mother fragment -> fork + exec
+├── --zygote          -> Zig pool, mount ns + pivot_root (no seccomp/Landlock/caps)
+├── --proot           -> proot emulation (no namespaces)
+├── --overlay         -> fuse-overlayfs + bwrap
+├── --runtime <r>     -> hand the bundle to an OCI runtime
+├── --root            -> bwrap as uid 0 (needs sudo)
+└── default           -> native engine (full stack)
+                         bwrap fallback (namespaces only, never for a confined profile)
 ```
 
-### 2. Adaptive Execution Modes - Intelligent Selection
+`--engine auto|native|bwrap` selects the backend explicitly. `auto` falls back to bwrap
+only when the host cannot provide a namespace or mount primitive; a Landlock, seccomp,
+capability or exec failure is fatal and never falls back.
 
-**Modes**: Sandbox (<25ms), Hardened (<60ms), Wasm (<30ms)
+## Documents
 
-```rust
-// src/core/execution/execution-rs/src/lib.rs
+| Document | Covers |
+|---|---|
+| [native-executor](components/native-executor.md) | the default cold engine: process layout, mounts, verified behaviour, gaps |
+| [warm-exec-v2](components/warm-exec-v2.md) | what warm is, the three methods, protocol plan, known limitations |
+| [adaptive-execution](components/adaptive-execution.md) | `execution-rs`: mode selection and the host fork-exec path |
+| [memory-discipline](components/memory-discipline.md) | the Zig buffer pool, KSM and NUMA |
+| [policy-dsl](components/policy-dsl.md) | YAML policy -> seccomp/Landlock rules |
+| [CLI reference](../usage/cli-reference.md) | every subcommand |
+| [configuration](../CONFIGURATION_GUIDE.md) | `phantom.toml` and profiles |
+| [migration](../migration/from-docker.md) | coming from Docker/Podman |
+| [testing](../testing/README.md) | how to run the suites |
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecutionMode {
-    Sandbox,   // <25ms latency, standard namespace isolation (default)
-    Hardened,  // <60ms latency, full seccomp + network restrictions
-    Wasm,      // <30ms latency, WebAssembly sandbox
-}
+## What is not built
 
-pub struct RiskProfile {
-    pub network_access: bool,
-    pub file_write: bool,
-    pub privileged_ops: bool,
-    pub untrusted_source: bool,
-}
+Stated here so no other page has to imply otherwise:
 
-impl AdaptiveEngine {
-    /// Determine the optimal execution mode
-    pub fn select_mode(&self, risk: &RiskProfile, perf: &PerformanceProfile) -> ExecutionMode {
-        // Hardened mode for high risk
-        if risk.untrusted_source || (risk.privileged_ops && risk.network_access) {
-            return ExecutionMode::Hardened;
-        }
-        ExecutionMode::Sandbox  // Balanced default
-    }
-}
-```
-
-### 3. Fragment Orchestrator
-
-**Purpose**: Intelligent scheduling with PSI pressure monitoring and NUMA awareness
-
-The orchestrator manages fragment lifecycle through the `FragmentRegistry`:
-
-```rust
-// src/cli/phantom-cli/src/fragment_registry.rs
-
-pub struct FragmentRegistry {
-    fragments: HashMap<String, FragmentInfo>,
-    storage_path: PathBuf,
-}
-
-impl FragmentRegistry {
-    pub fn create(&mut self, name: &str, profile: &str) -> Result<FragmentInfo> {
-        let fragment = FragmentInfo {
-            name: name.to_string(),
-            profile: profile.to_string(),
-            status: FragmentStatus::Created,
-            created_at: Utc::now(),
-            ..Default::default()
-        };
-        self.fragments.insert(name.to_string(), fragment.clone());
-        self.save()?;
-        Ok(fragment)
-    }
-}
-```
-
-### 4. I/O - Standard Rust I/O
-
-**Features**: Standard Rust I/O (`std::fs`, `tokio::fs`) with content-addressed storage
-
-> **Note**: Zig io_uring fast path is planned for v4.0. Current implementation uses reliable Rust I/O.
-
-```rust
-// src/storage/storage-rs/src/lib.rs
-
-use std::fs::File;
-use std::io::Write;
-
-// Writing to content-addressed storage
-let mut file = File::create(&blob_path)?;
-file.write_all(&compressed)?;
-```
-
-**Performance (Verified)**:
-- Write: 2.2 GB/s (NVMe SSD)
-- Read: 6.5 GB/s (NVMe SSD, cached)
-
-### 5. Memory Discipline - <2MB Per Container
-
-**Features**: Zero-churn allocation + KSM deduplication + Zig core (via FFI)
-
-> **Architecture**: Zig handles buffer pool, KSM, NUMA, and CPU affinity. Rust calls via FFI.
-
-```rust
-// src/memory/discipline/memory-rs/src/lib.rs
-// Rust FFI wrapper - calls Zig implementation
-
-extern "C" {
-    fn phantom_buffer_pool_create(buffer_size: usize, initial_capacity: usize) -> *mut c_void;
-    fn phantom_buffer_pool_get(pool: *mut c_void, out_len: *mut usize) -> *mut u8;
-}
-
-pub struct BufferPool {
-    inner: *mut c_void,
-}
-
-impl BufferPool {
-    pub fn new(buffer_size: usize, initial_capacity: usize) -> Option<Self> {
-        let inner = unsafe { phantom_buffer_pool_create(buffer_size, initial_capacity) };
-        if inner.is_null() { None } else { Some(Self { inner }) }
-    }
-
-    pub fn get(&self) -> Option<Vec<u8>> {
-        let mut len: usize = 0;
-        let ptr = unsafe { phantom_buffer_pool_get(self.inner, &mut len) };
-        if ptr.is_null() { None }
-        else { Some(unsafe { std::slice::from_raw_parts(ptr, len).to_vec() }) }
-    }
-}
-```
-
-**Verified Performance (Zig stress test)**:
-- Buffer Pool Throughput: 26-43 GB/s
-- Pool vs malloc: 22-23× faster
-
-### 6. Security at Line Rate - <1ms Policy Application
-
-**Features**: BPF-LSM + Landlock + AOT compilation + zero runtime overhead
-
-```rust
-// src/security/landlock-rs/src/lib.rs
-
-pub struct LandlockContext { /* ... */ }
-
-impl LandlockContext {
-    pub fn new() -> Option<Self> {
-        // Check kernel support (requires 5.13+)
-        if !Self::is_supported() { return None; }
-        Some(Self { /* ... */ })
-    }
-
-    pub fn add_rule(&self, path: &str, access_rights: u64) -> Result<()> {
-        // Add filesystem access rule
-    }
-
-    pub fn apply(&self) -> Result<()> {
-        // Apply ruleset - <1ms overhead
-    }
-}
-```
-
-### 7. Policy DSL to AOT-Compiled Runtime - <50ms Compilation
-
-**Purpose**: YAML policies → optimized kernel bytecode
-
-```yaml
-# Example Policy DSL
-profile: python-ai-turbo
-mode: sandbox
-
-security:
-  seccomp: 
-    default: deny
-    allow: [read, write, openat, close, mmap, exit_group]
-  landlock:
-    enabled: true
-    paths:
-      - path: /tmp
-        access: read-write
-      - path: /usr/lib/python3*
-        access: read-only
-
-resources:
-  memory: 512MB
-  cpu: 1.0
-  pids: 256
-```
-
-### 8. Network Minimalist - Zero-Overhead Security
-
-**Features**: eBPF/XDP ACLs + per-sandbox netns
-
-```rust
-// src/core/network-rs/src/lib.rs
-
-use nix::sched::{unshare, CloneFlags};
-
-pub struct NetworkNamespace;
-
-impl NetworkNamespace {
-    pub fn new() -> Option<Self> {
-        match unshare(CloneFlags::CLONE_NEWNET) {
-            Ok(_) => Some(Self),
-            Err(e) => {
-                log::warn!("Failed to create network namespace: {}", e);
-                None
-            }
-        }
-    }
-}
-```
+- `create` / `run -d` / `exec` / `attach` are not real containers yet.
+- Warm serves one command per fragment at a time; interactive runs use a client-owned pty.
+- The cold path creates no cgroup, so profile memory/CPU limits are unenforced.
+- BPF-LSM is not attached to image runs.
+- Pulled images carry no `ENTRYPOINT`/`CMD`/`USER`; only `phantom build` images do.
+- No volumes, no checkpoint/restore, no image export/import.

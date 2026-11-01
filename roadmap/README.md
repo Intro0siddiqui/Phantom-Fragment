@@ -1,163 +1,94 @@
 # Phantom Fragment Roadmap
 
-This directory contains the technical roadmap and implementation plans for Phantom Fragment. Documents are organized by feature area and updated regularly to reflect current implementation status.
+Status: current for *unbuilt* work, historical for anything already shipped. Where this
+file and a component document disagree, the component document wins — in particular
+[`docs/architecture/components/warm-exec-v2.md`](../docs/architecture/components/warm-exec-v2.md)
+is authoritative for warm execution.
 
-**Last Updated**: 2026-03-04
+## Quick reference
 
----
+| Topic | Status | Summary |
+|---|---|---|
+| Hybrid model (warm / zygote / snapshots) | 🚧 Partial | Mother fragment works but is slower than cold; zygote pool is a spawn accelerator; snapshots not started |
+| io_uring fastpath | ❌ Not implemented | I/O is `std::fs` / `tokio::fs` |
+| Zig proactor I/O | ❌ Not implemented | Not built |
+| KVM backend | ❌ Not implemented | Process isolation used instead |
+| Wasm | ✅ Working | Wasmtime/WASI, no Landlock or seccomp |
+| Network CLI | ✅ Working | `network list/up/add-ip/create-veth` |
+| Compose | ❌ Not implemented | No parser, no lifecycle |
+| Container lifecycle (`create`/`-d`/`exec`/`attach`) | ❌ Not implemented | `create` currently registers a host `sleep` with no namespaces |
 
-## Quick Reference: Implementation Status
+## Implemented
 
-| Document | Status | Summary |
-|----------|--------|---------|
-| [HYBRID_MODEL.md](./HYBRID_MODEL.md) | 🚧 Partial | Zygote pool complete, warm fragments partial, snapshots not started |
-| [FUTURE_ZIG_IO_FASTPATH.md](./FUTURE_ZIG_IO_FASTPATH.md) | ❌ Not Implemented | io_uring fastpath planned but not built |
-| [ZIG_015_IO_PLAN.md](./ZIG_015_IO_PLAN.md) | ❌ Not Implemented | Proactor I/O model planned but not built |
-| [ZIG_KVM_BACKEND.md](./ZIG_KVM_BACKEND.md) | ❌ Not Implemented | KVM backend planned but not built |
-| [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) | ✅/❌ Mixed | Wasm ✅, Network CLI ✅, Compose ❌ |
+### Wasm execution
+- `src/core/wasm-rs/`, dispatched from `execution-rs::spawn_wasm`.
+- Wasmtime with WASI capabilities and a configurable memory limit.
+- Usage: `phantom run --wasm myapp.wasm` (or pass a `.wasm` path).
+- Caveat: no Landlock and no seccomp; isolation is the WASI capability model.
 
----
+### Network CLI
+- `src/cli/phantom-cli/src/commands/network.rs` over `network-rs`.
+- `network list`, `up`, `add-ip`, `create-veth`.
+- Loopback is brought up automatically inside a new network namespace.
 
-## Detailed Status
+### Zygote pool
+- `src/core/zygote-rs/src/zygote.zig`: socketpair IPC, pre-forked processes,
+  `unshare(CLONE_NEWNS)` + bind rootfs + `pivot_root` + `execve`.
+- Sub-millisecond spawn in benchmarks. It is a spawn accelerator, not a sandbox: no user
+  namespace, no PID/net namespace, no seccomp, no Landlock, no capability drop, so
+  `run --zygote` skips it whenever a policy is requested.
+- It is **not** frozen-state activation. Each request still forks a grandchild.
 
-### ✅ Fully Implemented
+## Partial
 
-#### 1. WebAssembly (Wasm) Execution Mode
-- **Location**: `src/core/wasm-rs/`
-- **Integration**: `src/core/execution/execution-rs/src/lib.rs`
-- **Features**:
-  - Full Wasmtime integration
-  - WASI support with capability-based security
-  - Configurable memory limits
-  - Security policy integration
-- **Usage**: `phantom run --mode wasm myapp.wasm`
+### Warm / mother fragments
+- Pre-sandboxed mother: cgroup (when delegated), user namespace, mount namespace, chroot,
+  tmpfs, Landlock, caps, seccomp, `setsid`, health probe, `PR_SET_PDEATHSIG`.
+- Profile bound at pool creation; a mismatched request is a hard error.
+- Open: no semi mother, no frozen zygotes.
+- Measured 11 ms end to end, versus 39 ms cold and 378 ms rootless podman (release,
+  30 samples, median).
 
-#### 2. Network CLI
-- **Location**: `src/cli/phantom-cli/src/commands/network.rs`
-- **Features**:
-  - `phantom network list` - List interfaces
-  - `phantom network up <name>` - Bring interface up
-  - `phantom network add-ip <interface> <ip>` - Add IP
-  - `phantom network create-veth <host> <peer>` - Create VETH pair
-- **Integration**: Full `network-rs` integration
+### Artifact / cache warm
+- Image layers, the extracted rootfs and the build cache are reused by later cold runs.
+- No compiled-artifact or executed-work cache; no measurement of the latency drop.
 
-#### 3. Zygote Pool Foundation
-- **Location**: `src/core/zygote-rs/src/zygote.zig`
-- **Features**:
-  - Complete Zig implementation
-  - Socketpair-based IPC
-  - Process forking via clone3/vfork
-  - Pool management (create/destroy/get/put)
-- **Benchmarks**: Sub-millisecond spawn times achieved
+## Not implemented
 
----
+### io_uring I/O fastpath
+Planned: Zig io_uring, 8 GB/s target, sub-10 µs latency, zero-copy. Not built; the I/O
+path is standard Rust. The previously quoted "2.2 GB/s write, 6.2 GB/s read" was never
+measured and has been removed.
 
-### 🚧 Partially Implemented
+### KVM backend
+Planned: Zig KVM VMM, VirtIO block/network, <50 ms VM cold start. Not built; process
+isolation (namespaces, seccomp, Landlock) is used instead.
 
-#### 1. Warm/Mother Fragments (Phase 2 of Hybrid Model)
-- **Status**: Beta/Experimental
-- **What Works**:
-  - Basic zygote forking
-  - `phantom warm` command
-  - Pool pre-warming
-- **Issues**:
-  - Daemon stability problems
-  - IPC issues under load
-  - Not fully integrated with `phantom run`
-  - May fall back to cold start
-- **Location**: `src/cli/phantom-cli/src/daemon/warm.rs`
+### Phantom Compose
+Planned: `phantom-compose.yml`, `up`/`down`/`ps`. No implementation exists.
 
-#### 2. Network Loopback
-- **Status**: Partial
-- **Issue**: Loopback interface not auto-started
-- **Location**: `src/core/network-rs/`
+### Memory trimming for the pool
+Planned: ~5 MB resident target for an idle pool, `madvise(MADV_DONTNEED)` in the child
+loop. `trim_idle_memory` exists in `zygote.zig`; nothing measures the target.
 
----
+### Snapshot foundations
+Planned: process state resurrection, `MAP_FIXED` remapping, memory overlay. This is the
+prerequisite for real frozen-state zygotes. Not started.
 
-### ❌ Not Implemented
+## Execution tiers today
 
-#### 1. io_uring I/O Fastpath
-- **Documents**: [FUTURE_ZIG_IO_FASTPATH.md](./FUTURE_ZIG_IO_FASTPATH.md), [ZIG_015_IO_PLAN.md](./ZIG_015_IO_PLAN.md)
-- **What Was Planned**:
-  - Zig-based io_uring implementation
-  - 8GB/s+ throughput target
-  - Sub-10μs latency
-  - Zero-copy operations
-- **Current State**: Standard Rust I/O (`std::fs`, `tokio::fs`) in use
-- **Performance**: 2.2 GB/s write, 6.2 GB/s read (sufficient for current needs)
+| Tier | Command | Status | Measured |
+|---|---|---|---|
+| Cold | `phantom run alpine <cmd>` | ✅ Working, default | 39 ms |
+| Warm | `phantom run --warm alpine <cmd>` | 🚧 Beta | 11 ms |
+| Zygote | `phantom run --zygote alpine <cmd>` | 🚧 Beta, falls back | <1 ms spawn in benchmarks, no security stack |
 
-#### 2. KVM Backend
-- **Document**: [ZIG_KVM_BACKEND.md](./ZIG_KVM_BACKEND.md)
-- **What Was Planned**:
-  - Zig-based KVM VMM
-  - VirtIO block/network devices
-  - VM lifecycle management
-  - <50ms VM cold start
-- **Current State**: Process-based isolation used instead (namespaces/seccomp/Landlock)
+## How to read the markers
 
-#### 3. Phantom Compose
-- **Document**: [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)
-- **What Was Planned**:
-  - Multi-fragment orchestration
-  - `phantom-compose.yml` parsing
-  - Lifecycle management (`up`, `down`, `ps`)
-- **Current State**: No implementation exists
+- ✅ works, and is exercised
+- 🚧 partially works, with the gaps stated next to it
+- ❌ planned, not built
 
-#### 4. Memory Trimming (Phase 3 of Hybrid Model)
-- **Document**: [HYBRID_MODEL.md](./HYBRID_MODEL.md)
-- **What Was Planned**:
-  - 5MB skeleton target for zygote pool
-  - `madvise(MADV_DONTNEED)` in child_loop
-- **Dependency**: Requires Phase 2 (Warm Fragments) completion
-
-#### 5. Snapshot Foundations (Phase 4 of Hybrid Model)
-- **Document**: [HYBRID_MODEL.md](./HYBRID_MODEL.md)
-- **What Was Planned**:
-  - Process state resurrection
-  - `mmap` with `MAP_FIXED` support
-  - Memory state overlay
-- **Dependency**: Requires Phase 3 (Memory Trimming)
-
----
-
-## Three-Tier Execution Architecture
-
-Current implementation status:
-
-| Tier | Command | Status | Performance |
-|------|---------|--------|-------------|
-| **Cold Start** | `phantom run alpine <cmd>` | ✅ Working | ~45ms |
-| **Warm Fragments** | `phantom run --warm alpine <cmd>` | 🚧 Beta | Unreliable, falls back to cold |
-| **Zygote Pool** | `phantom warm --benchmark` | 🚧 Benchmark only | <1ms (benchmarks only) |
-
----
-
-## Document Index
-
-### Architecture Plans
-- **[HYBRID_MODEL.md](./HYBRID_MODEL.md)** - Zygote pool, warm fragments, and snapshotting roadmap
-- **[ZIG_KVM_BACKEND.md](./ZIG_KVM_BACKEND.md)** - KVM backend implementation plan (NOT IMPLEMENTED)
-
-### I/O Performance Plans
-- **[FUTURE_ZIG_IO_FASTPATH.md](./FUTURE_ZIG_IO_FASTPATH.md)** - io_uring fastpath vision (NOT IMPLEMENTED)
-- **[ZIG_015_IO_PLAN.md](./ZIG_015_IO_PLAN.md)** - Proactor I/O model (NOT IMPLEMENTED)
-
-### Feature Implementation Plans
-- **[IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md)** - Wasm, Network CLI, Compose status
-
----
-
-## How to Use This Directory
-
-1. **Check this README first** for quick status overview
-2. **Read specific documents** for detailed technical plans
-3. **Verify in codebase** - implementation status is marked with:
-   - ✅ IMPLEMENTED - Feature exists and works
-   - 🚧 PARTIAL - Feature partially works or has known issues
-   - ❌ NOT IMPLEMENTED - Feature planned but not built
-   - 📋 PLANNED - Feature in planning phase
-
----
-
-*Maintained by: Phantom Fragment Core Team*  
-*Update Frequency: Monthly or when major features change*
+Plans for topics that were consolidated here have been removed; their detail is in git
+history. Do not add a status marker to this file without a corresponding claim you can
+point at in the code.

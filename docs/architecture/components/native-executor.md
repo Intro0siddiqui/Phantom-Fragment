@@ -142,6 +142,22 @@ the mapped gid.
 - Every fallback prints one warning that names the reason and states that the
   bubblewrap fallback applies namespace isolation only.
 
+## Landlock enforcement scope
+
+`LandlockContext` requests `LANDLOCK_RESTRICT_SELF_TSYNC` (Landlock ABI 8, kernel 6.7+),
+so a ruleset covers every thread in the process, not only the thread that applied it.
+
+| Kernel ABI | Behaviour |
+|---|---|
+| >= 8 | ruleset applies to all threads; `RestrictionStatus::all_threads` is `true` |
+| < 8 | `CompatLevel::BestEffort` drops the flag instead of failing; only the applying thread and its children are restricted, and a warning is logged |
+
+A thread-scoped ruleset is silent under-enforcement if Landlock is ever applied inside a
+threaded runtime. Phantom applies it in a freshly forked single-threaded child, where the
+two scopes are equivalent, so TSYNC is defence in depth rather than a live fix. Test it by
+checking `RestrictionStatus::all_threads`, not by inspecting the requested flags —
+`RulesetCreated` keeps those private.
+
 ## Code layout
 
 - `src/cli/phantom-cli/src/engine/sandbox.rs`: shared `ChildPolicy`, profile

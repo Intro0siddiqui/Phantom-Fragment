@@ -344,8 +344,8 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 
 ### Tier 1: Cold Start (Default)
 - **Command**: `phantom run alpine <cmd>`
-- **Mechanism**: Standard fork/exec with fresh process
-- **Performance**: ~45ms startup time
+- **Mechanism**: Native engine (`engine/native.rs`): user/mount/PID/IPC/UTS namespaces, network ns when disabled, chroot, `/proc`, `/dev`, `/tmp`, then Landlock → capability drop → seccomp → `execve`. `--engine auto|native|bwrap` selects the backend; `bwrap` (`RootfsExecutor`) applies namespace isolation only and is never used for a profile that requires confinement.
+- **Performance**: ~32ms startup time
 - **Use Case**: Default, works reliably on all systems
 - **Status**: ✅ **Production Ready**
 
@@ -354,7 +354,7 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 - **Mechanism**: The daemon forks one long-lived, pre-sandboxed "mother fragment" at startup. The mother applies cgroup, userns/mount ns, chroot, tmpfs, Landlock, caps and seccomp **once**, then serves each request by forking and `exec`ing the child over a daemon↔mother socketpair. The security profile is bound at pool creation (`warm create -p`), and a mismatched `PHANTOM_PROFILE` is refused.
 - **Performance**: Faster than cold start (no per-request sandbox setup)
 - **Use Case**: When you need faster startup than cold, without pre-fork complexity
-- **Status**: 🚧 **Beta/Experimental** - Mother is now pre-sandboxed (Phase 3.4/3.5), but output is still discarded (D2) and per-session concurrency/output streaming is Phase 2
+- **Status**: 🚧 **Beta/Experimental** - Mother is pre-sandboxed (Phase 3.4/3.5) with the cold namespace set and procfs; stdio is passed over the socket (a client-owned pty when interactive), signals are relayed and dead-client slots are reclaimed. One command per fragment at a time (D5).
 
 ### Tier 3: Zygote Pool (Fastest)
 - **Command**: `phantom run --zygote alpine <cmd>`
@@ -367,13 +367,13 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~45ms |
+| **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | <1ms in benchmarks; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed, but output is still discarded (D2) and per-session concurrency/output streaming is still Phase 2.
+**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
 
-See `docs/architecture/components/warm-fragment-roadmap.md` for full implementation details.
+See `docs/architecture/components/warm-exec-v2.md` for full implementation details.
 
 ## Key Functions by Module
 
@@ -465,7 +465,7 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 | Status | Count | Commands |
 |--------|-------|----------|
 | **Complete** | 25 | run, create, delete, list, logs, health, metrics, clean, search, images, network, profile, inspect, update, restart, monitor, benchmark, volume, debug, stop, status, explain, build, migrate, registry |
-| **Partial** | 2 | warm (Phase 1 + 3.4/3.5 mother landed; output still discarded = D2, Phase 2 pending), security scan (placeholder) |
+| **Partial** | 2 | warm (Phase 1 + 3.4/3.5 mother landed; stdio/pty/namespaces/signals/lease reclaim done; one command per fragment), security scan (placeholder) |
 | **Minimal** | 0 | — |
 
 ### Tools
@@ -480,7 +480,7 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~45ms |
+| **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
 | **Warm** | `phantom run --warm` | ⚠️ Beta | Unreliable, falls back to cold |
 | **Zygote** | `phantom run --zygote` | ⚠️ Beta | <1ms (benchmarks), falls back to cold |
 
@@ -495,6 +495,142 @@ See `docs/architecture/components/warm-fragment-roadmap.md` for full implementat
 
 | Feature | Target | Actual | Notes |
 |---------|--------|--------|-------|
-| Cold start (Sandbox) | <25ms | ~45ms | Default mode |
-| Cold start (Hardened) | <60ms | ~45ms+ | Maximum security |
+| Cold start (Sandbox) | <25ms | ~32ms | Default mode |
+| Cold start (Hardened) | <60ms | ~32ms+ | Maximum security |
 | Zygote spawn | <1ms | <1ms | ✅ Achieved in benchmarks |
+
+
+---
+
+# Contributing to Phantom Fragment
+
+Thank you for your interest in contributing to Phantom Fragment! This document provides guidelines for contributing.
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/Intro0siddiqui/Phantom-Fragment.git
+cd Phantom-Fragment
+
+# Build all components
+cargo build --release
+
+# Run tests
+cargo test --workspace
+```
+
+## Development Setup
+
+### Prerequisites
+
+- **Rust**: 1.99.1 (pinned in `rust-toolchain.toml`)
+- **Zig**: 0.16+ (for memory modules and the zygote pool)
+- **libseccomp headers**: `libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL
+- **Linux**: Kernel 3.x+ (6.5+ for Landlock/BPF)
+
+### Building
+
+```bash
+# Build Rust components
+cargo build --release
+
+# Build Zig memory module
+cd src/memory/discipline/memory-zig
+zig build
+```
+
+### Running Tests
+
+```bash
+# All tests
+cargo test --workspace
+
+# Specific package
+cargo test --package memory-rs
+
+# With output
+cargo test --workspace -- --nocapture
+```
+
+## Code Structure
+
+```
+src/
+├── cli/              # CLI binary (phantom-cli)
+├── core/             # Core engine (execution, driver, types)
+├── memory/           # Memory management (Zig + Rust)
+├── security/         # Security (seccomp, landlock, capabilities)
+├── monitoring/       # Metrics and observability
+```
+
+## Coding Guidelines
+
+### Rust
+
+- Follow [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+- Use `cargo fmt` before committing
+- Use `cargo clippy` to catch common issues
+- Document public APIs with rustdoc
+
+### Zig
+
+- Follow Zig style guide
+- Export C-compatible functions with `pub export fn`
+- Gate debug prints behind `const DEBUG = false`
+- Use `zig fmt` before committing
+
+### Commit Messages
+
+Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+feat(io): add batch_write_fast for 3GB/s throughput
+fix(cli): handle missing config file gracefully
+docs(readme): update performance benchmarks
+refactor(security): consolidate policy loading
+```
+
+## Pull Request Process
+
+1. **Fork** the repository
+2. **Create** a feature branch: `git checkout -b feat/my-feature`
+3. **Make** your changes
+4. **Test** thoroughly: `cargo test --workspace`
+5. **Format** code: `cargo fmt && zig fmt src/memory/**/*.zig`
+6. **Commit** with descriptive message
+7. **Push** and create Pull Request
+
+### PR Checklist
+
+- [ ] Tests pass (`cargo test --workspace`)
+- [ ] Code formatted (`cargo fmt`)
+- [ ] No clippy warnings (`cargo clippy`)
+- [ ] Documentation updated if needed
+- [ ] CHANGELOG.md updated for significant changes
+
+## Areas for Contribution
+
+### Good First Issues
+- Documentation improvements
+- Test coverage
+- Error message improvements
+
+### Intermediate
+- Performance optimizations
+- New CLI commands
+- Security policy enhancements
+
+### Advanced
+- I/O subsystem improvements (Zig)
+- Memory management (Zig)
+- Kernel feature integration
+
+## Getting Help
+
+- Open an issue for bugs or feature requests
+- Discussions for questions and ideas
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the MIT License.
