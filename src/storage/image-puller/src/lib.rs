@@ -18,7 +18,6 @@ use flate2::read::GzDecoder;
 use image_store_rs::{ImageStore, StorageConfig};
 use oci_registry_rs::RegistryClient;
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
@@ -82,9 +81,8 @@ pub struct PullConfig {
 
 pub struct ImagePuller {
     rootfs_base: PathBuf,
+    cache_base: PathBuf,
     cache_dir: PathBuf,
-    registry_client: Option<RegistryClient>,
-    store: RefCell<ImageStore>,
     config: PullConfig,
 }
 
@@ -116,27 +114,10 @@ impl ImagePuller {
         fs::create_dir_all(&rootfs_base).context("Failed to create rootfs directory")?;
         fs::create_dir_all(&blobs_dir).context("Failed to create cache directory")?;
 
-        // Create registry client
-        let registry_client = match RegistryClient::new(cache_base.clone()) {
-            Ok(client) => Some(client),
-            Err(e) => {
-                log::warn!("Failed to create registry client: {:?}", e);
-                None
-            }
-        };
-
-        // Create image store for content-addressable layer storage
-        let store_config = StorageConfig {
-            base_path: cache_base.clone(),
-            ..Default::default()
-        };
-        let store = ImageStore::new(store_config).context("Failed to create image store")?;
-
         Ok(Self {
             rootfs_base,
+            cache_base,
             cache_dir: blobs_dir,
-            registry_client,
-            store: RefCell::new(store),
             config,
         })
     }
@@ -154,11 +135,16 @@ impl ImagePuller {
             return Ok(rootfs_path);
         }
 
-        // Need registry client for pulling
-        let client = self
-            .registry_client
-            .as_ref()
-            .context("Registry client not available")?;
+        // The registry client and the image store are built here, not in
+        // `with_config`: a cached rootfs needs neither, and constructing the
+        // HTTP stack and loading TLS roots cost ~23 ms on every cold run.
+        let client = RegistryClient::new(self.cache_base.clone())
+            .context("Failed to create registry client")?;
+        let mut store = ImageStore::new(StorageConfig {
+            base_path: self.cache_base.clone(),
+            ..Default::default()
+        })
+        .context("Failed to create image store")?;
 
         log::info!("Downloading image manifest...");
 
@@ -196,8 +182,7 @@ impl ImagePuller {
 
             // Store layer via image-store-rs API (content-addressable, deduplicated)
             let stored_digest = {
-                let mut store = self.store.borrow_mut();
-                let was_new = !store.get_layer(&layer.digest).is_ok();
+                let was_new = store.get_layer(&layer.digest).is_err();
 
                 // Store layer with reference counting
                 let digest = store.store_layer(&layer_data, image_ref)?;
@@ -219,15 +204,12 @@ impl ImagePuller {
         }
 
         // Store image manifest via image-store-rs
-        {
-            let mut store = self.store.borrow_mut();
-            store.store_image(
-                image_ref,
-                layer_digests.clone(),
-                image_info.size,
-                image_info.digest.clone(),
-            )?;
-        }
+        store.store_image(
+            image_ref,
+            layer_digests.clone(),
+            image_info.size,
+            image_info.digest.clone(),
+        )?;
 
         // Show layer sharing stats
         if reused_layers > 0 {
