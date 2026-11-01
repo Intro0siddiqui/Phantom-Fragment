@@ -356,12 +356,13 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 - **Use Case**: When you need faster startup than cold, without pre-fork complexity
 - **Status**: 🚧 **Beta/Experimental** - Mother is pre-sandboxed (Phase 3.4/3.5) with the cold namespace set and procfs; stdio is passed over the socket (a client-owned pty when interactive), signals are relayed and dead-client slots are reclaimed. One command per fragment at a time (D5).
 
-### Tier 3: Zygote Pool (Fastest)
+### Tier 3: Zygote Pool (spawn accelerator)
 - **Command**: `phantom run --zygote alpine <cmd>`
-- **Mechanism**: Pre-forked processes via Zig zygote pool using clone3/vfork syscalls
-- **Performance**: Sub-millisecond (<1ms) target
-- **Use Case**: High-frequency execution, serverless workloads, maximum performance
-- **Status**: 🚧 **Beta/Experimental** - Wired into `phantom run --zygote`; falls back to cold execution if the pool is unavailable
+- **Mechanism**: A Zig pool of pre-forked processes (`fork`/`clone` + `execve`, socketpair IPC). Each child gets `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`; every request still forks a grandchild.
+- **Performance**: Sub-millisecond spawn in the pool's own benchmark. This is pre-forking, not frozen-state activation.
+- **Use Case**: High-frequency spawning where no security policy is requested.
+- **Limitation**: It is not a sandbox. No user, PID or network namespace, no seccomp, no Landlock, no capability drop. `run --zygote` skips the pool whenever a policy is requested and runs cold instead.
+- **Status**: 🚧 **Beta/Experimental** - Wired into `phantom run --zygote`; falls back to cold execution if the pool is unavailable. The intended design (a batch of fragments frozen and compressed, restored on demand) is **not implemented**; see `docs/architecture/components/warm-exec-v2.md`, Method 2.
 
 ### Current Implementation Status
 
@@ -369,9 +370,9 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
-| **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | <1ms in benchmarks; falls back to cold |
+| **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
+**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. It is a spawn accelerator, not a batch of frozen fragments: nothing is checkpointed, compressed or restored, and the pool is skipped when a security policy is requested. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
 
 See `docs/architecture/components/warm-exec-v2.md` for full implementation details.
 
@@ -388,14 +389,14 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 **Memory (Zig FFI):**
 - `phantom_zygote_pool_create()` - Initialize zygote pool with specified size
-- `phantom_zygote_fork()` - Fast process spawn (clone/vfork)
+- `phantom_zygote_fork()` - Fast process spawn (`fork`/`clone` + `execve`)
 - `phantom_numa_available()` - NUMA support check
 
 ---
 
 ## Subsystem Status Map
 
-> Last Updated: March 2026
+> Last Updated: November 2026
 > This section tracks completion status of all subsystems.
 
 ### Summary
@@ -409,7 +410,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 | **Memory** | 2 | 2 | 0 | 0 |
 | **CLI** | 27 | 25 | 2 | 0 |
 | **Tools** | 4 | 4 | 0 | 0 |
-| **Total** | **55** | **50 (91%)** | **5 (9%)** | **0 (0%)** |
+| **Total** | **55** | **49 (89%)** | **6 (11%)** | **0 (0%)** |
 
 ### Core Subsystems
 
@@ -417,7 +418,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 |-----------|--------|-------|
 | **execution-rs** | ✅ Complete | Adaptive engine, 3 modes (Sandbox/Hardened/Wasm) |
 | **types-rs** | ✅ Complete | FFI-safe types, no_std crate |
-| **zygote-rs** | ✅ Complete | Zig pool, <1ms in benchmarks, available via `phantom run --zygote` |
+| **zygote-rs** | ⚠️ Partial | Zig pre-fork spawn accelerator; sub-ms spawn in benchmarks, but no seccomp/Landlock/caps and no frozen-state restore; skipped when a policy is set |
 | **task-analyzer-rs** | ✅ Complete | Component detection, memory estimation |
 | **network-rs** | ✅ Complete | Loopback auto-start implemented for new network namespaces |
 | **compression-rs** | ✅ Complete | Zstd/Gzip/LZ4 |
@@ -482,7 +483,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
 | **Warm** | `phantom run --warm` | ⚠️ Beta | Unreliable, falls back to cold |
-| **Zygote** | `phantom run --zygote` | ⚠️ Beta | <1ms (benchmarks), falls back to cold |
+| **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
 ### Known Issues
 
@@ -497,7 +498,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 |---------|--------|--------|-------|
 | Cold start (Sandbox) | <25ms | ~32ms | Default mode |
 | Cold start (Hardened) | <60ms | ~32ms+ | Maximum security |
-| Zygote spawn | <1ms | <1ms | ✅ Achieved in benchmarks |
+| Zygote spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
 
 
 ---
