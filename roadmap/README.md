@@ -46,7 +46,7 @@ is authoritative for warm execution.
   tmpfs, Landlock, caps, seccomp, `setsid`, health probe, `PR_SET_PDEATHSIG`.
 - Profile bound at pool creation; a mismatched request is a hard error.
 - Open: no semi mother, no frozen zygotes.
-- Measured 11 ms end to end, versus 39 ms cold and 378 ms rootless podman (release,
+- Measured 12 ms end to end, versus 39 ms cold and 378 ms rootless podman (release,
   30 samples, median).
 
 ### Artifact / cache warm
@@ -80,7 +80,7 @@ prerequisite for real frozen-state zygotes. Not started.
 | Tier | Command | Status | Measured |
 |---|---|---|---|
 | Cold | `phantom run alpine <cmd>` | ✅ Working, default | 39 ms |
-| Warm | `phantom run --warm alpine <cmd>` | 🚧 Beta | 11 ms |
+| Warm | `phantom run --warm alpine <cmd>` | 🚧 Beta | 12 ms |
 | Zygote | `phantom run --zygote alpine <cmd>` | 🚧 Beta, falls back | <1 ms spawn in benchmarks, no security stack |
 
 ## How to read the markers

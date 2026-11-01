@@ -26,7 +26,7 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 | Metric | Phantom Fragment | Podman (rootless) | Notes |
 |--------|------------------|-------------------|-------|
 | **Cold Start** | **39 ms (measured)** | 378 ms | **~10× faster** |
-| **Warm Start (Beta/Experimental)** | **11 ms (measured)** | 378 ms | **~34× faster**; ~3.5× faster than cold |
+| **Warm Start (Beta/Experimental)** | **12 ms (measured)** | 378 ms | **~31× faster**; ~3.2× faster than cold |
 | **Binary Size** | **~19 MB** | — | Dynamically linked: glibc, OpenSSL, libseccomp |
 | **Daemon RSS** | **0 MB cold / ~25 MB per warm daemon** | — | Warm daemons are started on demand |
 

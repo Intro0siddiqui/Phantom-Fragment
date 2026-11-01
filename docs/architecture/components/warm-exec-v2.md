@@ -94,7 +94,7 @@ cold start**: the same path, less work. Today only image and rootfs reuse exists
 | Zygote is not frozen-state activation | No restore path, so it cannot reach the sub-millisecond target by activation |
 | No artifact cache beyond images | Repeated cold runs redo work that a compiler-cache model would keep |
 
-### Measured today (2026-10-31)
+### Measured today (2026-11-01)
 
 Release build, same box, `alpine` cached, command `true`, 30 samples after 3 warm-ups,
 median (min in parentheses):
@@ -103,14 +103,20 @@ median (min in parentheses):
 |---|---|
 | `phantom --version` | 7 ms |
 | cold `run alpine true` | 39 ms (30) |
-| warm `run --warm alpine true` | 11 ms (10) |
+| warm `run --warm alpine true` | 12 ms (11) |
 | rootless `podman run --rm alpine:latest true` | 378 ms (337) |
 | direct daemon RPC `Exec` | 2–3 ms |
 
-Warm is ~3.5× faster than cold and ~34× faster than rootless podman. Two fixes produced
+Warm is ~3.2× faster than cold and ~31× faster than rootless podman. Two fixes produced
 that, and both were latency, not security: the mother now waits on a `pidfd` instead of
 a 50 ms poll tick, and the client no longer builds a registry client and opens the image
 store to resolve a rootfs the fragment already has.
+
+Warm buys per-command latency, not throughput: a fragment serves one command at a time, so
+16 simultaneous `true` take ~35 ms wall on a pool of 1 and ~37 ms on a pool of 4, against
+~42 ms cold and ~1122 ms for rootless podman. The one-time costs are `warm create` at
+~56 ms and a self-heal run (daemon was killed) at ~72 ms; the run after that is warm again
+at ~13 ms.
 
 ### Key files
 
