@@ -102,21 +102,24 @@ median (min in parentheses):
 | Path | Time |
 |---|---|
 | `phantom --version` | 7 ms |
-| cold `run alpine true` | 39 ms (30) |
+| cold `run alpine true` | 14 ms (13) |
 | warm `run --warm alpine true` | 12 ms (11) |
-| rootless `podman run --rm alpine:latest true` | 378 ms (337) |
+| rootless `podman run --rm alpine:latest true` | 342 ms (320) |
 | direct daemon RPC `Exec` | 2–3 ms |
 
-Warm is ~3.2× faster than cold and ~31× faster than rootless podman. Two fixes produced
-that, and both were latency, not security: the mother now waits on a `pidfd` instead of
-a 50 ms poll tick, and the client no longer builds a registry client and opens the image
-store to resolve a rootfs the fragment already has.
+Warm is ~1.2× faster than cold and ~28× faster than rootless podman. Warm used to look
+~3× faster only because cold was slow: `ImagePuller::with_config` built an HTTP client and
+an image store on every run (~23 ms) even when the rootfs was already extracted. That now
+happens only inside `pull()`, so cold fell from 39 ms to 14 ms and warm's advantage is
+just the per-run sandbox setup (~6 ms) minus the socket round trip. The `pidfd` wait is
+still what keeps the daemon's per-request overhead at 2-3 ms.
 
-Warm buys per-command latency, not throughput: a fragment serves one command at a time, so
-16 simultaneous `true` take ~35 ms wall on a pool of 1 and ~37 ms on a pool of 4, against
-~42 ms cold and ~1122 ms for rootless podman. The one-time costs are `warm create` at
-~56 ms and a self-heal run (daemon was killed) at ~72 ms; the run after that is warm again
-at ~13 ms.
+Warm buys per-command latency, not throughput: a fragment serves one command at a time and
+pool acquisition shares one metadata file, so a burst serializes. 16 simultaneous `true`
+take ~19 ms wall on a pool of 1 and ~33 ms on a pool of 4, against ~16 ms cold and ~882 ms
+for rootless podman: for parallel bursts cold now wins. The one-time costs are `warm
+create` at ~31 ms and a self-heal run (daemon was killed) at ~69 ms; the run after that is
+warm again at ~14 ms.
 
 ### Key files
 
@@ -707,9 +710,12 @@ This is where the actual speed lives, and none of it is protocol work.
 Budget after Phase 3:
 
 ```
-cold 32 ms ≈ 9 (CLI start) + ~19 (client setup) + ~2 (fork/exec/wait)
-warm 12 ms ≈ 9 (CLI start) + ~2 (client) + ~1 (RPC)      → ≈2.7× faster than cold
+cold 14 ms ≈ 7 (CLI start) + ~1 (rootfs lookup) + ~6 (namespaces, security, exec)
+warm 12 ms ≈ 7 (CLI start) + ~2 (client) + ~1 (RPC)      → ≈1.2× faster than cold
 ```
+
+The ~19 ms client setup that used to sit in the cold path is now paid only when an image
+is actually pulled, which is what changed the ratio.
 
 The floor is 9 ms of process start (dynamic linking + clap) and ~0.6 ms of `execve` of a
 dynamically linked binary. **Sub-millisecond `phantom run --warm` from a shell cannot
@@ -976,7 +982,7 @@ Phase 4 (depends on all)                              │
 - Daemon crash → restart + refill
 
 ### Benchmarking Targets
-- Cold start: ~32 ms measured (baseline)
+- Cold start: ~14 ms measured (baseline)
 - Warm start target: <1 ms (NOT YET ACHIEVED; current warm is dominated by CLI startup)
 - Pool initialization: measure overhead
 

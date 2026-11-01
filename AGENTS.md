@@ -376,7 +376,7 @@ decisions D1-D16).
 ### Tier 1: Cold Start (Default)
 - **Command**: `phantom run alpine <cmd>`
 - **Mechanism**: Native engine (`engine/native.rs`): user/mount/PID/IPC/UTS namespaces, network ns when disabled, chroot, `/proc`, `/dev`, `/tmp`, then Landlock → capability drop → seccomp → `execve`. `--engine auto|native|bwrap` selects the backend; `bwrap` (`RootfsExecutor`) applies namespace isolation only and is never used for a profile that requires confinement.
-- **Performance**: ~39 ms measured (release, 30 samples, median)
+- **Performance**: ~14 ms measured (release, 40 samples, median)
 - **Use Case**: Default, works reliably on all systems
 - **Status**: ✅ **Production Ready**
 
@@ -399,7 +399,7 @@ decisions D1-D16).
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~39 ms measured |
+| **Cold** | `phantom run alpine` | ✅ Working | ~14 ms measured |
 | **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~12 ms measured; falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
 
@@ -512,7 +512,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~39 ms measured |
+| **Cold** | `phantom run alpine` | ✅ Working | ~14 ms measured |
 | **Warm** | `phantom run --warm` | ⚠️ Beta | ~12 ms measured; falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
@@ -527,8 +527,8 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Feature | Target | Actual | Notes |
 |---------|--------|--------|-------|
-| Cold start (Sandbox) | <25ms | ~39 ms | Default mode |
-| Cold start (Hardened) | <60ms | ~39 ms+ | Maximum security |
+| Cold start (Sandbox) | <25ms | ~14 ms | Default mode |
+| Cold start (Hardened) | <60ms | ~14 ms+ | Maximum security |
 | Zygote spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
 
 

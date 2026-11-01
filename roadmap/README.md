@@ -9,7 +9,7 @@ is authoritative for warm execution.
 
 | Topic | Status | Summary |
 |---|---|---|
-| Hybrid model (warm / zygote / snapshots) | 🚧 Partial | Mother fragment works but is slower than cold; zygote pool is a spawn accelerator; snapshots not started |
+| Hybrid model (warm / zygote / snapshots) | 🚧 Partial | Mother fragment works and is ~1.2× faster than cold; zygote pool is a spawn accelerator; snapshots not started |
 | io_uring fastpath | ❌ Not implemented | I/O is `std::fs` / `tokio::fs` |
 | Zig proactor I/O | ❌ Not implemented | Not built |
 | KVM backend | ❌ Not implemented | Process isolation used instead |
@@ -46,8 +46,9 @@ is authoritative for warm execution.
   tmpfs, Landlock, caps, seccomp, `setsid`, health probe, `PR_SET_PDEATHSIG`.
 - Profile bound at pool creation; a mismatched request is a hard error.
 - Open: no semi mother, no frozen zygotes.
-- Measured 12 ms end to end, versus 39 ms cold and 378 ms rootless podman (release,
-  30 samples, median).
+- Measured 12 ms end to end, versus 14 ms cold and 342 ms rootless podman (release,
+  40 samples, median). Warm's margin is small because cold no longer builds the image
+  stack for an extracted rootfs.
 
 ### Artifact / cache warm
 - Image layers, the extracted rootfs and the build cache are reused by later cold runs.
@@ -79,7 +80,7 @@ prerequisite for real frozen-state zygotes. Not started.
 
 | Tier | Command | Status | Measured |
 |---|---|---|---|
-| Cold | `phantom run alpine <cmd>` | ✅ Working, default | 39 ms |
+| Cold | `phantom run alpine <cmd>` | ✅ Working, default | 14 ms |
 | Warm | `phantom run --warm alpine <cmd>` | 🚧 Beta | 12 ms |
 | Zygote | `phantom run --zygote alpine <cmd>` | 🚧 Beta, falls back | <1 ms spawn in benchmarks, no security stack |
 

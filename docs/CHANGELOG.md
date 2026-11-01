@@ -14,7 +14,7 @@ claim could not be verified it is marked `unmeasured` rather than repeated.
 - **Native cold engine** (`engine/native.rs`): user/mount/PID/IPC/UTS namespaces, network
   namespace when disabled, private root, `/proc`, `/tmp`, `/dev`, then Landlock,
   capability drop and seccomp in the command child immediately before `execve`. Default
-  for image runs; ~32 ms measured.
+  for image runs; ~14 ms measured.
 - **`--engine auto|native|bwrap`** with classified fallback: `Unsupported` (namespace or
   mount primitive unavailable) may fall back to bwrap in `auto`; a Landlock, seccomp,
   capability or exec failure is `Fatal` and never falls back, and a profile that requires
@@ -27,6 +27,10 @@ claim could not be verified it is marked `unmeasured` rather than repeated.
   pool's profile is a hard error instead of a silent fallback to cold.
 
 ### Changed
+- **Cold start**: `ImagePuller::with_config` built a registry client (TLS roots) and an
+  image store on every run, ~23 ms, even for an already-extracted rootfs. Both are now
+  built inside `pull()`; cold fell from 39 ms to ~14 ms and warm's margin over cold is
+  now ~1.2× rather than ~3×.
 - **Zig 0.16 migration**: native memory and zygote libraries target the Zig 0.16 std API;
   build scripts fail fast when Zig is missing or older than 0.16.
 - **Versioning**: `[workspace.package] version` is the single source of truth, so

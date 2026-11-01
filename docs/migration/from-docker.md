@@ -93,7 +93,8 @@ time docker run --rm alpine true
 time phantom run alpine true
 ```
 
-On the development machine: `phantom run alpine true` ≈ 32 ms, of which 9 ms is CLI
-startup. Docker is ~330 ms with a cold image and page cache, and much faster when warm.
+On the development machine: `phantom run alpine true` ≈ 14 ms, of which ~7 ms is CLI
+startup. Rootless podman is ~342 ms with a cached image, and much faster when its own
+cache is warm.
 Any "N× faster" figure depends on that cache state; the previously quoted "8–10× faster,
 39× lighter, 640× smaller" was never measured and has been removed.

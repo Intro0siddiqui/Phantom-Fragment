@@ -27,17 +27,18 @@ Release build, 14-core Ultra 5 225H, kernel 7.3.0. `alpine` cached locally, comm
 | Path | Time |
 |---|---|
 | `phantom --version` (no container work) | 7 ms |
-| cold `run alpine true` (native engine) | **39 ms** (30) |
+| cold `run alpine true` (native engine) | **14 ms** (13) |
 | warm `run --warm alpine true` | **12 ms** (11) |
-| rootless `podman run --rm alpine:latest true` | **378 ms** (337) |
+| rootless `podman run --rm alpine:latest true` | **342 ms** (320) |
 | direct daemon RPC `Exec` | 2–3 ms |
 
 Binary: ~19 MB, dynamically linked (glibc, OpenSSL, libseccomp).
 
-So cold is ~10× faster than rootless podman and warm is ~31× faster, with warm ~3.2×
-faster than cold. Warm used to be *slower* than cold for two reasons, both fixed: the
-mother noticed a child's exit on a 50 ms poll tick, and the warm path built a registry
-client and opened the image store to resolve a rootfs the fragment already owned. See
+So cold is ~24× faster than rootless podman and warm is ~28× faster, with warm ~1.2×
+faster than cold. Warm used to look ~3× faster because cold built a registry client and
+opened the image store on every run, even for an extracted rootfs (~23 ms). That work now
+happens only inside `pull()`, so cold fell to 14 ms and warm's remaining saving is the
+per-run sandbox setup (~6 ms) minus the socket round trip. See
 [warm-exec-v2](components/warm-exec-v2.md) for the three warm methods and what is
 actually implemented.
 

@@ -7,7 +7,7 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 **Phantom Fragment** is a specialized execution engine designed to bridge the gap between native process performance and container isolation. It is written primarily in **Rust**, with **Zig** used for low-level process and memory components, and it avoids a long-running daemon for normal cold execution.
 
 ### Core Value Proposition:
-- **Measured Performance**: ~32 ms cold start on the reference machine, versus ~330 ms for Docker (~10× faster).
+- **Measured Performance**: ~14 ms cold start on the reference machine, versus ~342 ms for rootless podman (~24× faster).
 - **Small Footprint**: ~19 MB binary, dynamically linked against glibc, OpenSSL and libseccomp; no daemon memory when no warm daemon is running.
 - **Layered Security**: The native cold engine and the warm path both apply seccomp, Landlock and capability dropping; only the warm path adds cgroups v2. The bubblewrap fallback applies namespace isolation only and is never used for a profile that requires confinement. BPF-LSM is optional, requires root, and is not attached to image fragments yet.
 - **Rootless by Design**: Normal execution uses user namespaces and a native sandbox, with `bubblewrap` as a fallback, without elevated privileges.
@@ -25,13 +25,15 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 
 | Metric | Phantom Fragment | Podman (rootless) | Notes |
 |--------|------------------|-------------------|-------|
-| **Cold Start** | **39 ms (measured)** | 378 ms | **~10× faster** |
-| **Warm Start (Beta/Experimental)** | **12 ms (measured)** | 378 ms | **~31× faster**; ~3.2× faster than cold |
+| **Cold Start** | **14 ms (measured)** | 342 ms | **~24× faster** |
+| **Warm Start (Beta/Experimental)** | **12 ms (measured)** | 342 ms | **~28× faster**; ~1.2× faster than cold |
 | **Binary Size** | **~19 MB** | — | Dynamically linked: glibc, OpenSSL, libseccomp |
 | **Daemon RSS** | **0 MB cold / ~16 MB RSS (~7.5 MB PSS) per idle warm pool** | — | Listener + supervisor + mother, 1 slot, measured |
 
 Docker was not measured on this machine; podman is the measured comparison. Numbers move
-with image cache state, so treat the ratios as the signal, not the milliseconds.
+with image cache state, so treat the ratios as the signal, not the milliseconds. Warm's
+advantage is small now because cold no longer builds a registry client and an image store
+for a rootfs that is already extracted.
 
 ## 🛠️ System Architecture
 
