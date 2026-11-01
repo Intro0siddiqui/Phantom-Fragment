@@ -342,10 +342,41 @@ Profile options:
 
 Phantom Fragment supports three distinct execution tiers, from standard cold start to optimized sub-millisecond warm starts:
 
+### What "warm" means (read this before touching warm or zygote)
+
+"Warm" is an umbrella term, not one mechanism. The three methods differ in what is kept
+between runs and therefore in what a start actually costs:
+
+| Method | What is kept | What a start does | Implemented? |
+|---|---|---|---|
+| **Mother fragment** | a live, already-sandboxed process | `fork` + `exec` inside the sandbox it built once | ✅ yes, `--warm` |
+| **Zygote** | a frozen, compressed process image (memory, fds, namespaces, security state) | restore the image; no build, no boot | ❌ no, design only |
+| **Artifact / cache** | files: layers, rootfs, build outputs | the full cold path, with less I/O work | ⚠️ partial: images and rootfs only |
+
+Rules that follow, and that docs and comments must not break:
+
+- **A zygote is a stored image that becomes a new execution.** Nothing in this tree does
+  that. No checkpoint, no compression, no restore; `rg 'criu|checkpoint|freeze|SIGSTOP' src/`
+  returns nothing.
+- **The `--zygote` flag is not a zygote.** `src/core/zygote-rs` is a *pre-fork spawn
+  accelerator*: it keeps idle processes and forks a grandchild per request (`fork`/`clone`
+  + `execve`), applying `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`. It applies
+  no user/PID/net namespace, no seccomp, no Landlock and no capability drop, and it is
+  skipped whenever a security policy is requested.
+- **An artifact is not a snapshot.** The artifact/cache method stores files, not process
+  state. It makes the cold path cheaper; it does not skip it.
+- **Firecracker-style snapshot restore is the zygote row**, not the artifact row and not
+  the mother.
+- Do not describe `--warm` as a snapshot: the mother stays alive and is forked. Do not
+  describe `--zygote` as frozen-state activation.
+
+Canonical description: `docs/architecture/components/warm-exec-v2.md` (Methods 1-3,
+decisions D1-D16).
+
 ### Tier 1: Cold Start (Default)
 - **Command**: `phantom run alpine <cmd>`
 - **Mechanism**: Native engine (`engine/native.rs`): user/mount/PID/IPC/UTS namespaces, network ns when disabled, chroot, `/proc`, `/dev`, `/tmp`, then Landlock → capability drop → seccomp → `execve`. `--engine auto|native|bwrap` selects the backend; `bwrap` (`RootfsExecutor`) applies namespace isolation only and is never used for a profile that requires confinement.
-- **Performance**: ~32ms startup time
+- **Performance**: ~39 ms measured (release, 30 samples, median)
 - **Use Case**: Default, works reliably on all systems
 - **Status**: ✅ **Production Ready**
 
@@ -368,8 +399,8 @@ Phantom Fragment supports three distinct execution tiers, from standard cold sta
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
-| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | Unreliable, may fall back to cold |
+| **Cold** | `phantom run alpine` | ✅ Working | ~39 ms measured |
+| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~12 ms measured; falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
 
 **Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. It is a spawn accelerator, not a batch of frozen fragments: nothing is checkpointed, compressed or restored, and the pool is skipped when a security policy is requested. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
@@ -482,7 +513,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
-| **Warm** | `phantom run --warm` | ⚠️ Beta | Unreliable, falls back to cold |
+| **Warm** | `phantom run --warm` | ⚠️ Beta | ~12 ms measured; falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
 ### Known Issues
@@ -496,8 +527,8 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Feature | Target | Actual | Notes |
 |---------|--------|--------|-------|
-| Cold start (Sandbox) | <25ms | ~32ms | Default mode |
-| Cold start (Hardened) | <60ms | ~32ms+ | Maximum security |
+| Cold start (Sandbox) | <25ms | ~39 ms | Default mode |
+| Cold start (Hardened) | <60ms | ~39 ms+ | Maximum security |
 | Zygote spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
 
 
