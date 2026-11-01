@@ -28,7 +28,7 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 | **Cold Start** | **39 ms (measured)** | 378 ms | **~10× faster** |
 | **Warm Start (Beta/Experimental)** | **12 ms (measured)** | 378 ms | **~31× faster**; ~3.2× faster than cold |
 | **Binary Size** | **~19 MB** | — | Dynamically linked: glibc, OpenSSL, libseccomp |
-| **Daemon RSS** | **0 MB cold / ~25 MB per warm daemon** | — | Warm daemons are started on demand |
+| **Daemon RSS** | **0 MB cold / ~16 MB RSS (~7.5 MB PSS) per idle warm pool** | — | Listener + supervisor + mother, 1 slot, measured |
 
 Docker was not measured on this machine; podman is the measured comparison. Numbers move
 with image cache state, so treat the ratios as the signal, not the milliseconds.
@@ -37,7 +37,7 @@ with image cache state, so treat the ratios as the signal, not the milliseconds.
 
 Phantom Fragment utilizes a tiered isolation model, selecting the optimal execution path based on the workload's risk profile:
 
-1. **Zygote Engine (Zig)**: An experimental pre-forked process pool targeting low-latency spawns. It is **beta**, and it cannot apply seccomp or Landlock; when a security policy is requested, `--zygote` silently falls back to normal execution.
+1. **Pre-fork Spawn Pool (Zig)**: An experimental pool of idle processes that forks per request (`--zygote`). It is **not** a zygote in the snapshot sense: nothing is frozen, compressed or restored, so it cannot start a new execution from a stored image. It is **beta**, and it cannot apply seccomp or Landlock; when a security policy is requested, `--zygote` silently falls back to normal execution.
 2. **Adaptive Execution (Rust)**: Orchestrates namespaces, cgroups v2, and hardware isolation (NUMA/CPU affinity).
 3. **Kernel Sentry (eBPF)**: Optional BPF-LSM hooks (kernel 5.7+ and `CAP_SYS_ADMIN`/root required) add kernel-boundary checks; without them the runtime applies no BPF-LSM policy.
 4. **Filesystem Sandbox (Landlock)**: Fine-grained, path-based access control that follows the process even across namespace boundaries.
@@ -53,7 +53,7 @@ Phantom Fragment utilizes a tiered isolation model, selecting the optimal execut
 ## 🚧 Beta / Partial Features
 
 - **Warm Fragments (Beta)**: One pre-sandboxed mother fragment per pool, forked and exec'd per request, with the caller's stdio passed over the socket and Ctrl+C relayed to the command. Interactive runs use a client-owned pty; one command per fragment at a time; may fall back to cold start.
-- **Zygote Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested.
+- **Pre-fork Spawn Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested. This is a spawn accelerator, not frozen-state activation; the zygote design (a batch of fragments frozen and compressed, restored on demand) is not implemented.
 - **BPF-LSM (Partial)**: Optional and requires kernel 5.7+ plus `CAP_SYS_ADMIN` (root); it degrades to no BPF-LSM enforcement otherwise. The unified privilege prompt can re-run the CLI under `sudo`, preserving `HOME` so the elevated run still sees the user's images, pools and config; the password is read by `sudo`, never by phantom.
 
 ## ⚡ Quick Start
