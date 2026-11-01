@@ -1,3 +1,4 @@
+pub mod pty;
 pub mod supervisor;
 pub mod warm;
 

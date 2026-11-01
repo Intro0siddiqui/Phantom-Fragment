@@ -30,12 +30,13 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use cgroups_rs::CgroupManager;
 use execution_rs::HardwareProfile;
+use nix::sys::signal::{kill, Signal};
 use nix::unistd::{execvp, fork, ForkResult, Pid};
 use std::ffi::CString;
 
@@ -107,6 +108,9 @@ pub enum MessageType {
     HealthResponse = 0x05,
     GetMetrics = 0x06,
     MetricsResponse = 0x07,
+    /// One-byte payload: the signal number to deliver to the running command.
+    /// Sent by the client when the user interrupts a warm run.
+    Signal = 0x08,
     Error = 0xFF,
 }
 
@@ -120,6 +124,7 @@ impl From<u8> for MessageType {
             0x05 => MessageType::HealthResponse,
             0x06 => MessageType::GetMetrics,
             0x07 => MessageType::MetricsResponse,
+            0x08 => MessageType::Signal,
             0xFF => MessageType::Error,
             _ => MessageType::Error,
         }
@@ -327,6 +332,180 @@ pub fn write_message<W: Write>(writer: &mut W, message: &Message) -> Result<()> 
     let data = message.serialize()?;
     writer.write_all(&data).context("Failed to write message")?;
     Ok(())
+}
+
+/// Maximum number of descriptors that may travel with a single frame.
+///
+/// A warm exec needs three (stdin, stdout, stderr); the extra slot leaves room
+/// for a future control channel without changing the transport.
+pub const MAX_FDS_PER_MESSAGE: usize = 4;
+
+/// Send a framed message and, optionally, pass descriptors with it.
+///
+/// The frame is sent in one `sendmsg(2)` so the ancillary data is attached to
+/// its first byte. The receiving side must use [`read_message_with_fds`] or the
+/// descriptors are dropped (the kernel closes them with the receiving process).
+pub fn write_message_with_fds(stream: &UnixStream, message: &Message, fds: &[RawFd]) -> Result<()> {
+    if fds.len() > MAX_FDS_PER_MESSAGE {
+        anyhow::bail!(
+            "Refusing to attach {} descriptors (max {})",
+            fds.len(),
+            MAX_FDS_PER_MESSAGE
+        );
+    }
+
+    let data = message.serialize()?;
+    let mut sent = 0usize;
+
+    while sent < data.len() {
+        let iov = libc::iovec {
+            // SAFETY: the pointer is only read by the kernel during sendmsg and
+            // `data` outlives the call.
+            iov_base: data[sent..].as_ptr() as *mut libc::c_void,
+            iov_len: data.len() - sent,
+        };
+        let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+        hdr.msg_iov = &iov as *const libc::iovec as *mut libc::iovec;
+        hdr.msg_iovlen = 1;
+
+        // The control buffer must stay alive until sendmsg returns. It is
+        // built empty unless this is the first chunk and fds were requested.
+        let payload_len = std::mem::size_of_val(fds);
+        let mut control: Vec<u8> = if !fds.is_empty() && sent == 0 {
+            // SAFETY: CMSG_SPACE is a pure arithmetic helper.
+            let space = unsafe { libc::CMSG_SPACE(payload_len as u32) } as usize;
+            vec![0u8; space]
+        } else {
+            Vec::new()
+        };
+
+        if !control.is_empty() {
+            hdr.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+            hdr.msg_controllen = control.len();
+
+            // SAFETY: the buffer was sized with CMSG_SPACE for this payload.
+            unsafe {
+                let cmsg = libc::CMSG_FIRSTHDR(&hdr);
+                if cmsg.is_null() {
+                    anyhow::bail!("Failed to build SCM_RIGHTS control message");
+                }
+                (*cmsg).cmsg_level = libc::SOL_SOCKET;
+                (*cmsg).cmsg_type = libc::SCM_RIGHTS;
+                (*cmsg).cmsg_len = libc::CMSG_LEN(payload_len as u32) as usize;
+                std::ptr::copy_nonoverlapping(
+                    fds.as_ptr() as *const u8,
+                    libc::CMSG_DATA(cmsg),
+                    payload_len,
+                );
+            }
+        }
+
+        // SAFETY: a valid msghdr over live buffers.
+        let n = unsafe { libc::sendmsg(stream.as_raw_fd(), &hdr, 0) };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err).context("Failed to send message");
+        }
+        sent += n as usize;
+    }
+
+    Ok(())
+}
+
+/// Read a framed message and collect any descriptors sent with it.
+///
+/// Descriptors are received with `MSG_CMSG_CLOEXEC`, so an exec in this process
+/// can never inherit them by accident. The caller owns the returned fds and must
+/// close them.
+pub fn read_message_with_fds(stream: &UnixStream, fds: &mut Vec<RawFd>) -> Result<Message> {
+    let mut header = [0u8; HEADER_SIZE];
+    let mut control = vec![0u8; 256];
+
+    let mut iov = libc::iovec {
+        iov_base: header.as_mut_ptr() as *mut libc::c_void,
+        iov_len: HEADER_SIZE,
+    };
+    let mut hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+    hdr.msg_iov = &mut iov as *mut libc::iovec;
+    hdr.msg_iovlen = 1;
+    hdr.msg_control = control.as_mut_ptr() as *mut libc::c_void;
+    hdr.msg_controllen = control.len();
+
+    // MSG_WAITALL blocks until the full header arrives, so a short read here is
+    // a real framing error rather than a partial one.
+    let n = unsafe {
+        libc::recvmsg(
+            stream.as_raw_fd(),
+            &mut hdr,
+            libc::MSG_WAITALL | libc::MSG_CMSG_CLOEXEC,
+        )
+    };
+    if n < 0 {
+        return Err(std::io::Error::last_os_error()).context("Failed to read message header");
+    }
+    if (n as usize) < HEADER_SIZE {
+        anyhow::bail!("Short message header: {} bytes", n);
+    }
+
+    // SAFETY: the control buffer was filled by the kernel; CMSG_* walk it within
+    // msg_controllen.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(&hdr);
+        while !cmsg.is_null() {
+            if (*cmsg).cmsg_level == libc::SOL_SOCKET && (*cmsg).cmsg_type == libc::SCM_RIGHTS {
+                let base = libc::CMSG_LEN(0) as usize;
+                let count = ((*cmsg).cmsg_len.saturating_sub(base)) / std::mem::size_of::<RawFd>();
+                let data = libc::CMSG_DATA(cmsg) as *const RawFd;
+                for i in 0..count {
+                    fds.push(*data.add(i));
+                }
+            }
+            cmsg = libc::CMSG_NXTHDR(&hdr, cmsg);
+        }
+    }
+
+    let magic = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    if magic != PROTOCOL_MAGIC {
+        anyhow::bail!("Invalid protocol magic: 0x{:08X}", magic);
+    }
+    if header[4] != PROTOCOL_VERSION {
+        anyhow::bail!("Unsupported protocol version: {}", header[4]);
+    }
+
+    let length = u32::from_le_bytes([header[6], header[7], header[8], header[9]]) as usize;
+    if length > MAX_MESSAGE_SIZE {
+        anyhow::bail!(
+            "Message payload length {} exceeds maximum {}",
+            length,
+            MAX_MESSAGE_SIZE
+        );
+    }
+
+    let mut payload = vec![0u8; length];
+    if length > 0 {
+        (&*stream)
+            .read_exact(&mut payload)
+            .context("Failed to read message payload")?;
+    }
+
+    Ok(Message {
+        msg_type: MessageType::from(header[5]),
+        payload,
+    })
+}
+
+/// Close a set of received descriptors, ignoring errors.
+pub(crate) fn close_fds(fds: &[RawFd]) {
+    for fd in fds {
+        // SAFETY: the caller owns these descriptors; closing an already-closed
+        // fd returns EBADF, which is ignored.
+        unsafe {
+            libc::close(*fd);
+        }
+    }
 }
 
 /// Bounds-checked reader for the length-prefixed exec payload.
@@ -595,7 +774,61 @@ fn close_inherited_fds(keep: RawFd) {
 /// child branch, moved verbatim into the long-lived mother. Every failure is
 /// fatal: the caller `_exit(127)`s, so a request can never be served without
 /// the profile's confinement.
-fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
+fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> ! {
+    if let Err(e) = prepare_namespaces(setup) {
+        log::error!("warm mother: namespace setup failed: {:#}", e);
+        // Fail closed: never serve a request without the sandbox.
+        unsafe { libc::_exit(127) };
+    }
+
+    // `CLONE_NEWPID` only applies to children, so the process that mounts
+    // /proc and serves requests must be a child of this one. That child is
+    // PID 1 of the new namespace; this process supervises it and mirrors its
+    // exit status, which is what the daemon waits on.
+    // SAFETY: fork(2) from a single-threaded child of the daemon.
+    match unsafe { fork() } {
+        Ok(ForkResult::Child) => {
+            // If the supervisor dies (including SIGKILL from `warm remove`),
+            // PID 1 must not survive as an orphan.
+            // SAFETY: prctl with PR_SET_PDEATHSIG takes a signal number.
+            unsafe {
+                libc::prctl(PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
+            }
+            if let Err(e) = enter_root(config, setup) {
+                log::error!("warm mother: entering the rootfs failed: {:#}", e);
+                unsafe { libc::_exit(127) };
+            }
+            mother_loop(MOTHER_SOCKET_FD)
+        }
+        Ok(ForkResult::Parent { child }) => {
+            // The supervisor is not the server: it must not keep the protocol
+            // channel open, or the daemon would never see EOF.
+            // SAFETY: this process owns its copy of the descriptor.
+            unsafe {
+                libc::close(MOTHER_SOCKET_FD);
+            }
+            let code = loop {
+                match nix::sys::wait::waitpid(child, None) {
+                    Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => break code,
+                    Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => break 128 + sig as i32,
+                    Ok(_) => continue,
+                    Err(nix::errno::Errno::EINTR) => continue,
+                    Err(_) => break 127,
+                }
+            };
+            // SAFETY: exiting with the child's status; nothing to unwind.
+            unsafe { libc::_exit(code) };
+        }
+        Err(e) => {
+            log::error!("warm mother: fork failed: {}", e);
+            unsafe { libc::_exit(127) };
+        }
+    }
+}
+
+/// Namespace and identity setup that must happen before the PID-namespace init
+/// exists: user/mount/PID/IPC/UTS namespaces, uid/gid maps, private mounts.
+fn prepare_namespaces(setup: &MotherSetup) -> Result<()> {
     // Open the host's /dev/null before the root switch: the image is not
     // guaranteed to have one, and every exec child redirects 0/1/2 from it.
     // The fixed fd number keeps the loop free of bookkeeping.
@@ -640,10 +873,20 @@ fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
     // uid 1000) has no CAP_SYS_CHROOT/CAP_SYS_ADMIN and both chroot(2) and
     // mount(2) would fail with EPERM. The mount namespace is owned by the new
     // user namespace.
+    //
+    // The set matches the cold engine (user, mount, PID, IPC, UTS). Without
+    // the PID namespace the command would see host pids and procfs could not
+    // be mounted at all; without IPC/UTS it would share host semaphores and
+    // the host hostname.
+    let flags = libc::CLONE_NEWUSER
+        | libc::CLONE_NEWNS
+        | libc::CLONE_NEWPID
+        | libc::CLONE_NEWIPC
+        | libc::CLONE_NEWUTS;
     // SAFETY: unshare(2) takes a flag mask.
-    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS) } != 0 {
+    if unsafe { libc::unshare(flags) } != 0 {
         anyhow::bail!(
-            "unshare(CLONE_NEWUSER|CLONE_NEWNS) failed: {}",
+            "unshare(user|mount|pid|ipc|uts) failed: {}",
             std::io::Error::last_os_error()
         );
     }
@@ -680,6 +923,14 @@ fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+/// Finish the sandbox as PID 1 of the new namespace and never return.
+///
+/// The caller must already be inside the new PID namespace: mounting procfs
+/// requires the mounting process to belong to it.
+fn enter_root(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
     // Enter the image. Everything from here on runs inside the rootfs.
     // SAFETY: chroot(2) with a valid C string prepared in the parent.
     if unsafe { libc::chroot(setup.rootfs.as_ptr()) } != 0 {
@@ -693,6 +944,30 @@ fn sandbox_mother(config: &DaemonConfig, setup: &MotherSetup) -> Result<()> {
     // SAFETY: chdir(2) with a static C string.
     if unsafe { libc::chdir(c"/".as_ptr()) } != 0 {
         anyhow::bail!("chdir(/) failed: {}", std::io::Error::last_os_error());
+    }
+
+    // procfs: a cold fragment mounts it, so a warm one must too. Without it
+    // `ps`, `top` and even `ttyname(3)` fail, and `/proc/self` is missing.
+    // Mounted once in the mother's private mount namespace; every child
+    // inherits it. The mount namespace is owned by the new user namespace, so
+    // CAP_SYS_ADMIN is still held here (caps are dropped below).
+    if Path::new("/proc").is_dir() {
+        // SAFETY: mount(2) with static C strings and no data.
+        let rc = unsafe {
+            libc::mount(
+                c"proc".as_ptr(),
+                c"/proc".as_ptr(),
+                c"proc".as_ptr(),
+                libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                std::ptr::null(),
+            )
+        };
+        if rc != 0 {
+            log::warn!(
+                "warm mother: mount(/proc) failed: {}",
+                std::io::Error::last_os_error()
+            );
+        }
     }
 
     // tmpfs hygiene inside the new root. These mounts are not a security
@@ -741,12 +1016,21 @@ fn mother_loop(mother_fd: RawFd) -> ! {
     let mut stream = unsafe { UnixStream::from_raw_fd(mother_fd) };
 
     loop {
-        let msg = match read_message(&mut stream) {
+        let mut fds: Vec<RawFd> = Vec::new();
+        let msg = match read_message_with_fds(&stream, &mut fds) {
             Ok(msg) => msg,
             // The daemon closed the channel or the frame is invalid. Fail
             // closed: an unserved request is better than an unsandboxed one.
             Err(_) => unsafe { libc::_exit(127) },
         };
+
+        if msg.msg_type == MessageType::Signal {
+            // A relayed interrupt that arrived after its request already
+            // finished. The command it was meant for is gone; dropping the
+            // frame keeps the next request from being rejected as malformed.
+            close_fds(&fds);
+            continue;
+        }
 
         if msg.msg_type != MessageType::Exec {
             let response = ExecResponse {
@@ -760,6 +1044,7 @@ fn mother_loop(mother_fd: RawFd) -> ! {
             if write_exec_response(&mut stream, &response).is_err() {
                 unsafe { libc::_exit(127) };
             }
+            close_fds(&fds);
             continue;
         }
 
@@ -774,6 +1059,7 @@ fn mother_loop(mother_fd: RawFd) -> ! {
                 if write_exec_response(&mut stream, &response).is_err() {
                     unsafe { libc::_exit(127) };
                 }
+                close_fds(&fds);
                 continue;
             }
         };
@@ -781,9 +1067,12 @@ fn mother_loop(mother_fd: RawFd) -> ! {
         // SAFETY: fork(2) from the single-threaded mother. The child only
         // touches async-signal-safe libc entry points and execs.
         match unsafe { fork() } {
-            Ok(ForkResult::Child) => mother_exec_child(&request),
+            Ok(ForkResult::Child) => mother_exec_child(&request, &fds),
             Ok(ForkResult::Parent { child }) => {
-                let exit_code = wait_for_mother_child(child);
+                // The child inherited its own copies; the mother must not keep
+                // them or the client's terminal stays open for the pool's life.
+                close_fds(&fds);
+                let exit_code = wait_for_child_interruptible(child, &stream);
                 let response = ExecResponse {
                     exit_code,
                     pid: child.as_raw() as u32,
@@ -794,6 +1083,7 @@ fn mother_loop(mother_fd: RawFd) -> ! {
                 }
             }
             Err(e) => {
+                close_fds(&fds);
                 let response = ExecResponse {
                     exit_code: 127,
                     pid: 0,
@@ -809,15 +1099,30 @@ fn mother_loop(mother_fd: RawFd) -> ! {
 
 /// Forked child of the mother: redirect stdio, apply the request environment,
 /// and exec the command. Never returns.
-fn mother_exec_child(request: &ExecRequest) -> ! {
+///
+/// `stdio` holds the descriptors the client sent with the request (stdin,
+/// stdout, stderr). Missing entries fall back to the mother's `/dev/null`, which
+/// is the pre-handoff behaviour: a warm run without a terminal still reports an
+/// exit code, it just has nowhere to print.
+fn mother_exec_child(request: &ExecRequest, stdio: &[RawFd]) -> ! {
     // The mother is the parent: if it is killed (daemon cleanup, crash), the
     // command must not survive as an orphan.
     // SAFETY: prctl with PR_SET_PDEATHSIG takes a signal number as arg2.
     unsafe {
         libc::prctl(PR_SET_PDEATHSIG, libc::SIGKILL, 0, 0, 0);
-        for fd in 0..3 {
-            libc::dup2(MOTHER_DEVNULL_FD, fd);
+        for fd in 0..3i32 {
+            let source = stdio.get(fd as usize).copied().unwrap_or(MOTHER_DEVNULL_FD);
+            libc::dup2(source, fd);
         }
+        // A pty from the client must become the command's controlling
+        // terminal, otherwise the command can open it but cannot read it: it is
+        // in the mother's session, so reads return EIO and job control is off.
+        // setsid makes it a session leader; TIOCSCTTY then claims the slave.
+        if libc::isatty(libc::STDIN_FILENO) == 1 {
+            libc::setsid();
+            libc::ioctl(libc::STDIN_FILENO, libc::TIOCSCTTY, 0);
+        }
+
         // The profile name is a daemon-only carrier; it must not leak into the
         // command's environment even if the daemon itself was started with it.
         libc::unsetenv(c"PHANTOM_PROFILE".as_ptr());
@@ -863,15 +1168,161 @@ fn mother_exec_child(request: &ExecRequest) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-/// Wait for the mother's exec child and translate its status to an exit code.
-fn wait_for_mother_child(child: Pid) -> i32 {
+/// Wait for the child while staying responsive to a `Signal` frame.
+///
+/// The mother is the only process that can signal the command: the command lives
+/// in the mother's PID namespace, so a host-side pid is meaningless to it. The
+/// daemon relays the caller's Ctrl+C as a frame, and this loop turns it into a
+/// real signal. Without this the client's terminal interrupt would kill the CLI
+/// and leave the command running.
+fn wait_for_child_interruptible(child: Pid, stream: &UnixStream) -> i32 {
+    // A 50 ms poll cadence made every warm run wait up to a full tick for its
+    // exit status — the dominant cost of a short command. A pidfd becomes
+    // readable exactly when the child exits, so poll can block until either the
+    // child is gone or the client sends a signal frame. Kernels before 5.3 have
+    // no pidfd_open; there the old cadence remains as a fallback.
+    // SAFETY: pidfd_open(2) takes (pid, flags); flags are 0.
+    let pidfd = unsafe { libc::syscall(libc::SYS_pidfd_open, child.as_raw(), 0) } as RawFd;
+    let code = wait_for_child_with_pidfd(child, stream, pidfd);
+    if pidfd >= 0 {
+        // SAFETY: the descriptor was created above and is owned here.
+        unsafe {
+            libc::close(pidfd);
+        }
+    }
+    code
+}
+
+fn wait_for_child_with_pidfd(child: Pid, stream: &UnixStream, pidfd: RawFd) -> i32 {
+    let fd = stream.as_raw_fd();
     loop {
-        match nix::sys::wait::waitpid(child, None) {
+        match nix::sys::wait::waitpid(child, Some(nix::sys::wait::WaitPidFlag::WNOHANG)) {
             Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => return code,
             Ok(nix::sys::wait::WaitStatus::Signaled(_, sig, _)) => return 128 + sig as i32,
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => continue,
             Err(_) => return 127,
+        }
+
+        let mut pfds = [
+            libc::pollfd {
+                fd: pidfd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // With a pidfd the wait is exact: block until the child exits or a
+        // frame arrives. Without one, fall back to the reap cadence.
+        let timeout = if pidfd >= 0 { -1 } else { 50 };
+        // SAFETY: two initialised pollfds.
+        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), 2, timeout) };
+        if ready < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return 127;
+        }
+        if ready == 0 {
+            continue;
+        }
+        if (pfds[1].revents & libc::POLLIN) == 0 {
+            // Either the child exited (pidfd readable; the next waitpid reaps
+            // it) or the socket hung up. Nothing to relay.
+            continue;
+        }
+
+        let mut fds = Vec::new();
+        match read_message_with_fds(stream, &mut fds) {
+            Ok(msg) if msg.msg_type == MessageType::Signal => {
+                let signo = msg.payload.first().copied().unwrap_or(libc::SIGTERM as u8);
+                let signal = Signal::try_from(signo as i32).unwrap_or(Signal::SIGTERM);
+                let _ = kill(child, signal);
+            }
+            // Any other frame here would mean the daemon violated the
+            // one-request-at-a-time contract; ignore it rather than kill the
+            // command behind the caller's back.
+            Ok(_) => {}
+            Err(_) => return 127,
+        }
+        close_fds(&fds);
+    }
+}
+
+/// Wait for the mother's response while relaying client interrupts.
+///
+/// The daemon is single-request-at-a-time, so while a command runs there is
+/// exactly one thing the client can legitimately send: a single byte carrying
+/// the signal number of a terminal interrupt. Anything else on that socket is
+/// ignored. If the client disappears, the command is killed rather than left
+/// running with no one waiting for it.
+fn await_mother_response(mother: &UnixStream, client: &UnixStream) -> Result<Message> {
+    let mother_fd = mother.as_raw_fd();
+    let client_fd = client.as_raw_fd();
+
+    // Once the client is gone there is nothing left to relay. A closed socket
+    // stays readable (EOF) forever, so polling it again would emit one signal
+    // frame per iteration; the leftovers queue up in the mother and are read as
+    // the *next* request's first frame.
+    let mut client_open = true;
+
+    loop {
+        let mut pfds = [
+            libc::pollfd {
+                fd: mother_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if client_open { client_fd } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+
+        // SAFETY: two valid pollfds; a negative timeout would block forever, so
+        // the 100 ms bound keeps the loop responsive to both sides.
+        let ready = unsafe { libc::poll(pfds.as_mut_ptr(), 2, 100) };
+        if ready < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(std::io::Error::last_os_error()).context("poll failed");
+        }
+        if ready == 0 {
+            continue;
+        }
+
+        if pfds[0].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let mut fds = Vec::new();
+            let response = read_message_with_fds(mother, &mut fds)?;
+            close_fds(&fds);
+            return Ok(response);
+        }
+
+        if pfds[1].revents & (libc::POLLIN | libc::POLLHUP | libc::POLLERR) != 0 {
+            let mut byte = [0u8; 1];
+            // SAFETY: one byte into a live buffer on a poll-readable socket.
+            let n = unsafe {
+                libc::read(
+                    client_fd,
+                    byte.as_mut_ptr() as *mut libc::c_void,
+                    byte.len(),
+                )
+            };
+            // n == 0 is EOF: the caller is gone, so stop the command and stop
+            // watching this socket.
+            let signo = if n > 0 { byte[0] } else { libc::SIGKILL as u8 };
+            if n == 0 {
+                client_open = false;
+            }
+            let msg = Message::new(MessageType::Signal, vec![signo]);
+            write_message_with_fds(mother, &msg, &[])
+                .context("Failed to relay signal to warm mother")?;
         }
     }
 }
@@ -1006,11 +1457,8 @@ impl WarmDaemon {
                     }
                 }
 
-                match sandbox_mother(&config, &mother_setup) {
-                    Ok(()) => mother_loop(MOTHER_SOCKET_FD),
-                    // Fail closed: never serve a request without the sandbox.
-                    Err(_) => unsafe { libc::_exit(127) },
-                }
+                // Fail closed: never serve a request without the sandbox.
+                sandbox_mother(&config, &mother_setup)
             }
             Ok(ForkResult::Parent { child }) => {
                 // SAFETY: the parent keeps only its own end.
@@ -1285,8 +1733,12 @@ impl WarmDaemon {
                                 tokio::task::block_in_place(|| {
                                     let mut s = std_stream;
                                     if let Err(e) = self.handle_client(&mut s) {
-                                        log::error!("Client handler error: {:?}", e);
-                                        let _ = self.send_error(&mut s, &e.to_string());
+                                        if is_client_gone(&e) {
+                                            log::debug!("Client disconnected mid-request: {:?}", e);
+                                        } else {
+                                            log::error!("Client handler error: {:?}", e);
+                                            let _ = self.send_error(&mut s, &e.to_string());
+                                        }
                                     }
 
                                     // If connection dropped prematurely, the socket gets closed here.
@@ -1350,13 +1802,17 @@ impl WarmDaemon {
 
         // Read and validate the framed request. Header validation (magic,
         // version, bounded length) happens before any payload allocation.
-        let msg = read_message(stream)?;
+        // Descriptors sent with the frame are the caller's stdio; anything that
+        // is not an Exec must not keep them open.
+        let mut fds: Vec<RawFd> = Vec::new();
+        let msg = read_message_with_fds(stream, &mut fds)?;
 
         match msg.msg_type {
-            MessageType::Exec => self.handle_exec(stream, &msg.payload),
+            MessageType::Exec => self.handle_exec(stream, &msg.payload, &fds),
             MessageType::HealthCheck => self.handle_health_check(stream),
             MessageType::GetMetrics => self.handle_get_metrics(stream),
             MessageType::Shutdown => {
+                close_fds(&fds);
                 self.running.store(false, Ordering::SeqCst);
                 self.send_response(
                     stream,
@@ -1369,6 +1825,7 @@ impl WarmDaemon {
                 )
             }
             _ => {
+                close_fds(&fds);
                 let error = format!("Unknown message type: {:?}", msg.msg_type);
                 self.send_error(stream, &error)
             }
@@ -1380,6 +1837,7 @@ impl WarmDaemon {
         &mut self,
         stream: &mut std::os::unix::net::UnixStream,
         payload: &[u8],
+        fds: &[RawFd],
     ) -> Result<()> {
         let start = Instant::now();
 
@@ -1387,7 +1845,7 @@ impl WarmDaemon {
         let request = parse_exec_request(payload)?;
 
         // Execute the command and record metrics
-        let (response, success) = match self.execute_command(&request) {
+        let (response, success) = match self.execute_command(&request, fds, stream) {
             Ok(response) => (response, true),
             Err(e) => {
                 let response = ExecResponse {
@@ -1403,6 +1861,9 @@ impl WarmDaemon {
         let latency_ms = start.elapsed().as_millis() as u64;
         self.record_request(latency_ms, success);
 
+        // The mother holds its own copies; these are done.
+        close_fds(fds);
+
         self.send_response(stream, MessageType::ExecResponse, &response)
     }
 
@@ -1412,7 +1873,12 @@ impl WarmDaemon {
     /// Landlock/caps/seccomp per request: the mother did that once at startup.
     /// Here we only validate the request, bind-check the profile, translate the
     /// cwd into the chroot, and exchange one Exec frame over the socketpair.
-    fn execute_command(&mut self, request: &ExecRequest) -> Result<ExecResponse> {
+    fn execute_command(
+        &mut self,
+        request: &ExecRequest,
+        stdio: &[RawFd],
+        client: &UnixStream,
+    ) -> Result<ExecResponse> {
         // Validate command - whitelist allowed characters to prevent injection
         if !is_safe_command(&request.command) {
             anyhow::bail!("Invalid command: contains unsafe characters");
@@ -1533,13 +1999,13 @@ impl WarmDaemon {
         let payload = serialize_exec_request(&mother_request)?;
         let mother_fd = self
             .mother_fd
-            .as_mut()
+            .as_ref()
             .context("warm mother is not running")?;
-        write_message(mother_fd, &Message::new(MessageType::Exec, payload))
+        write_message_with_fds(mother_fd, &Message::new(MessageType::Exec, payload), stdio)
             .context("Failed to send request to warm mother")?;
 
-        let response =
-            read_message(mother_fd).context("Failed to read response from warm mother")?;
+        let response = await_mother_response(mother_fd, client)
+            .context("Failed to read response from warm mother")?;
         if !matches!(
             response.msg_type,
             MessageType::ExecResponse | MessageType::Error
@@ -2026,8 +2492,32 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
     }
 
     cmd.stdin(Stdio::null());
-    cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
+
+    // Keep the daemon's output. A daemon that dies silently is undiagnosable,
+    // and both the logger (stdout) and panic messages (stderr) would otherwise
+    // disappear into /dev/null. Name the log after the image so `warm list` and
+    // the log agree: the rootfs path ends in the image reference.
+    let log_name = rootfs_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(&config.mother_name)
+        .to_string();
+    let log_path = crate::config::PhantomPaths::new()
+        .logs()
+        .join(format!("{}-daemon.log", log_name));
+    let log_file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path);
+    let (stdout, stderr) = match log_file {
+        Ok(file) => {
+            let stderr = file.try_clone().map(Stdio::from).unwrap_or(Stdio::null());
+            (Stdio::from(file), stderr)
+        }
+        Err(_) => (Stdio::null(), Stdio::null()),
+    };
+    cmd.stdout(stdout);
+    cmd.stderr(stderr);
 
     let mut child = cmd.spawn().context("Failed to spawn daemon")?;
     let pid = child.id();
@@ -2043,8 +2533,10 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
         }
 
         if socket_path.exists() {
-            // Try to connect
-            if std::os::unix::net::UnixStream::connect(&socket_path).is_ok() {
+            // A bare connect would leave the daemon reading an empty frame, so
+            // probe with a real health handshake: ready means "answers", not
+            // "listening".
+            if ping_daemon(&socket_path).unwrap_or(false) {
                 return Ok(pid);
             }
         }
@@ -2055,6 +2547,18 @@ pub fn start_daemon_background(config: DaemonConfig) -> Result<u32> {
     let _ = child.wait();
 
     anyhow::bail!("Daemon failed to start (socket not ready)");
+}
+
+/// Whether an error just means the client hung up (killed, terminal closed).
+fn is_client_gone(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause.downcast_ref::<std::io::Error>().is_some_and(|io| {
+            matches!(
+                io.kind(),
+                std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+            )
+        })
+    })
 }
 
 /// Ping a running daemon via Unix socket to verify it is responsive
@@ -2085,10 +2589,83 @@ pub fn ping_daemon(socket_path: &Path) -> Result<bool> {
 }
 
 /// Connect to running daemon and send exec request with auto-reconnect retries and timeouts
+/// Socket the terminal-signal handler writes to. `-1` means "no warm run in
+/// progress", in which case the handler does nothing.
+static SIGNAL_SOCKET_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Async-signal-safe relay: forward the signal number to the daemon as one byte.
+///
+/// A warm command runs in the mother's PID namespace, so the CLI cannot signal
+/// it directly. The daemon polls this byte and asks the mother to deliver the
+/// signal, which is the only process that can.
+extern "C" fn relay_terminal_signal(signo: libc::c_int) {
+    let fd = SIGNAL_SOCKET_FD.load(Ordering::Relaxed);
+    if fd >= 0 {
+        let byte = [signo as u8];
+        // SAFETY: write(2) is async-signal-safe.
+        unsafe {
+            libc::write(fd, byte.as_ptr() as *const libc::c_void, 1);
+        }
+    }
+}
+
+/// Installs SIGINT/SIGTERM handlers for the lifetime of one warm request and
+/// restores the previous dispositions on drop.
+struct SignalRelay {
+    previous_int: libc::sigaction,
+    previous_term: libc::sigaction,
+}
+
+impl SignalRelay {
+    fn install(fd: RawFd) -> Option<Self> {
+        // SAFETY: zeroed sigaction is a valid starting point; sigemptyset
+        // initialises the mask and sa_sigaction holds a valid handler.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = relay_terminal_signal as *const () as usize;
+            action.sa_flags = libc::SA_RESTART;
+            libc::sigemptyset(&mut action.sa_mask);
+
+            let mut previous_int: libc::sigaction = std::mem::zeroed();
+            let mut previous_term: libc::sigaction = std::mem::zeroed();
+            if libc::sigaction(libc::SIGINT, &action, &mut previous_int) != 0 {
+                return None;
+            }
+            if libc::sigaction(libc::SIGTERM, &action, &mut previous_term) != 0 {
+                libc::sigaction(libc::SIGINT, &previous_int, std::ptr::null_mut());
+                return None;
+            }
+
+            SIGNAL_SOCKET_FD.store(fd, Ordering::Relaxed);
+            Some(Self {
+                previous_int,
+                previous_term,
+            })
+        }
+    }
+}
+
+impl Drop for SignalRelay {
+    fn drop(&mut self) {
+        SIGNAL_SOCKET_FD.store(-1, Ordering::Relaxed);
+        // SAFETY: restoring the dispositions captured at install time.
+        unsafe {
+            libc::sigaction(libc::SIGINT, &self.previous_int, std::ptr::null_mut());
+            libc::sigaction(libc::SIGTERM, &self.previous_term, std::ptr::null_mut());
+        }
+    }
+}
+
 pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecResponse> {
     // Reject requests whose length-prefixed fields cannot be represented by the
     // wire format instead of silently truncating them with `as u16`/`as u8`.
     let payload = serialize_exec_request(request)?;
+
+    // Interactive runs get a pty owned by this process. Passing the caller's
+    // own terminal instead would hand the command a descriptor it cannot read
+    // (it is in the mother's session), so shells would run without job control
+    // and anything reading stdin would see EIO.
+    let mut pty = super::pty::PtySession::open();
 
     let mut last_err = None;
 
@@ -2107,35 +2684,74 @@ pub fn exec_in_daemon(socket_path: &Path, request: &ExecRequest) -> Result<ExecR
             }
         };
 
-        // Set 5-second socket read and write timeouts
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .ok();
+        // Only the write side has a deadline: it guards a daemon that stopped
+        // reading. The response must be allowed to take as long as the command
+        // does — a fixed read deadline used to abort (and re-run) any command
+        // that lived longer than 5 seconds.
+        stream.set_read_timeout(None).ok();
         stream
             .set_write_timeout(Some(std::time::Duration::from_secs(5)))
             .ok();
 
         let mut stream = stream;
 
-        // Send request
+        // From here on, Ctrl+C is relayed to the command instead of killing the
+        // CLI and leaving the command orphaned.
+        let _signal_relay = SignalRelay::install(stream.as_raw_fd());
+
+        // A previous attempt handed its pty to the daemon and closed the slave
+        // here, so a retry needs a fresh one; the raw-mode terminal is kept.
+        if let Some(session) = pty.as_mut() {
+            if session.slave_fd() < 0 && !session.reopen() {
+                pty = None;
+            }
+        }
+
+        // Send request, handing the daemon our stdio so the command writes to
+        // the caller's terminal instead of /dev/null (warm-exec-v2 D2). With a
+        // pty, all three streams are the same slave; the client keeps only the
+        // master.
         let msg = Message::new(MessageType::Exec, payload.clone());
-        if let Err(e) = write_message(&mut stream, &msg) {
+        let stdio: Vec<RawFd> = match pty.as_ref() {
+            Some(session) => vec![session.slave_fd(); 3],
+            None => vec![libc::STDIN_FILENO, libc::STDOUT_FILENO, libc::STDERR_FILENO],
+        };
+        if let Err(e) = write_message_with_fds(&stream, &msg, &stdio) {
             last_err = Some(anyhow::anyhow!("Failed to send request to daemon: {}", e));
             std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
             continue;
         }
 
-        // Read response
-        let response = match read_message(&mut stream) {
-            Ok(msg) => msg,
-            Err(e) => {
-                last_err = Some(anyhow::anyhow!(
-                    "Failed to read response from daemon: {}",
-                    e
-                ));
-                std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
-                continue;
-            }
+        // The daemon holds its own copy now; the client's would keep the pty
+        // from ever reporting EOF.
+        if let Some(session) = pty.as_mut() {
+            session.close_slave();
+        }
+
+        // Read the response, proxying the terminal while the command runs.
+        let response = match pty.as_mut() {
+            Some(session) => match session.proxy(&stream) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    last_err = Some(anyhow::anyhow!(
+                        "Failed to read response from daemon: {}",
+                        e
+                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                    continue;
+                }
+            },
+            None => match read_message(&mut stream) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    last_err = Some(anyhow::anyhow!(
+                        "Failed to read response from daemon: {}",
+                        e
+                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                    continue;
+                }
+            },
         };
 
         if !matches!(

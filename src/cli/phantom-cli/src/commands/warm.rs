@@ -128,7 +128,10 @@ fn write_file_atomic(path: &Path, contents: &str) -> Result<()> {
 
 pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
     // Warn that warm fragments are beta/experimental
-    println!("{} Warm fragments are a beta/experimental feature with limitations (daemon stability, IPC issues)", "⚠".yellow().bold());
+    println!(
+        "{} Warm fragments are a beta feature: one command per fragment at a time",
+        "⚠".yellow().bold()
+    );
     println!();
 
     match args {
@@ -190,8 +193,12 @@ pub async fn exec(_ctx: CommandContext<'_>, args: WarmCommands) -> Result<()> {
             println!("{} {} fragments ready", "✓".green(), registered_pids.len());
 
             let rootfs_str = rootfs_path.display().to_string();
-            let mut pool =
-                FragmentPool::new_with_pids(image.clone(), rootfs_str, registered_pids.clone())?;
+            let mut pool = FragmentPool::new_with_pids(
+                image.clone(),
+                rootfs_str,
+                registered_pids.clone(),
+                profile.clone(),
+            )?;
 
             // Initialize zygote pool if requested
             let zygote_enabled = if zygote {
@@ -547,6 +554,43 @@ async fn run_benchmark(iterations: usize, size: usize) -> Result<()> {
     Ok(())
 }
 
+/// Rebuild one pool slot whose daemon is gone.
+///
+/// Purging a dead slot only removes it from the pool; nothing replaced it, so a
+/// pool that lost its daemons (crash, reboot) silently degraded to cold runs
+/// for the rest of the machine's uptime. This starts a replacement with the
+/// profile the pool was created with.
+pub(crate) fn refill_slot(pool: &FragmentPool, slot: usize) -> Result<u32> {
+    let meta = pool.get_pool();
+    let Some(profile) = meta.profile.as_deref() else {
+        anyhow::bail!(
+            "pool for '{}' predates profile recording; recreate it with `phantom warm create {} -p <profile>`",
+            meta.image,
+            meta.image
+        );
+    };
+    let pool_path = pool_dir(&meta.image);
+    let pid_file = pool_path.join(format!("daemon_{}.pid", slot));
+    let rootfs = PathBuf::from(&meta.rootfs_path);
+
+    let pid = start_daemon_in_rootfs(&rootfs, &pid_file, profile)?;
+
+    // Two clients can race to rebuild the same slot. The pid file records the
+    // winner, so the loser must not leave a second daemon running.
+    let winner = std::fs::read_to_string(&pid_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u32>().ok());
+    if winner != Some(pid) {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(pid as i32),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        anyhow::bail!("another client rebuilt warm slot {} first", slot);
+    }
+
+    Ok(pid)
+}
+
 /// Start a socket-based warm fragment daemon in the rootfs
 ///
 /// This replaces the insecure shell-script daemon with a proper:
@@ -554,7 +598,11 @@ async fn run_benchmark(iterations: usize, size: usize) -> Result<()> {
 /// - Safe command execution (no eval, uses Command::new directly)
 /// - Cgroup integration (applied before exec)
 /// - Proper cleanup on exit
-fn start_daemon_in_rootfs(rootfs_path: &Path, pid_file: &Path, profile: &str) -> Result<u32> {
+pub(crate) fn start_daemon_in_rootfs(
+    rootfs_path: &Path,
+    pid_file: &Path,
+    profile: &str,
+) -> Result<u32> {
     let pool_path = pid_file
         .parent()
         .context("Daemon PID file has no parent directory")?;

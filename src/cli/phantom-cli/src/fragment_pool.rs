@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use health_rs::is_process_alive;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -57,6 +58,20 @@ pub struct FragmentPoolMeta {
     /// Whether zygote pool is enabled for ultra-fast spawning
     #[serde(default)]
     pub zygote_enabled: bool,
+    /// Security profile the pool was built with.
+    ///
+    /// `None` for pools created before this was recorded. A slot is only
+    /// rebuilt when the profile is known: guessing would either weaken a
+    /// hardened pool or produce a fragment the caller did not ask for.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Lease holder for each busy slot: daemon pid -> client pid.
+    ///
+    /// A slot is only busy while a client is actually using it. If the client
+    /// dies without releasing (SIGKILL, crash), the lease lets the next caller
+    /// reclaim the slot instead of shrinking the pool permanently.
+    #[serde(default)]
+    pub busy_leases: HashMap<u32, u32>,
 }
 
 pub struct FragmentPool {
@@ -65,7 +80,12 @@ pub struct FragmentPool {
 }
 
 impl FragmentPool {
-    pub fn new_with_pids(image: String, rootfs_path: String, pids: Vec<u32>) -> Result<Self> {
+    pub fn new_with_pids(
+        image: String,
+        rootfs_path: String,
+        pids: Vec<u32>,
+        profile: String,
+    ) -> Result<Self> {
         let pool_path = pool_dir(&image);
 
         if let Some(parent) = pool_path.parent() {
@@ -89,6 +109,8 @@ impl FragmentPool {
             created_at: now,
             last_used: now,
             zygote_enabled: false,
+            profile: Some(profile),
+            busy_leases: HashMap::new(),
         };
         let pool = Self { pool_path, meta };
         pool.save()?;
@@ -123,6 +145,7 @@ impl FragmentPool {
     }
 
     pub fn release_pid(&mut self, pid: u32) -> Result<()> {
+        self.meta.busy_leases.remove(&pid);
         if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == pid) {
             self.meta.busy_pids.remove(pos);
             self.meta.available_pids.push(pid);
@@ -134,6 +157,7 @@ impl FragmentPool {
 
     /// Purge a dead or unresponsive PID slot from the pool completely
     pub fn purge_pid(&mut self, pid: u32) -> Result<()> {
+        self.meta.busy_leases.remove(&pid);
         if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == pid) {
             self.meta.busy_pids.remove(pos);
         }
@@ -186,6 +210,27 @@ impl FragmentPool {
     }
 
     pub fn acquire_pid(&mut self) -> Option<u32> {
+        // Reclaim slots whose client died mid-request. Without this a SIGKILLed
+        // `phantom run --warm` would shrink the pool by one slot forever.
+        let stale: Vec<u32> = self
+            .meta
+            .busy_leases
+            .iter()
+            .filter(|(_, client)| !is_process_alive(**client))
+            .map(|(daemon, _)| *daemon)
+            .collect();
+        for daemon_pid in stale {
+            log::warn!(
+                "Reclaiming warm slot {} (its client exited without releasing)",
+                daemon_pid
+            );
+            self.meta.busy_leases.remove(&daemon_pid);
+            if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == daemon_pid) {
+                self.meta.busy_pids.remove(pos);
+                self.meta.available_pids.push(daemon_pid);
+            }
+        }
+
         // Try to acquire a live PID whose own socket is healthy
         while let Some(pid) = self.meta.available_pids.pop() {
             let mut is_healthy = is_process_alive(pid);
@@ -211,6 +256,7 @@ impl FragmentPool {
 
             if is_healthy {
                 self.meta.busy_pids.push(pid);
+                self.meta.busy_leases.insert(pid, std::process::id());
                 self.update_last_used();
                 let _ = self.save();
                 return Some(pid);
@@ -224,6 +270,35 @@ impl FragmentPool {
             }
         }
         None
+    }
+
+    /// Slot indices whose daemon is gone.
+    ///
+    /// A slot is named by its `daemon_<n>.pid` file. A missing file, an
+    /// unreadable pid or a dead process all mean the pool can no longer serve
+    /// from that slot, which is exactly what has to be rebuilt.
+    pub fn missing_slots(&self) -> Vec<usize> {
+        (0..self.meta.pool_size)
+            .filter(|slot| {
+                let pid_file = self.pool_path.join(format!("daemon_{}.pid", slot));
+                match fs::read_to_string(&pid_file) {
+                    Ok(text) => match text.trim().parse::<u32>() {
+                        Ok(pid) => !is_process_alive(pid),
+                        Err(_) => true,
+                    },
+                    Err(_) => true,
+                }
+            })
+            .collect()
+    }
+
+    /// Record a daemon that was just started for a slot the pool had lost.
+    pub fn register_pid(&mut self, pid: u32) -> Result<()> {
+        if !self.meta.available_pids.contains(&pid) && !self.meta.busy_pids.contains(&pid) {
+            self.meta.available_pids.push(pid);
+            self.save()?;
+        }
+        Ok(())
     }
 
     pub fn list() -> Result<Vec<FragmentPoolMeta>> {
@@ -366,6 +441,8 @@ mod tests {
             created_at: 0,
             last_used: 0,
             zygote_enabled: false,
+            profile: Some("sandbox".to_string()),
+            busy_leases: HashMap::new(),
         }
     }
 
@@ -433,6 +510,79 @@ mod tests {
 
         // The temporary file must not be left behind.
         assert!(!dir.join("meta.json.tmp").exists());
+    }
+
+    /// Minimal stand-in for a warm daemon: answers one health check, then exits.
+    fn spawn_fake_daemon(socket: PathBuf) -> std::thread::JoinHandle<()> {
+        use crate::daemon::{read_message, write_message, Message, MessageType};
+
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let _ = read_message(&mut stream);
+                let _ = write_message(
+                    &mut stream,
+                    &Message::new(MessageType::HealthResponse, vec![]),
+                );
+            }
+        })
+    }
+
+    #[test]
+    fn acquire_pid_reclaims_slot_whose_client_died() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        // The daemon is this test process, so it is alive; its lease holder is a
+        // reaped child, i.e. the client died without releasing the slot.
+        let daemon_pid = std::process::id();
+        let client_pid = dead_pid();
+
+        let socket = dir.join("daemon_0.sock");
+        let handle = spawn_fake_daemon(socket.clone());
+        fs::write(dir.join("daemon_0.pid"), daemon_pid.to_string()).unwrap();
+
+        let mut meta = test_meta(Vec::new());
+        meta.busy_pids = vec![daemon_pid];
+        meta.busy_leases = HashMap::from([(daemon_pid, client_pid)]);
+        let mut pool = FragmentPool::with_meta(dir.clone(), meta);
+
+        assert_eq!(pool.acquire_pid(), Some(daemon_pid));
+        assert_eq!(pool.meta.busy_pids, vec![daemon_pid]);
+        assert!(pool.meta.available_pids.is_empty());
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn missing_slots_reports_slots_whose_daemon_died() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        // Slot 0 is alive (this process), slot 1 names a reaped pid, slot 2 has
+        // no pid file at all.
+        fs::write(dir.join("daemon_0.pid"), std::process::id().to_string()).unwrap();
+        fs::write(dir.join("daemon_1.pid"), dead_pid().to_string()).unwrap();
+
+        let mut meta = test_meta(Vec::new());
+        meta.pool_size = 3;
+        let pool = FragmentPool::with_meta(dir, meta);
+
+        assert_eq!(pool.missing_slots(), vec![1, 2]);
+    }
+
+    #[test]
+    fn register_pid_persists_a_rebuilt_slot() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+        let mut pool = FragmentPool::with_meta(dir.clone(), test_meta(Vec::new()));
+
+        pool.register_pid(4242).unwrap();
+
+        assert_eq!(pool.meta.available_pids, vec![4242]);
+        let data = fs::read_to_string(dir.join("meta.json")).unwrap();
+        let parsed: FragmentPoolMeta = serde_json::from_str(&data).unwrap();
+        assert_eq!(parsed.available_pids, vec![4242]);
     }
 
     #[test]

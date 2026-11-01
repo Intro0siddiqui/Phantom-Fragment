@@ -306,32 +306,54 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
         ui::success_with_prefix("Running in fragment:", image_ref);
         ui::info("Command:", &format!("{:?}", final_command));
 
-        use image_puller::{ImagePuller, PullConfig, RootfsExecutor};
-
-        let config = PullConfig { verify };
-        let puller = ImagePuller::with_config(config).context("Failed to create ImagePuller")?;
-
-        let rootfs_path = puller.get_rootfs(image_ref, pull).await?;
-
-        ui::info("Rootfs:", &rootfs_path.display().to_string());
-
-        // Use warm fragment pool if --warm flag is passed
+        // Warm first: a warm fragment already owns its rootfs, so resolving the
+        // image (which builds a registry client and opens the image store)
+        // would be pure latency. The cold path below does that work only when a
+        // warm fragment cannot serve the request.
         if warm {
-            ui::warn_bold("Warm fragments are an experimental feature with limitations (daemon stability, IPC issues)");
+            ui::warn_bold("Warm fragments are a beta feature: one command per fragment at a time");
             use crate::fragment_pool::FragmentPool;
             if let Ok(pools) = FragmentPool::list() {
                 if let Some(pool_meta) = pools.iter().find(|p| p.image == *image_ref) {
-                    if !pool_meta.available_pids.is_empty() {
-                        ui::info(
-                            "Using warm fragment:",
-                            &format!("{} available", pool_meta.available_pids.len()),
-                        );
-
+                    let pool_rootfs = pool_meta.rootfs_path.clone();
+                    // Load even when no slot is currently free: `acquire_pid`
+                    // reclaims slots whose client died before releasing (e.g. a
+                    // SIGKILLed `run --warm`). Only genuine exhaustion falls
+                    // back to cold.
+                    {
                         match FragmentPool::load(image_ref) {
                             Ok(mut pool) => {
-                                if let Some(pid) = pool.acquire_pid() {
+                                let mut acquired = pool.acquire_pid();
+                                if acquired.is_none() {
+                                    // A dead daemon's slot is purged, never replaced,
+                                    // so a pool that loses its daemons (crash, reboot)
+                                    // would silently run cold forever. Rebuild one slot
+                                    // and retry once; the first run pays the build, the
+                                    // rest are warm again.
+                                    if let Some(slot) = pool.missing_slots().first().copied() {
+                                        match crate::commands::warm::refill_slot(&pool, slot) {
+                                            Ok(pid) => {
+                                                let _ = pool.register_pid(pid);
+                                                acquired = pool.acquire_pid();
+                                            }
+                                            Err(e) => ui::warn(&format!(
+                                                "Failed to rebuild warm fragment: {:#}",
+                                                e
+                                            )),
+                                        }
+                                    }
+                                }
+                                if let Some(pid) = acquired {
+                                    ui::info(
+                                        "Using warm fragment:",
+                                        &format!(
+                                            "{} available",
+                                            pool.get_pool().available_pids.len()
+                                        ),
+                                    );
                                     match pool.socket_path_for_pid(pid) {
                                         Some(socket_path) => {
+                                            ui::info("Rootfs:", &pool_rootfs);
                                             match fork_from_daemon(
                                                 pid,
                                                 &final_command,
@@ -404,14 +426,21 @@ pub async fn exec(ctx: CommandContext<'_>, args: RunArgs) -> anyhow::Result<()> 
                                 ));
                             }
                         }
-                    } else {
-                        ui::warn("No warm fragment pool found, falling back to cold execution");
                     }
                 } else {
                     ui::info("No fragment pool for this image", "using cold execution");
                 }
             }
         }
+
+        use image_puller::{ImagePuller, PullConfig, RootfsExecutor};
+
+        let config = PullConfig { verify };
+        let puller = ImagePuller::with_config(config).context("Failed to create ImagePuller")?;
+
+        let rootfs_path = puller.get_rootfs(image_ref, pull).await?;
+
+        ui::info("Rootfs:", &rootfs_path.display().to_string());
 
         // Use zygote pool for ultra-fast execution if --zygote flag is passed
         if zygote {
