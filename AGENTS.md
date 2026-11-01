@@ -512,7 +512,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~32ms |
+| **Cold** | `phantom run alpine` | ✅ Working | ~39 ms measured |
 | **Warm** | `phantom run --warm` | ⚠️ Beta | ~12 ms measured; falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
