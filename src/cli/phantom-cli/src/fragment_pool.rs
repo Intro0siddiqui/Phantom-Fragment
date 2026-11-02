@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use crate::config::PhantomPaths;
@@ -119,13 +119,16 @@ impl FragmentPool {
     }
 
     pub fn load(image: &str) -> Result<Self> {
-        let pool_path = pool_dir(image);
+        Self::load_from_path(&pool_dir(image))
+    }
+
+    pub fn load_from_path(pool_path: &Path) -> Result<Self> {
         let meta_path = pool_path.join("meta.json");
 
         if !meta_path.exists() {
             return Err(anyhow::anyhow!(
-                "Fragment pool not found for image: {}",
-                image
+                "Fragment pool not found at {:?}",
+                meta_path
             ));
         }
 
@@ -133,7 +136,10 @@ impl FragmentPool {
         let meta: FragmentPoolMeta = serde_json::from_str(&data)
             .with_context(|| format!("Failed to parse fragment pool meta: {:?}", meta_path))?;
 
-        Ok(Self { pool_path, meta })
+        Ok(Self {
+            pool_path: pool_path.to_path_buf(),
+            meta,
+        })
     }
 
     pub fn get_pool(&self) -> &FragmentPoolMeta {
@@ -145,18 +151,28 @@ impl FragmentPool {
     }
 
     pub fn release_pid(&mut self, pid: u32) -> Result<()> {
+        let lock_path = self.pool_path.join(".meta.lock");
+        let _lock = PoolLock::acquire(&lock_path)?;
+
+        self.reload_locked();
+
         self.meta.busy_leases.remove(&pid);
         if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == pid) {
             self.meta.busy_pids.remove(pos);
             self.meta.available_pids.push(pid);
             self.update_last_used();
-            self.save()?;
+            self.save_locked()?;
         }
         Ok(())
     }
 
     /// Purge a dead or unresponsive PID slot from the pool completely
     pub fn purge_pid(&mut self, pid: u32) -> Result<()> {
+        let lock_path = self.pool_path.join(".meta.lock");
+        let _lock = PoolLock::acquire(&lock_path)?;
+
+        self.reload_locked();
+
         self.meta.busy_leases.remove(&pid);
         if let Some(pos) = self.meta.busy_pids.iter().position(|&p| p == pid) {
             self.meta.busy_pids.remove(pos);
@@ -169,7 +185,7 @@ impl FragmentPool {
             nix::unistd::Pid::from_raw(pid as i32),
             nix::sys::signal::Signal::SIGKILL,
         );
-        self.save()?;
+        self.save_locked()?;
         Ok(())
     }
 
@@ -210,6 +226,15 @@ impl FragmentPool {
     }
 
     pub fn acquire_pid(&mut self) -> Option<u32> {
+        let lock_path = self.pool_path.join(".meta.lock");
+        let _lock = PoolLock::acquire(&lock_path).ok()?;
+
+        self.reload_locked();
+        self.acquire_pid_inner()
+    }
+
+    /// Inner slot acquisition while .meta.lock is guaranteed held
+    fn acquire_pid_inner(&mut self) -> Option<u32> {
         // Reclaim slots whose client died mid-request. Without this a SIGKILLed
         // `phantom run --warm` would shrink the pool by one slot forever.
         let stale: Vec<u32> = self
@@ -258,7 +283,7 @@ impl FragmentPool {
                 self.meta.busy_pids.push(pid);
                 self.meta.busy_leases.insert(pid, std::process::id());
                 self.update_last_used();
-                let _ = self.save();
+                let _ = self.save_locked();
                 return Some(pid);
             } else {
                 log::warn!("Daemon PID {} is dead/unresponsive, purging from pool", pid);
@@ -266,7 +291,7 @@ impl FragmentPool {
                     nix::unistd::Pid::from_raw(pid as i32),
                     nix::sys::signal::Signal::SIGKILL,
                 );
-                let _ = self.save();
+                let _ = self.save_locked();
             }
         }
         None
@@ -294,9 +319,14 @@ impl FragmentPool {
 
     /// Record a daemon that was just started for a slot the pool had lost.
     pub fn register_pid(&mut self, pid: u32) -> Result<()> {
+        let lock_path = self.pool_path.join(".meta.lock");
+        let _lock = PoolLock::acquire(&lock_path)?;
+
+        self.reload_locked();
+
         if !self.meta.available_pids.contains(&pid) && !self.meta.busy_pids.contains(&pid) {
             self.meta.available_pids.push(pid);
-            self.save()?;
+            self.save_locked()?;
         }
         Ok(())
     }
@@ -360,12 +390,25 @@ impl FragmentPool {
         Ok(())
     }
 
-    fn save(&self) -> Result<()> {
+    /// Reload latest metadata from disk while .meta.lock is held
+    fn reload_locked(&mut self) {
         let meta_path = self.pool_path.join("meta.json");
-        let lock_path = self.pool_path.join(".meta.lock");
+        if let Ok(data) = fs::read_to_string(&meta_path) {
+            if let Ok(fresh_meta) = serde_json::from_str::<FragmentPoolMeta>(&data) {
+                self.meta = fresh_meta;
+            }
+        }
+    }
 
-        // Acquire lock before writing
+    pub fn save(&self) -> Result<()> {
+        let lock_path = self.pool_path.join(".meta.lock");
         let _lock = PoolLock::acquire(&lock_path)?;
+        self.save_locked()
+    }
+
+    /// Save metadata without re-acquiring PoolLock when already held.
+    fn save_locked(&self) -> Result<()> {
+        let meta_path = self.pool_path.join("meta.json");
 
         if let Some(parent) = meta_path.parent() {
             fs::create_dir_all(parent).with_context(|| {
@@ -380,7 +423,7 @@ impl FragmentPool {
         let temp_path = meta_path.with_extension("json.tmp");
         let mut temp_file = File::create(&temp_path)?;
         temp_file.write_all(data.as_bytes())?;
-        temp_file.sync_all()?;
+        // Atomic rename covers process-crash consistency; omit sync_all on hot path
 
         // Atomic rename
         fs::rename(&temp_path, &meta_path)
@@ -601,5 +644,126 @@ mod tests {
         let data = fs::read_to_string(dir.join("meta.json")).unwrap();
         let parsed: FragmentPoolMeta = serde_json::from_str(&data).unwrap();
         assert!(parsed.available_pids.is_empty());
+    }
+
+    #[test]
+    fn concurrent_acquire_pid_never_hands_out_same_slot() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        let num_slots = 6;
+        let mut pids = Vec::new();
+        let mut fake_handles = Vec::new();
+        let mut procs = Vec::new();
+
+        // Spawn actual sleeping processes so `is_process_alive` returns true
+        for i in 0..num_slots {
+            let child = std::process::Command::new("sleep")
+                .arg("10")
+                .spawn()
+                .expect("failed to spawn helper sleep process");
+            let pid = child.id();
+            procs.push(child);
+            pids.push(pid);
+
+            let socket = dir.join(format!("daemon_{}.sock", i));
+            fake_handles.push(spawn_fake_daemon(socket));
+            fs::write(dir.join(format!("daemon_{}.pid", i)), pid.to_string()).unwrap();
+        }
+
+        let pool = FragmentPool::with_meta(dir.clone(), test_meta(pids.clone()));
+        pool.save().unwrap();
+
+        let num_threads = 16;
+        let barrier = Arc::new(Barrier::new(num_threads));
+        let acquired_pids = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut threads = Vec::new();
+        for _ in 0..num_threads {
+            let b = Arc::clone(&barrier);
+            let results = Arc::clone(&acquired_pids);
+            let pool_dir_clone = dir.clone();
+
+            threads.push(thread::spawn(move || {
+                let mut p = FragmentPool::load_from_path(&pool_dir_clone).unwrap();
+                b.wait();
+                if let Some(acquired) = p.acquire_pid() {
+                    let mut lock = results.lock().unwrap();
+                    lock.push(acquired);
+                }
+            }));
+        }
+
+        for t in threads {
+            t.join().unwrap();
+        }
+
+        let results = acquired_pids.lock().unwrap().clone();
+        assert_eq!(
+            results.len(),
+            num_slots,
+            "All available slots must be acquired, no more"
+        );
+
+        // Verify all acquired PIDs are strictly unique
+        let mut unique = results.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(
+            results.len(),
+            unique.len(),
+            "Concurrent acquire must never hand out the same PID twice"
+        );
+
+        for h in fake_handles {
+            h.join().unwrap();
+        }
+        for mut p in procs {
+            let _ = p.kill();
+            let _ = p.wait();
+        }
+    }
+
+    #[test]
+    fn register_pid_reloads_under_lock_preserving_concurrent_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        let pool = FragmentPool::with_meta(dir.clone(), test_meta(vec![100]));
+        pool.save().unwrap();
+
+        let mut pool1 = FragmentPool::load_from_path(&dir).unwrap();
+        let mut pool2 = FragmentPool::load_from_path(&dir).unwrap();
+
+        pool1.register_pid(200).unwrap();
+        pool2.register_pid(300).unwrap();
+
+        let final_pool = FragmentPool::load_from_path(&dir).unwrap();
+        assert!(final_pool.meta.available_pids.contains(&100));
+        assert!(final_pool.meta.available_pids.contains(&200));
+        assert!(final_pool.meta.available_pids.contains(&300));
+    }
+
+    #[test]
+    fn purge_pid_reloads_under_lock_preserving_concurrent_changes() {
+        let temp_dir = TempDir::new().unwrap();
+        let dir = temp_dir.path().to_path_buf();
+
+        let pool = FragmentPool::with_meta(dir.clone(), test_meta(vec![100, 200]));
+        pool.save().unwrap();
+
+        let mut pool1 = FragmentPool::load_from_path(&dir).unwrap();
+        let mut pool2 = FragmentPool::load_from_path(&dir).unwrap();
+
+        pool1.register_pid(300).unwrap();
+        pool2.purge_pid(100).unwrap();
+
+        let final_pool = FragmentPool::load_from_path(&dir).unwrap();
+        assert!(!final_pool.meta.available_pids.contains(&100));
+        assert!(final_pool.meta.available_pids.contains(&200));
+        assert!(final_pool.meta.available_pids.contains(&300));
     }
 }

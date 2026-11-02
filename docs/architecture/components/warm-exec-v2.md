@@ -117,11 +117,11 @@ Warm used to look ~3× faster only because cold was slow, and two fixes removed 
   current-thread runtime (`--version` 6.9 → 1.2 ms); the daemon keeps its own multi-thread
   runtime, and the `pidfd` wait still holds per-request overhead at 2–3 ms.
 
-Warm is not a throughput win: a fragment serves one command at a time and pool acquisition
-shares one metadata file, so a burst serialises. 16 simultaneous `true` take 16.3 ms wall on
-a pool of 1 and 23.8 ms on a pool of 4, against 13.6 ms cold and 762 ms for rootless podman:
-for parallel bursts cold wins. The one-time costs are `warm create` at 23.9 ms, a self-heal
-run after a killed slot at 28.1 ms, and 4.6 ms for the next warm run after that.
+Single-command latency between warm and cold is identical, but under a 16-command burst warm
+edges ahead once hot-path fsync is removed and pool acquisition reloads metadata under lock:
+16 simultaneous `true` take 11.8 ms wall on a pool of 1 and 10.9 ms on a pool of 4, against
+12.6 ms cold and 762 ms for rootless podman. The one-time costs are `warm create` at 23.9 ms,
+a self-heal run after a killed slot at 28.1 ms, and 4.6 ms for the next warm run after that.
 
 
 ### Key files

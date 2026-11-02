@@ -49,9 +49,9 @@ What is left of cold is process startup plus the sandbox itself. In the same ses
 `phantom --version` measures 1.2 ms, so ~1.9 ms covers image lookup, `unshare` with
 uid/gid maps, mounts, `chroot`, Landlock, capability drop, seccomp, `execve` and the
 command. Warm replaces that with a pool acquire, a socket round trip and a `fork` inside
-the mother, which costs the same or slightly more. Under a 16-command burst cold wins
-outright (13.6 ms wall versus 16.3 ms on a one-slot warm pool, 23.8 ms on four), because
-a fragment serves one command at a time. See
+the mother, which costs the same or slightly more for single commands. Under a 16-command
+burst, eliminating hot-path fsync and lock contention allows warm to edge ahead (12.6 ms
+cold versus 11.8 ms on a one-slot warm pool, 10.9 ms on four). See
 [warm-exec-v2](components/warm-exec-v2.md) for the three warm methods and what is
 actually implemented.
 

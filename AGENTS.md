@@ -383,7 +383,7 @@ decisions D1-D16).
 ### Tier 2: Warm Fragments / Mother Fragments
 - **Command**: `phantom warm create alpine 3` then `phantom run --warm alpine <cmd>`
 - **Mechanism**: The daemon forks one long-lived, pre-sandboxed "mother fragment" at startup. The mother applies cgroup, userns/mount ns, chroot, tmpfs, Landlock, caps and seccomp **once**, then serves each request by forking and `exec`ing the child over a daemon↔mother socketpair. The security profile is bound at pool creation (`warm create -p`), and a mismatched `PHANTOM_PROFILE` is refused.
-- **Performance**: 3.1 ms median, the same as cold. It is not a throughput win: one fragment serves one command at a time, so 16 simultaneous commands take 16.3 ms wall on a pool of 1 and 23.8 ms on a pool of 4, against 13.6 ms cold. `warm create` costs 23.9 ms, a self-heal after a killed slot 28.1 ms.
+- **Performance**: 3.1 ms median, the same as cold. In a 16-command burst, warm edges ahead once lock contention and hot-path fsync are eliminated: 11.8 ms wall on a pool of 1 and 10.9 ms on a pool of 4, against 12.6 ms cold. `warm create` costs 23.9 ms, a self-heal after a killed slot 28.1 ms.
 - **Use Case**: Moving setup latency to pool-creation time, which only pays off when that setup is expensive (a large image or a heavy policy). For `alpine` it does not pay off today.
 - **Status**: 🚧 **Beta/Experimental** - Mother is pre-sandboxed (Phase 3.4/3.5) with the cold namespace set and procfs; stdio is passed over the socket (a client-owned pty when interactive), signals are relayed and dead-client slots are reclaimed. One command per fragment at a time (D5).
 

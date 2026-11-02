@@ -34,8 +34,8 @@ claim could not be verified it is marked `unmeasured` rather than repeated.
   before the command was parsed, though every command before dispatch is sequential and
   the warm daemon builds its own runtime. The CLI now runs on a current-thread runtime:
   `--version` 6.9 → 1.2 ms, cold 14 → 3.1 ms, warm 12 → 3.1 ms. Warm no longer has a
-  measurable margin over cold, and cold wins a 16-command burst (13.6 ms versus 16.3 ms
-  on a one-slot warm pool).
+  measurable single-run margin over cold, though removing hot-path pool fsync brings a
+  16-command burst to 11.8 ms (1 slot) / 10.9 ms (4 slots) versus 12.6 ms cold.
 - **Zig 0.16 migration**: native memory and zygote libraries target the Zig 0.16 std API;
   build scripts fail fast when Zig is missing or older than 0.16.
 - **Versioning**: `[workspace.package] version` is the single source of truth, so

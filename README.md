@@ -33,14 +33,13 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 Docker was not measured on this machine; podman is the measured comparison. Numbers move
 with image cache state, so treat the ratios as the signal, not the milliseconds.
 
-Warm is no longer faster than cold in a way you can rely on. Cold is now cheap enough
-that process startup dominates it, and the warm path pays two extra process hops and a
-socket round trip instead of the sandbox setup cold performs. In a 16-command burst cold
-wins outright (13.6 ms wall versus 16.3 ms on a one-slot warm pool, 23.8 ms on four),
-because a fragment serves one command at a time while cold spawns independent processes.
-Warm's one-time costs are `warm create` 23.9 ms and a self-heal after a killed slot
-28.1 ms. Treat warm as a feature that moves where the setup latency is paid, not as a
-throughput win.
+Warm is no longer faster than cold in single-run latency in a way you can rely on. Cold is
+now cheap enough that process startup dominates it, and the warm path pays two extra process
+hops and a socket round trip instead of the sandbox setup cold performs. In a 16-command burst,
+warm edges ahead of cold once hot-path lock contention and fsync are eliminated (12.6 ms cold
+versus 11.8 ms on a one-slot warm pool, 10.9 ms on four). Warm's one-time costs are `warm create`
+23.9 ms and a self-heal after a killed slot 28.1 ms. Treat warm as a feature that moves where the
+setup latency is paid, with modest throughput gains under burst.
 
 ## 🛠️ System Architecture
 

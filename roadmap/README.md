@@ -47,10 +47,10 @@ is authoritative for warm execution.
 - Profile bound at pool creation; a mismatched request is a hard error.
 - Open: no semi mother, no frozen zygotes.
 - Measured 3.1 ms end to end, the same as cold and ~72× faster than rootless podman
-  (release, 40 samples, median). Warm has no margin left: the image stack no longer runs
-  on the cold path, and the CLI now starts on a current-thread runtime. It also loses
-  under a burst (16 simultaneous commands: 13.6 ms cold, 16.3 ms on a one-slot pool),
-  because one fragment serves one command at a time.
+  (release, 40 samples, median). Warm has no margin left on single runs: the image stack
+  no longer runs on the cold path, and the CLI now starts on a current-thread runtime.
+  Under a burst, removing hot-path metadata lock contention and fsync gives warm a slight
+  edge (16 simultaneous commands: 12.6 ms cold vs 11.8 ms on a one-slot pool, 10.9 ms on four).
 
 ### Artifact / cache warm
 - Image layers, the extracted rootfs and the build cache are reused by later cold runs.
