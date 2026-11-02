@@ -153,7 +153,11 @@ enum Commands {
     Explain(commands::explain::ExplainArgs),
 }
 
-#[tokio::main]
+// The CLI is sequential: every command awaits one thing at a time, and the only
+// concurrency it needs (the warm daemon's listener) builds its own multi-thread
+// runtime. A multi-thread runtime here spawned one worker per core before the
+// command was even parsed, which measured ~1.4 ms of the process start.
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     // Initialize structured logging with tracing
     init_logging();
