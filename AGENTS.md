@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Phantom Fragment is a high-performance container alternative using Linux kernel features (namespaces, seccomp, Landlock, cgroups). Codebase: Primarily Rust with Zig for low-level components (zygote pool, memory management).
+Phantom Fragment is a high-performance container alternative using Linux kernel features (namespaces, seccomp, Landlock, cgroups). Codebase: Primarily Rust with Zig for low-level components (pre-fork pool, memory management).
 
 ## Build Commands
 
@@ -163,7 +163,7 @@ src/
 │       │   ├── delete.rs     # Destroy command
 │       │   ├── health.rs     # Health check
 │       │   ├── metrics.rs    # Metrics
-│       │   ├── warm.rs       # Zygote warm-up
+│       │   ├── warm.rs       # Warm pool + daemon
 │       │   └── ...           # Other subcommands
 │       ├── config.rs         # Config + PhantomPaths
 │       ├── ui.rs             # Standardized UI output
@@ -172,7 +172,7 @@ src/
 ├── core/
 │   ├── execution/execution-rs    # Adaptive execution engine
 │   ├── types/types-rs            # Shared FFI-safe types
-│   ├── zygote-rs                 # Zygote pool (Zig)
+│   ├── zygote-rs                 # Pre-fork spawn pool (Zig)
 │   ├── task-analyzer-rs          # Command analysis
 │   ├── network-rs                # Network management
 │   ├── compression-rs            # Compression utilities
@@ -260,7 +260,7 @@ Use Conventional Commits:
 | Language | Files | Role |
 |----------|-------|------|
 | **Rust** | 69 | Primary implementation |
-| **Zig** | 7 | Low-level memory/zygote (FFI to Rust) |
+| **Zig** | 7 | Low-level memory / pre-fork pool (FFI to Rust) |
 | **C** | 1 | BPF-LSM kernel program |
 | **Shell** | 2 | Testing/benchmarking scripts |
 | **Python** | 1 | Debug utility |
@@ -338,40 +338,46 @@ Profile options:
 - `cpu_count`: number of CPU cores
 - `cpu_affinity`: list of core IDs to pin to
 
-## Three-Tier Execution Architecture
+## Execution Tiers
 
-Phantom Fragment supports three distinct execution tiers, from standard cold start to optimized sub-millisecond warm starts:
+Two start tiers, plus one persistence feature that is not a tier:
 
-### What "warm" means (read this before touching warm or zygote)
+- **Cold** — build the sandbox, run the command, tear down.
+- **Warm (mother fragment)** — build the sandbox once at pool creation, then `fork` + `exec`
+  per command.
+- **Fragment save/resume (sessions)** — keep a sandboxed fragment between commands so work
+  survives. Design only; see below.
 
-"Warm" is an umbrella term, not one mechanism. The three methods differ in what is kept
-between runs and therefore in what a start actually costs:
+### What "warm" means (read this before touching warm)
+
+"Warm" is an umbrella term, not one mechanism. Two methods are in the tree:
 
 | Method | What is kept | What a start does | Implemented? |
 |---|---|---|---|
 | **Mother fragment** | a live, already-sandboxed process | `fork` + `exec` inside the sandbox it built once | ✅ yes, `--warm` |
-| **Zygote** | a frozen, compressed process image (memory, fds, namespaces, security state) | restore the image; no build, no boot | ❌ no, design only |
 | **Artifact / cache** | files: layers, rootfs, build outputs | the full cold path, with less I/O work | ⚠️ partial: images and rootfs only |
 
 Rules that follow, and that docs and comments must not break:
 
-- **A zygote is a stored image that becomes a new execution.** Nothing in this tree does
-  that. No checkpoint, no compression, no restore; `rg 'criu|checkpoint|freeze|SIGSTOP' src/`
-  returns nothing.
-- **The `--zygote` flag is not a zygote.** `src/core/zygote-rs` is a *pre-fork spawn
-  accelerator*: it keeps idle processes and forks a grandchild per request (`fork`/`clone`
-  + `execve`), applying `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`. It applies
-  no user/PID/net namespace, no seccomp, no Landlock and no capability drop, and it is
-  skipped whenever a security policy is requested.
+- **Resume is not a start tier.** It keeps a fragment so work survives; it does not make a
+  fresh command start faster. At ~3 ms cold there is no start latency left to sell.
+- **A saved fragment is a live sandbox, not a snapshot.** Until a checkpoint backend exists,
+  nothing survives the daemon or the host. A `SIGSTOP`ped or cgroup-frozen fragment is still
+  a task with an address space, not a stored image.
+- **`--zygote` is a pre-fork spawn accelerator, not resume.** `src/core/zygote-rs` keeps idle
+  processes and forks a grandchild per request (`fork`/`clone` + `execve`), applying
+  `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`. It applies no user/PID/net
+  namespace, no seccomp, no Landlock and no capability drop, and it is skipped whenever a
+  security policy is requested. The name is historical: do not describe it as frozen-state
+  activation or as the resume feature.
 - **An artifact is not a snapshot.** The artifact/cache method stores files, not process
   state. It makes the cold path cheaper; it does not skip it.
-- **Firecracker-style snapshot restore is the zygote row**, not the artifact row and not
+- **Firecracker-style snapshot restore belongs to resume**, not to artifact/cache and not to
   the mother.
-- Do not describe `--warm` as a snapshot: the mother stays alive and is forked. Do not
-  describe `--zygote` as frozen-state activation.
+- Do not describe `--warm` as a snapshot: the mother stays alive and is forked.
 
-Canonical description: `docs/architecture/components/warm-exec-v2.md` (Methods 1-3,
-decisions D1-D16).
+Canonical description: `docs/architecture/components/warm-exec-v2.md` (warm methods,
+decisions D1-D16, and the resume design).
 
 ### Tier 1: Cold Start (Default)
 - **Command**: `phantom run alpine <cmd>`
@@ -387,23 +393,45 @@ decisions D1-D16).
 - **Use Case**: Moving setup latency to pool-creation time, which only pays off when that setup is expensive (a large image or a heavy policy). For `alpine` it does not pay off today.
 - **Status**: 🚧 **Beta/Experimental** - Mother is pre-sandboxed (Phase 3.4/3.5) with the cold namespace set and procfs; stdio is passed over the socket (a client-owned pty when interactive), signals are relayed and dead-client slots are reclaimed. One command per fragment at a time (D5).
 
-### Tier 3: Zygote Pool (spawn accelerator)
-- **Command**: `phantom run --zygote alpine <cmd>`
-- **Mechanism**: A Zig pool of pre-forked processes (`fork`/`clone` + `execve`, socketpair IPC). Each child gets `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`; every request still forks a grandchild.
-- **Performance**: Sub-millisecond spawn in the pool's own benchmark. This is pre-forking, not frozen-state activation.
-- **Use Case**: High-frequency spawning where no security policy is requested.
-- **Limitation**: It is not a sandbox. No user, PID or network namespace, no seccomp, no Landlock, no capability drop. `run --zygote` skips the pool whenever a policy is requested and runs cold instead.
-- **Status**: 🚧 **Beta/Experimental** - Wired into `phantom run --zygote`; falls back to cold execution if the pool is unavailable. The intended design (a batch of fragments frozen and compressed, restored on demand) is **not implemented**; see `docs/architecture/components/warm-exec-v2.md`, Method 2.
+### Not a tier: fragment save / resume (sessions)
+
+- **Command**: none. Nothing implements this.
+- **Idea**: a named fragment that outlives the command. Open a sandbox, `attach`, work,
+  detach, come back to the same processes — not a fresh sandbox.
+- **Three rungs, increasing cost and capability**:
+  1. **Live + attach** — the fragment stays running; the client connects, proxies the pty
+     and can disconnect without killing it. No snapshot; dies with the host. Blocked on D5
+     (one command per fragment at a time).
+  2. **Freeze** — `cgroup.freeze` or `SIGSTOP` on idle sessions: 0% CPU, reclaimable RSS,
+     instant resume. Still no host survival.
+  3. **Checkpoint** — CRIU or equivalent writes process state to disk: survives reboot,
+     copyable, the only rung where "save" means what people think it means. Tens of ms to
+     restore, needs privileges, and the dump carries the fragment's seccomp and Landlock
+     state, so the blob is trusted input.
+- **Why it is worth doing**: persistence, not latency — a shell with history, a REPL with
+  state, a debugger mid-breakpoint, a long build. Then density: idle sessions on disk rather
+  than live tasks.
+- **Status**: ❌ **Design only.** No checkpoint, restore, freeze or attach exists;
+  `rg 'criu|checkpoint|SIGSTOP|cgroup.freeze' src/` returns nothing. `--zygote` is unrelated.
 
 ### Current Implementation Status
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~3.1 ms measured |
-| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~3.1 ms measured (no margin over cold); falls back to cold if no slot is free |
-| **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
+| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~3.1 ms measured; 11.8 ms (pool 1) / 10.9 ms (pool 4) in a 16-command burst vs 12.6 ms cold; falls back to cold if no slot is free |
+| **Resume / sessions** | — | ❌ Design only | not implemented |
+| **`--zygote` spawn accelerator** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
 
-**Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. It is a spawn accelerator, not a batch of frozen fragments: nothing is checkpointed, compressed or restored, and the pool is skipped when a security policy is requested. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
+**Note**: `--zygote` is a pre-fork spawn accelerator wired into `phantom run --zygote`. It
+falls back to cold when the pool cannot be initialised, applies no security stack, and is
+skipped when a policy is requested. It has nothing to do with fragment save/resume, and
+nothing implements resume today. The warm fragment daemon (Tier 2) is in beta/experimental
+status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC)
+and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio
+handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal
+relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time
+(D5), which is also the blocker for attach, and semi-mother.
 
 See `docs/architecture/components/warm-exec-v2.md` for full implementation details.
 
@@ -418,8 +446,8 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 - `apply_landlock()` - Filesystem sandboxing
 - `BpfLsmSecurity::load_bpf_bytecode()` - BPF-LSM loading
 
-**Memory (Zig FFI):**
-- `phantom_zygote_pool_create()` - Initialize zygote pool with specified size
+**Memory / pre-fork pool (Zig FFI):**
+- `phantom_zygote_pool_create()` - Initialize the pre-fork pool with the given size
 - `phantom_zygote_fork()` - Fast process spawn (`fork`/`clone` + `execve`)
 - `phantom_numa_available()` - NUMA support check
 
@@ -449,7 +477,7 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 |-----------|--------|-------|
 | **execution-rs** | ✅ Complete | Adaptive engine, 3 modes (Sandbox/Hardened/Wasm) |
 | **types-rs** | ✅ Complete | FFI-safe types, no_std crate |
-| **zygote-rs** | ⚠️ Partial | Zig pre-fork spawn accelerator; sub-ms spawn in benchmarks, but no seccomp/Landlock/caps and no frozen-state restore; skipped when a policy is set |
+| **zygote-rs** | ⚠️ Partial | Zig pre-fork spawn accelerator behind `--zygote`: sub-ms spawn in benchmarks, but no seccomp/Landlock/caps, and not a sandbox. Unrelated to fragment save/resume |
 | **task-analyzer-rs** | ✅ Complete | Component detection, memory estimation |
 | **network-rs** | ✅ Complete | Loopback auto-start implemented for new network namespaces |
 | **compression-rs** | ✅ Complete | Zstd/Gzip/LZ4 |
@@ -508,13 +536,14 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 | **phantom-build** | ✅ Active | Multi-stage builds |
 | **phantom-migrate** | ✅ Active | Docker/Podman migration |
 
-### Three-Tier Execution Status
+### Execution Status
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
 | **Cold** | `phantom run alpine` | ✅ Working | ~3.1 ms measured |
-| **Warm** | `phantom run --warm` | ⚠️ Beta | ~3.1 ms measured (no margin over cold); falls back to cold if no slot is free |
-| **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
+| **Warm** | `phantom run --warm` | ⚠️ Beta | ~3.1 ms measured; 11.8 ms (pool 1) / 10.9 ms (pool 4) in a 16-command burst vs 12.6 ms cold |
+| **Resume / sessions** | — | ❌ Design only | not implemented; see "Not a tier: fragment save / resume" |
+| **`--zygote` spawn accelerator** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
 ### Known Issues
 
@@ -530,7 +559,8 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 | Cold start (Sandbox) | <25ms | ~3.1 ms | Default mode |
 | Cold start (Hardened) | <60ms | ~3.1 ms+ | Maximum security |
 | Warm start | <1ms | ~3.1 ms | Same as cold; not a throughput win |
-| Zygote spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
+| `--zygote` spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
+| Fragment resume | — | not implemented | Design only; see the resume section above |
 
 
 ---
@@ -558,7 +588,7 @@ cargo test --workspace
 ### Prerequisites
 
 - **Rust**: 1.99.1 (pinned in `rust-toolchain.toml`)
-- **Zig**: 0.16+ (for memory modules and the zygote pool)
+- **Zig**: 0.16+ (for memory modules and the pre-fork pool)
 - **libseccomp headers**: `libseccomp-dev` on Debian/Ubuntu, `libseccomp-devel` on Fedora/RHEL
 - **Linux**: Kernel 3.x+ (6.5+ for Landlock/BPF)
 

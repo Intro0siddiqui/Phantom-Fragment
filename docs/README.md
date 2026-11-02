@@ -18,7 +18,7 @@ Start with the [main README](../README.md) if you have not built the project yet
 |---|---|
 | [Technical overview](architecture/overview.md) | One-page map: what it is, measured numbers, how a run is dispatched, what is missing |
 | [Native executor](architecture/components/native-executor.md) | The default cold engine: process layout, mounts, Landlock scope, verified behaviour, gaps |
-| [Warm execution](architecture/components/warm-exec-v2.md) | What warm is, the three methods (mother fragment, zygote pool, artifact cache), status of each |
+| [Warm execution](architecture/components/warm-exec-v2.md) | What warm is, the two methods (mother fragment, artifact cache), their status, and the design for fragment save/resume |
 | [Adaptive execution](architecture/components/adaptive-execution.md) | `execution-rs`: mode selection and the host fork-exec path |
 | [Memory discipline](architecture/components/memory-discipline.md) | The Zig buffer pool, KSM and NUMA |
 | [Policy DSL](architecture/components/policy-dsl.md) | YAML policy compiled to seccomp and Landlock rules |

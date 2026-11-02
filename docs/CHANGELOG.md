@@ -27,6 +27,12 @@ claim could not be verified it is marked `unmeasured` rather than repeated.
   pool's profile is a hard error instead of a silent fallback to cold.
 
 ### Changed
+- **Execution taxonomy**: two start tiers, cold and warm (mother fragment), plus one
+  persistence feature that is not a tier. Fragment save/resume (sessions) is documented as
+  design only — live + `attach`, `freeze`, checkpoint/restore — and nothing implements it.
+  `--zygote` is described as what it is, a pre-fork spawn accelerator with a historical
+  name: not frozen-state activation, not resume, and not a sandbox (no user/PID/net
+  namespace, no seccomp, no Landlock, no capability drop; skipped when a policy is set).
 - **Cold start**: `ImagePuller::with_config` built a registry client (TLS roots) and an
   image store on every run, ~23 ms, even for an already-extracted rootfs. Both are now
   built inside `pull()`; cold fell from 39 ms.

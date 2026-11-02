@@ -45,7 +45,7 @@ setup latency is paid, with modest throughput gains under burst.
 
 Phantom Fragment utilizes a tiered isolation model, selecting the optimal execution path based on the workload's risk profile:
 
-1. **Pre-fork Spawn Pool (Zig)**: An experimental pool of idle processes that forks per request (`--zygote`). It is **not** a zygote in the snapshot sense: nothing is frozen, compressed or restored, so it cannot start a new execution from a stored image. It is **beta**, and it cannot apply seccomp or Landlock; when a security policy is requested, `--zygote` silently falls back to normal execution.
+1. **Pre-fork Spawn Pool (Zig)**: An experimental pool of idle processes that forks per request (`--zygote`). It is **not** a sandbox and **not** the resume feature: nothing is frozen, compressed or restored, and it cannot apply seccomp or Landlock; when a security policy is requested, `--zygote` silently falls back to normal execution.
 2. **Adaptive Execution (Rust)**: Orchestrates namespaces, cgroups v2, and hardware isolation (NUMA/CPU affinity).
 3. **Kernel Sentry (eBPF)**: Optional BPF-LSM hooks (kernel 5.7+ and `CAP_SYS_ADMIN`/root required) add kernel-boundary checks; without them the runtime applies no BPF-LSM policy.
 4. **Filesystem Sandbox (Landlock)**: Fine-grained, path-based access control that follows the process even across namespace boundaries.
@@ -61,8 +61,12 @@ Phantom Fragment utilizes a tiered isolation model, selecting the optimal execut
 ## 🚧 Beta / Partial Features
 
 - **Warm Fragments (Beta)**: One pre-sandboxed mother fragment per pool, forked and exec'd per request, with the caller's stdio passed over the socket and Ctrl+C relayed to the command. Interactive runs use a client-owned pty; one command per fragment at a time; may fall back to cold start.
-- **Pre-fork Spawn Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested. This is a spawn accelerator, not frozen-state activation; the zygote design (a batch of fragments frozen and compressed, restored on demand) is not implemented.
+- **Pre-fork Spawn Pool (Beta)**: `phantom run --zygote` uses a pre-forked pool, but it cannot apply seccomp or Landlock and silently falls back to normal execution when a security policy is requested. This is a spawn accelerator with a historical name; it has nothing to do with saving or resuming a fragment.
 - **BPF-LSM (Partial)**: Optional and requires kernel 5.7+ plus `CAP_SYS_ADMIN` (root); it degrades to no BPF-LSM enforcement otherwise. The unified privilege prompt can re-run the CLI under `sudo`, preserving `HOME` so the elevated run still sees the user's images, pools and config; the password is read by `sudo`, never by phantom.
+
+## ❌ Not Implemented
+
+- **Fragment save / resume (sessions)**: keeping a sandboxed fragment between commands — attach, detach, come back to the same processes. Three rungs are planned: live + `attach`, `freeze` (0% CPU while idle), and checkpoint/restore (survives a reboot). None exists; there is no checkpoint, restore, freeze or attach in the tree. It is a persistence feature, not a faster start: at ~3 ms, cold has no start latency left to save.
 
 ## ⚡ Quick Start
 
@@ -160,7 +164,7 @@ This guide provides detailed installation instructions for Phantom Fragment acro
 
 ### Minimum Requirements
 - **Rust Version**: 1.99.1 (pinned in `rust-toolchain.toml`)
-- **Zig Version**: 0.16.0 or later (builds the memory and zygote libraries)
+- **Zig Version**: 0.16.0 or later (builds the memory and pre-fork libraries)
 - **libseccomp headers**: `libseccomp-dev` (Debian/Ubuntu) or `libseccomp-devel` (Fedora/RHEL)
 - **Kernel**: Linux 3.x+ (6.5+ recommended for security features)
 - **Memory**: 256MB RAM (2GB recommended)

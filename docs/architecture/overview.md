@@ -52,8 +52,8 @@ command. Warm replaces that with a pool acquire, a socket round trip and a `fork
 the mother, which costs the same or slightly more for single commands. Under a 16-command
 burst, eliminating hot-path fsync and lock contention allows warm to edge ahead (12.6 ms
 cold versus 11.8 ms on a one-slot warm pool, 10.9 ms on four). See
-[warm-exec-v2](components/warm-exec-v2.md) for the three warm methods and what is
-actually implemented.
+[warm-exec-v2](components/warm-exec-v2.md) for the two warm methods, the fragment
+save/resume design, and what is actually implemented.
 
 
 ## How a run is dispatched
@@ -62,7 +62,7 @@ actually implemented.
 phantom run <image> <cmd>
 ├── --wasm / *.wasm   -> Wasmtime (wasm-rs)
 ├── --warm            -> listener -> mother fragment -> fork + exec
-├── --zygote          -> Zig pool, mount ns + pivot_root (no seccomp/Landlock/caps)
+├── --zygote          -> pre-fork spawn pool, mount ns + pivot_root (no seccomp/Landlock/caps)
 ├── --proot           -> proot emulation (no namespaces)
 ├── --overlay         -> fuse-overlayfs + bwrap
 ├── --runtime <r>     -> hand the bundle to an OCI runtime
@@ -80,7 +80,7 @@ capability or exec failure is fatal and never falls back.
 | Document | Covers |
 |---|---|
 | [native-executor](components/native-executor.md) | the default cold engine: process layout, mounts, verified behaviour, gaps |
-| [warm-exec-v2](components/warm-exec-v2.md) | what warm is, the three methods, protocol plan, known limitations |
+| [warm-exec-v2](components/warm-exec-v2.md) | what warm is, the two methods, the save/resume design, protocol plan, known limitations |
 | [adaptive-execution](components/adaptive-execution.md) | `execution-rs`: mode selection and the host fork-exec path |
 | [memory-discipline](components/memory-discipline.md) | the Zig buffer pool, KSM and NUMA |
 | [policy-dsl](components/policy-dsl.md) | YAML policy -> seccomp/Landlock rules |

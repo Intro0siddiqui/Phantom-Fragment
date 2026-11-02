@@ -50,7 +50,7 @@ phantom run [OPTIONS] COMMAND...          # no image: host fork-exec
 | `--runtime <r>` | | hand the bundle to an OCI runtime |
 | `--wasm` | | run a `.wasm` module via Wasmtime |
 | `--warm` | | use a warm pool (beta; pty for interactive runs, one command per fragment) |
-| `--zygote` | | use the Zig spawn pool (skipped if a policy is set) |
+| `--zygote` | | use the pre-fork spawn pool (skipped if a policy is set; not a sandbox, and not fragment resume) |
 | `--no-pull` | | do not pull the image if it is missing (unused by `--warm`: a warm fragment already owns its rootfs) |
 | `--verify` | | verify layer SHA256 on pull (unused by `--warm`, which pulls nothing) |
 | `--config <path>` | | alternate config file |

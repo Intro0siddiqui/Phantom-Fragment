@@ -36,25 +36,37 @@ client resolved an image the fragment already owned. Both are fixed (see "Measur
 today" below), but the mother now only matches cold: once cold stopped paying for work
 it did not need, there was nothing left for the mother to save on this class of image.
 
-### Method 2: the zygote pool
-
-Not one fragment: a **collection of fragments created ahead of time**, then frozen and
-compressed so they cost almost no CPU and almost no RAM while idle. The mental model is
-that the user has already run many cold fragments and stored them; when one is wanted,
-the machine does not fork — the stored fragment is already exactly the desired state, so
-it only has to be made active.
-
-This is the only method that can plausibly beat cold by a wide margin, and it is also
-the one where the entire question is *restore cost*: thawing, page faults and re-mapping
-are the latency. Note that the Zig pool in this tree is **not** that yet — it pre-forks
-processes and still forks a grandchild per request (see the status table below).
-
-### Method 3: artifact / cache warm
+### Method 2: artifact / cache warm
 
 No button, no pool, no long-lived process. The first cold run of a fragment type leaves
 artifacts behind — pulled layers, an extracted rootfs, build outputs, compiled caches —
 and later cold runs reuse them, so latency drops after the first run. It is **advanced
 cold start**: the same path, less work. Today only image and rootfs reuse exists.
+
+## Not a warm method: fragment save / resume
+
+Keeping a fragment alive between commands is a **persistence** feature, not a start
+tier. It does not make a fresh command start faster — at ~3.1 ms cold there is no start
+latency left to sell — it makes work survive. Nothing implements it today.
+
+Three rungs, increasing cost and capability:
+
+1. **Live + attach** — the fragment keeps running after the client disconnects; `attach`
+   connects again, proxies the pty, and detaches without killing it. No snapshot: it dies
+   with the host. Blocked on D5 (one command per fragment at a time), which is also what
+   the serial accept loop causes.
+2. **Freeze** — `cgroup.freeze` or `SIGSTOP` on an idle session: 0% CPU, reclaimable RSS,
+   instant resume. Still no host survival, and no trusted blob to validate.
+3. **Checkpoint** — CRIU or equivalent writes process state to disk: survives a reboot,
+   is copyable, and is the only rung where "save" means what people assume. Tens of ms to
+   restore, needs privileges, and the dump carries the fragment's seccomp and Landlock
+   state, so the blob is trusted input.
+
+`--zygote` is not this feature and never was. `src/core/zygote-rs` is a pre-fork spawn
+accelerator that keeps idle processes and forks a grandchild per request
+(`fork`/`clone` + `execve`) with `CLONE_NEWNS`, a bind-mounted rootfs and `pivot_root`.
+It applies no user/PID/network namespace, no seccomp, no Landlock and no capability drop,
+and it is skipped whenever a security policy is requested. The name is historical.
 
 ## Terminology
 
@@ -64,8 +76,8 @@ cold start**: the same path, less work. Today only image and rootfs reuse exists
 | **Mother fragment** | A long-lived fragment that other fragments are forked from |
 | **Complete mother** | A mother that already contains the image |
 | **Semi mother** | A mother that contains the isolation/security state but not the image; the image is applied at runtime |
-| **Zygote** | A pre-created fragment stored frozen and compressed until activated |
-| **Zygote pool** | A collection of frozen zygotes, activated on demand |
+| **Fragment session** | A fragment kept alive between commands so work survives; `attach` reconnects to it |
+| **Resume** | Continuing a saved fragment: live + attach, frozen, or checkpointed — not a faster cold start |
 | **Artifact cache** | On-disk products of previous cold runs, reused by later cold runs |
 
 > **Implementation note.** The mother is a pre-sandboxed process: chroot, namespaces,
@@ -76,13 +88,13 @@ cold start**: the same path, less work. Today only image and rootfs reuse exists
 
 ---
 
-## Status of each method
+## Status of each method, and of resume
 
 | Method | Status | What exists today |
 |---|---|---|
 | **Mother fragment** | Implemented, beta | One pre-sandboxed mother per pool, forked once at pool fill; chroot, user/mount/PID/IPC/UTS namespaces, procfs, Landlock, caps, seccomp and (when delegated) a cgroup applied once. Each request is a `fork` + `exec` with the caller's stdin/stdout/stderr passed over the socket (SCM_RIGHTS); when stdin is a terminal the client allocates a pty instead and proxies it. Ctrl+C/SIGTERM are relayed to the command, and a slot whose client dies is reclaimed. Profile is bound at creation and a mismatch is a hard error. A slot whose daemon died (crash, reboot) is rebuilt on the next run with the pool's profile instead of degrading the pool to cold forever. |
 | **Semi mother** | Not implemented | The pool always builds a complete mother for one image. There is no image-less mother with the image applied per request. |
-| **Zygote pool** | Partial, different model | The Zig pool pre-forks processes and, per request, `unshare`s the mount ns, `pivot_root`s into the rootfs and forks a grandchild to `execve`. It is a spawn accelerator, not frozen-state activation: no thawing, no compression, no restore. It applies no seccomp, Landlock or capability drop, so `run --zygote` skips it whenever a policy is requested. Not connected to the mother path. |
+| **Fragment save / resume (sessions)** | Not implemented, design only | No attach, no freeze (`cgroup.freeze`/`SIGSTOP`) and no checkpoint (CRIU): nothing keeps a fragment past its daemon or the host. `--zygote` is a pre-fork spawn accelerator, unrelated to this row: it applies no user/PID/network namespace, no seccomp, no Landlock and no capability drop, and is skipped when a policy is requested. |
 | **Artifact / cache warm** | Partial | Pulled layers, the extracted rootfs and the build cache are reused by later cold runs. There is no compiled-artifact or executed-work cache, and nothing measures the latency drop. |
 
 ### Known limitations
@@ -92,7 +104,7 @@ cold start**: the same path, less work. Today only image and rootfs reuse exists
 | One command per fragment at a time (D5) | A long-running command blocks health checks on that fragment; scale the pool instead of queueing |
 | Pty output is merged | With a terminal, stdout and stderr are one stream, as in `docker run -t` |
 | No semi mother | Every pool pays full image setup, even for images used only briefly |
-| Zygote is not frozen-state activation | No restore path, so it cannot reach the sub-millisecond target by activation |
+| No resume | Nothing survives the daemon or the host: a killed slot loses its work, and there is no way to reattach to a running fragment |
 | No artifact cache beyond images | Repeated cold runs redo work that a compiler-cache model would keep |
 
 ### Measured today (2026-11-02)
@@ -860,22 +872,26 @@ done
 
 ---
 
-### Phase 2: Zygote Pool Management
+### Phase 2: Frozen-state activation (dropped)
 
-**Goal**: Create frozen zygotes from mother, store in pool, activate on demand
+**Goal (as originally written)**: create frozen zygotes from the mother, store them in a
+pool, activate them on demand.
 
-**Status**: 🔴 NOT STARTED
+**Status**: ❌ Dropped. Nothing is frozen, compressed or restored, and nothing will be:
+freezing a fragment does not make a fresh command start faster, and at ~3.1 ms cold there
+is no start latency left to win. The idea moved to the resume design above, where its
+justification is persistence rather than speed. The tasks below are kept as history.
 
 #### Tasks
 
 | # | Task | Status | Complexity | Dependencies |
 |---|------|--------|------------|--------------|
-| 2.1 | Implement fork-from-mother in daemon | 🔴 NOT STARTED | High | Phase 1.2 |
-| 2.2 | Add zygote state tracking (frozen/active) | 🔴 NOT STARTED | Medium | 2.1 |
-| 2.3 | Implement zygote activation protocol | 🔴 NOT STARTED | Medium | 2.1 |
-| 2.4 | Add zygote recycling on fragment exit | 🔴 NOT STARTED | Medium | 2.3 |
-| 2.5 | Implement pool refill on low watermark | 🔴 NOT STARTED | Medium | 2.4 |
-| 2.6 | Connect fragment_pool.rs to daemon | 🔴 NOT STARTED | Medium | 2.3 |
+| 2.1 | Implement fork-from-mother in daemon | ❌ Dropped | High | Phase 1.2 |
+| 2.2 | Add zygote state tracking (frozen/active) | ❌ Dropped | Medium | 2.1 |
+| 2.3 | Implement zygote activation protocol | ❌ Dropped | Medium | 2.1 |
+| 2.4 | Add zygote recycling on fragment exit | ❌ Dropped | Medium | 2.3 |
+| 2.5 | Implement pool refill on low watermark | ❌ Dropped | Medium | 2.4 |
+| 2.6 | Connect fragment_pool.rs to daemon | ❌ Dropped | Medium | 2.3 |
 
 ---
 
@@ -1006,7 +1022,7 @@ Phase 4 (depends on all)                              │
 | Daemon crash leaves orphaned processes | High | Medium | Health monitor + restart (Phase 1.5) |
 | Socket race conditions | Medium | Medium | Proper locking in Rust (Phase 1.2) |
 | Cgroups permissions | Medium | High | Graceful degradation to cold execution |
-| Memory pressure from too many zygotes | Medium | Medium | Pool size limits (Phase 2.5) |
+| Memory pressure from too many idle sessions | Medium | Medium | Pool and session caps |
 | Rootfs changes not reflected | Medium | Low | Invalidate on image update |
 
 ---
@@ -1014,7 +1030,6 @@ Phase 4 (depends on all)                              │
 ## Future Enhancements (Post-MVP)
 
 - [ ] NUMA-aware pool placement
-- [ ] Landlock security on zygotes
-- [ ] Cross-host zygote migration
+- [ ] Fragment resume: live + `attach`, then `freeze`, then checkpoint/restore
 - [ ] Priority-based pool allocation
 - [ ] Predictive pre-warming based on usage patterns
