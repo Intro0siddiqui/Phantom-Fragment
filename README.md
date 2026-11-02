@@ -7,14 +7,14 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 **Phantom Fragment** is a specialized execution engine designed to bridge the gap between native process performance and container isolation. It is written primarily in **Rust**, with **Zig** used for low-level process and memory components, and it avoids a long-running daemon for normal cold execution.
 
 ### Core Value Proposition:
-- **Measured Performance**: ~14 ms cold start on the reference machine, versus ~342 ms for rootless podman (~24× faster).
+- **Measured Performance**: ~3 ms cold start on the reference machine, versus ~224 ms for rootless podman (~72× faster).
 - **Small Footprint**: ~19 MB binary, dynamically linked against glibc, OpenSSL and libseccomp; no daemon memory when no warm daemon is running.
 - **Layered Security**: The native cold engine and the warm path both apply seccomp, Landlock and capability dropping; only the warm path adds cgroups v2. The bubblewrap fallback applies namespace isolation only and is never used for a profile that requires confinement. BPF-LSM is optional, requires root, and is not attached to image fragments yet.
 - **Rootless by Design**: Normal execution uses user namespaces and a native sandbox, with `bubblewrap` as a fallback, without elevated privileges.
 
 ## 📊 Actual Performance (Verified)
 
-*System: Intel Core Ultra 5 225H (14 threads), Linux 7.3.0, release build, `alpine` cached, command `true`, 30 samples, median*
+*System: Intel Core Ultra 5 225H (14 threads), Linux 7.3.0, release build, `alpine` cached, command `true`, 40 samples, median*
 
 > ⚠️ **BETA WARNING: Warm Start Feature**
 >
@@ -25,15 +25,22 @@ A low-latency, rootless container runtime with measured cold starts and layered 
 
 | Metric | Phantom Fragment | Podman (rootless) | Notes |
 |--------|------------------|-------------------|-------|
-| **Cold Start** | **14 ms (measured)** | 342 ms | **~24× faster** |
-| **Warm Start (Beta/Experimental)** | **12 ms (measured)** | 342 ms | **~28× faster**; ~1.2× faster than cold |
+| **Cold Start** | **3.1 ms (measured)** | 224 ms | **~72× faster** |
+| **Warm Start (Beta/Experimental)** | **3.1 ms (measured)** | 224 ms | Same as cold; see below |
 | **Binary Size** | **~19 MB** | — | Dynamically linked: glibc, OpenSSL, libseccomp |
 | **Daemon RSS** | **0 MB cold / ~16 MB RSS (~7.5 MB PSS) per idle warm pool** | — | Listener + supervisor + mother, 1 slot, measured |
 
 Docker was not measured on this machine; podman is the measured comparison. Numbers move
-with image cache state, so treat the ratios as the signal, not the milliseconds. Warm's
-advantage is small now because cold no longer builds a registry client and an image store
-for a rootfs that is already extracted.
+with image cache state, so treat the ratios as the signal, not the milliseconds.
+
+Warm is no longer faster than cold in a way you can rely on. Cold is now cheap enough
+that process startup dominates it, and the warm path pays two extra process hops and a
+socket round trip instead of the sandbox setup cold performs. In a 16-command burst cold
+wins outright (13.6 ms wall versus 16.3 ms on a one-slot warm pool, 23.8 ms on four),
+because a fragment serves one command at a time while cold spawns independent processes.
+Warm's one-time costs are `warm create` 23.9 ms and a self-heal after a killed slot
+28.1 ms. Treat warm as a feature that moves where the setup latency is paid, not as a
+throughput win.
 
 ## 🛠️ System Architecture
 

@@ -376,15 +376,15 @@ decisions D1-D16).
 ### Tier 1: Cold Start (Default)
 - **Command**: `phantom run alpine <cmd>`
 - **Mechanism**: Native engine (`engine/native.rs`): user/mount/PID/IPC/UTS namespaces, network ns when disabled, chroot, `/proc`, `/dev`, `/tmp`, then Landlock → capability drop → seccomp → `execve`. `--engine auto|native|bwrap` selects the backend; `bwrap` (`RootfsExecutor`) applies namespace isolation only and is never used for a profile that requires confinement.
-- **Performance**: ~14 ms measured (release, 40 samples, median)
+- **Performance**: ~3.1 ms measured (release, 40 samples, median); `--version` alone is 1.2 ms
 - **Use Case**: Default, works reliably on all systems
 - **Status**: ✅ **Production Ready**
 
 ### Tier 2: Warm Fragments / Mother Fragments
 - **Command**: `phantom warm create alpine 3` then `phantom run --warm alpine <cmd>`
 - **Mechanism**: The daemon forks one long-lived, pre-sandboxed "mother fragment" at startup. The mother applies cgroup, userns/mount ns, chroot, tmpfs, Landlock, caps and seccomp **once**, then serves each request by forking and `exec`ing the child over a daemon↔mother socketpair. The security profile is bound at pool creation (`warm create -p`), and a mismatched `PHANTOM_PROFILE` is refused.
-- **Performance**: Faster than cold start (no per-request sandbox setup)
-- **Use Case**: When you need faster startup than cold, without pre-fork complexity
+- **Performance**: 3.1 ms median, the same as cold. It is not a throughput win: one fragment serves one command at a time, so 16 simultaneous commands take 16.3 ms wall on a pool of 1 and 23.8 ms on a pool of 4, against 13.6 ms cold. `warm create` costs 23.9 ms, a self-heal after a killed slot 28.1 ms.
+- **Use Case**: Moving setup latency to pool-creation time, which only pays off when that setup is expensive (a large image or a heavy policy). For `alpine` it does not pay off today.
 - **Status**: 🚧 **Beta/Experimental** - Mother is pre-sandboxed (Phase 3.4/3.5) with the cold namespace set and procfs; stdio is passed over the socket (a client-owned pty when interactive), signals are relayed and dead-client slots are reclaimed. One command per fragment at a time (D5).
 
 ### Tier 3: Zygote Pool (spawn accelerator)
@@ -399,8 +399,8 @@ decisions D1-D16).
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~14 ms measured |
-| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~12 ms measured; falls back to cold if no slot is free |
+| **Cold** | `phantom run alpine` | ✅ Working | ~3.1 ms measured |
+| **Warm** | `phantom run --warm alpine` | 🚧 Beta/Experimental | ~3.1 ms measured (no margin over cold); falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote alpine` | 🚧 Beta/Experimental | Sub-ms spawn in benchmarks; no security stack; falls back to cold |
 
 **Note**: The zygote pool (Tier 3) is connected to `phantom run` via the `--zygote` flag and falls back to cold execution when the pool cannot be initialized. It is a spawn accelerator, not a batch of frozen fragments: nothing is checkpointed, compressed or restored, and the pool is skipped when a security policy is requested. The warm fragment daemon (Tier 2) is in beta/experimental status: Phase 1 correctness (chroot, security stack, setsid, health probe, Landlock TSYNC) and Phase 3.4/3.5 (pre-sandboxed mother fragment, profile binding) have landed; stdio handoff (D2), a client-owned pty (D15), the cold namespace set plus procfs (D16), signal relay and slot-lease reclaim are implemented. Remaining: one command per fragment at a time (D5), semi-mother.
@@ -512,8 +512,8 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Tier | Command | Status | Performance |
 |------|---------|--------|-------------|
-| **Cold** | `phantom run alpine` | ✅ Working | ~14 ms measured |
-| **Warm** | `phantom run --warm` | ⚠️ Beta | ~12 ms measured; falls back to cold if no slot is free |
+| **Cold** | `phantom run alpine` | ✅ Working | ~3.1 ms measured |
+| **Warm** | `phantom run --warm` | ⚠️ Beta | ~3.1 ms measured (no margin over cold); falls back to cold if no slot is free |
 | **Zygote** | `phantom run --zygote` | ⚠️ Beta | Sub-ms spawn (benchmarks); no security stack; falls back to cold |
 
 ### Known Issues
@@ -527,8 +527,9 @@ See `docs/architecture/components/warm-exec-v2.md` for full implementation detai
 
 | Feature | Target | Actual | Notes |
 |---------|--------|--------|-------|
-| Cold start (Sandbox) | <25ms | ~14 ms | Default mode |
-| Cold start (Hardened) | <60ms | ~14 ms+ | Maximum security |
+| Cold start (Sandbox) | <25ms | ~3.1 ms | Default mode |
+| Cold start (Hardened) | <60ms | ~3.1 ms+ | Maximum security |
+| Warm start | <1ms | ~3.1 ms | Same as cold; not a throughput win |
 | Zygote spawn | <1ms | <1ms | Spawn only; no sandbox applied, skipped when a policy is set |
 
 

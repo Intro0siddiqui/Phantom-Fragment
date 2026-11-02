@@ -22,25 +22,39 @@ plus capability dropping and `no_new_privs` so those restrictions survive `execv
 ## Measured, on one machine
 
 Release build, 14-core Ultra 5 225H, kernel 7.3.0. `alpine` cached locally, command
-`true`, 30 samples after 3 warm-ups, median (min in parentheses):
+`true`, 40 samples after 3 warm-ups, median (min in parentheses):
 
 | Path | Time |
 |---|---|
-| `phantom --version` (no container work) | 7 ms |
-| cold `run alpine true` (native engine) | **14 ms** (13) |
-| warm `run --warm alpine true` | **12 ms** (11) |
-| rootless `podman run --rm alpine:latest true` | **342 ms** (320) |
+| `phantom --version` (no container work) | 1.2 ms |
+| cold `run alpine true` (native engine) | **3.1 ms** (2.7) |
+| warm `run --warm alpine true` | **3.1 ms** (2.8) |
+| rootless `podman run --rm alpine:latest true` | **224 ms** (210) |
 | direct daemon RPC `Exec` | 2–3 ms |
 
 Binary: ~19 MB, dynamically linked (glibc, OpenSSL, libseccomp).
 
-So cold is ~24× faster than rootless podman and warm is ~28× faster, with warm ~1.2×
-faster than cold. Warm used to look ~3× faster because cold built a registry client and
-opened the image store on every run, even for an extracted rootfs (~23 ms). That work now
-happens only inside `pull()`, so cold fell to 14 ms and warm's remaining saving is the
-per-run sandbox setup (~6 ms) minus the socket round trip. See
+So cold is ~72× faster than rootless podman, and warm is the same as cold within noise.
+Two changes brought cold down and, in doing so, removed warm's margin:
+
+- The image puller used to build a registry client and open the image store on every run,
+  even for an already-extracted rootfs (~23 ms). That work now happens only inside
+  `pull()`, so cold fell from 39 ms.
+- The CLI built a multi-thread tokio runtime before parsing the command (one worker per
+  core, ~1.4 ms measured in isolation and more inside the 398-crate binary). It now runs
+  on a current-thread runtime; the warm daemon still builds its own multi-thread runtime.
+  `--version` fell from 6.9 ms and cold from 14 ms.
+
+What is left of cold is process startup plus the sandbox itself. In the same session,
+`phantom --version` measures 1.2 ms, so ~1.9 ms covers image lookup, `unshare` with
+uid/gid maps, mounts, `chroot`, Landlock, capability drop, seccomp, `execve` and the
+command. Warm replaces that with a pool acquire, a socket round trip and a `fork` inside
+the mother, which costs the same or slightly more. Under a 16-command burst cold wins
+outright (13.6 ms wall versus 16.3 ms on a one-slot warm pool, 23.8 ms on four), because
+a fragment serves one command at a time. See
 [warm-exec-v2](components/warm-exec-v2.md) for the three warm methods and what is
 actually implemented.
+
 
 ## How a run is dispatched
 

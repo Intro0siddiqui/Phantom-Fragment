@@ -33,7 +33,8 @@ fragment is forked from it. Two kinds:
 Whether a mother is faster than cold was unproven for a long time: early warm runs were
 *slower*, because the mother learned of a child's exit on a 50 ms poll tick and the
 client resolved an image the fragment already owned. Both are fixed (see "Measured
-today" below), and the mother now wins clearly on the same machine.
+today" below), but the mother now only matches cold: once cold stopped paying for work
+it did not need, there was nothing left for the mother to save on this class of image.
 
 ### Method 2: the zygote pool
 
@@ -94,32 +95,34 @@ cold start**: the same path, less work. Today only image and rootfs reuse exists
 | Zygote is not frozen-state activation | No restore path, so it cannot reach the sub-millisecond target by activation |
 | No artifact cache beyond images | Repeated cold runs redo work that a compiler-cache model would keep |
 
-### Measured today (2026-11-01)
+### Measured today (2026-11-02)
 
-Release build, same box, `alpine` cached, command `true`, 30 samples after 3 warm-ups,
+Release build, same box, `alpine` cached, command `true`, 40 samples after 3 warm-ups,
 median (min in parentheses):
 
 | Path | Time |
 |---|---|
-| `phantom --version` | 7 ms |
-| cold `run alpine true` | 14 ms (13) |
-| warm `run --warm alpine true` | 12 ms (11) |
-| rootless `podman run --rm alpine:latest true` | 342 ms (320) |
+| `phantom --version` | 1.2 ms |
+| cold `run alpine true` | 3.1 ms (2.7) |
+| warm `run --warm alpine true` | 3.1 ms (2.8) |
+| rootless `podman run --rm alpine:latest true` | 224 ms (210) |
 | direct daemon RPC `Exec` | 2–3 ms |
 
-Warm is ~1.2× faster than cold and ~28× faster than rootless podman. Warm used to look
-~3× faster only because cold was slow: `ImagePuller::with_config` built an HTTP client and
-an image store on every run (~23 ms) even when the rootfs was already extracted. That now
-happens only inside `pull()`, so cold fell from 39 ms to 14 ms and warm's advantage is
-just the per-run sandbox setup (~6 ms) minus the socket round trip. The `pidfd` wait is
-still what keeps the daemon's per-request overhead at 2-3 ms.
+Cold and warm are ~72× faster than rootless podman and indistinguishable from each other.
+Warm used to look ~3× faster only because cold was slow, and two fixes removed that:
 
-Warm buys per-command latency, not throughput: a fragment serves one command at a time and
-pool acquisition shares one metadata file, so a burst serializes. 16 simultaneous `true`
-take ~19 ms wall on a pool of 1 and ~33 ms on a pool of 4, against ~16 ms cold and ~882 ms
-for rootless podman: for parallel bursts cold now wins. The one-time costs are `warm
-create` at ~31 ms and a self-heal run (daemon was killed) at ~69 ms; the run after that is
-warm again at ~14 ms.
+- `ImagePuller::with_config` built an HTTP client and an image store on every run (~23 ms)
+  even when the rootfs was already extracted. That now happens only inside `pull()`.
+- The CLI built a multi-thread tokio runtime before parsing the command. It now runs on a
+  current-thread runtime (`--version` 6.9 → 1.2 ms); the daemon keeps its own multi-thread
+  runtime, and the `pidfd` wait still holds per-request overhead at 2–3 ms.
+
+Warm is not a throughput win: a fragment serves one command at a time and pool acquisition
+shares one metadata file, so a burst serialises. 16 simultaneous `true` take 16.3 ms wall on
+a pool of 1 and 23.8 ms on a pool of 4, against 13.6 ms cold and 762 ms for rootless podman:
+for parallel bursts cold wins. The one-time costs are `warm create` at 23.9 ms, a self-heal
+run after a killed slot at 28.1 ms, and 4.6 ms for the next warm run after that.
+
 
 ### Key files
 
@@ -426,8 +429,10 @@ hostname — weaker isolation than the cold engine, which unshares all five.
 
 Explicitly out of scope for this plan, so they stop being conflated with it:
 
-- **Shared-memory ring buffer for IPC.** Reduces ~1 ms to ~0.0002 ms. Invisible next to
-  23 ms of setup. Revisit only after §5 lands and the RPC is the dominant term.
+- **Shared-memory ring buffer for IPC.** Reduces ~1 ms to ~0.0002 ms. Visible next to the
+  milliseconds discussed here, but far smaller than the 1.2 ms of CLI startup that
+  dominates every measurement. Revisit only after §5 lands and the RPC is the dominant
+  term.
 - **io_uring.** Does not accelerate `fork`/`exec`/`chroot`/cgroup setup. It is an I/O
   optimisation for pull/extract/build, a different workstream.
 - **Zig 0.17 migration.** Real, but independent (§8).
@@ -710,16 +715,21 @@ This is where the actual speed lives, and none of it is protocol work.
 Budget after Phase 3:
 
 ```
-cold 14 ms ≈ 7 (CLI start) + ~1 (rootfs lookup) + ~6 (namespaces, security, exec)
-warm 12 ms ≈ 7 (CLI start) + ~2 (client) + ~1 (RPC)      → ≈1.2× faster than cold
+cold 3.1 ms ≈ 1.2 (CLI start) + ~1.9 (rootfs lookup, namespaces, security, exec)
+warm 3.1 ms ≈ 1.2 (CLI start) + ~1.9 (pool acquire, RPC, mother fork)   → no margin
 ```
 
-The ~19 ms client setup that used to sit in the cold path is now paid only when an image
-is actually pulled, which is what changed the ratio.
+The 23 ms of client setup that used to sit in the cold path is now paid only when an image
+is actually pulled, and the multi-thread tokio runtime at process entry is gone (~1.4 ms
+measured in isolation, more inside a 398-crate binary).
 
-The floor is 9 ms of process start (dynamic linking + clap) and ~0.6 ms of `execve` of a
+The floor is process start (dynamic linking + clap) plus ~0.6 ms of `execve` of a
 dynamically linked binary. **Sub-millisecond `phantom run --warm` from a shell cannot
 exist**; it is only reachable by measuring the RPC directly or adding a resident client.
+With cold this cheap, warm's only remaining justification is that it moves setup latency to
+pool-creation time, which only helps if the setup itself is expensive (a large image, a
+heavy policy) — and today it is not.
+
 
 ## 6. Phase 4 — CI and toolchain (independent, do first)
 
@@ -780,7 +790,8 @@ not a stream EOF).
 1. **Phase 4** (CI/toolchain) — mechanical, unblocks the pipeline, zero risk.
 2. **Phase 1** (correctness) — D1 first; it is a security bug and it changes what
    `--warm` *means*.
-3. **Phase 3** (cost) — makes warm actually faster than cold.
+3. **Phase 3** (cost) — removes warm's overhead; cold got cheap enough in parallel, so
+   this now buys parity rather than a lead.
 4. **Phase 2** (protocol) — output, stdin, tty, signals, concurrency. Capability, not
    performance; do it once Phase 1 has settled what the child looks like.
 
@@ -982,9 +993,9 @@ Phase 4 (depends on all)                              │
 - Daemon crash → restart + refill
 
 ### Benchmarking Targets
-- Cold start: ~14 ms measured (baseline)
-- Warm start target: <1 ms (NOT YET ACHIEVED; current warm is dominated by CLI startup)
-- Pool initialization: measure overhead
+- Cold start: ~3.1 ms measured (baseline)
+- Warm start target: <1 ms (NOT YET ACHIEVED; current warm is 3.1 ms and dominated by CLI startup)
+- Pool initialization: `warm create` 23.9 ms; self-heal after a killed slot 28.1 ms
 
 ---
 
